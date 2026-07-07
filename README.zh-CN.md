@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-NoTrace Browser 是一款通用、开源、高性能、防关联（防指纹）浏览器客户端。项目深度集成了 **CloakBrowser 经 C++ 补丁修改的 Chromium 内核**，并无缝支持各主流桌面系统（如支持 macOS 的 PWA 模式、系统级 TCC 权限修护、以及基于 Tauri 开发的多账号选择器），致力于为您提供一个安全、防关联的多账号身份管理环境。
+NoTrace Browser 是一款开源、高性能、防关联（防指纹）浏览器客户端。项目深度集成了 **CloakBrowser 经 C++ 补丁修改的 Chromium 内核**，并无缝支持各主流桌面系统（如支持 macOS 的 PWA 模式、系统级 TCC 权限修护、以及基于 Tauri 开发的多账号选择器），致力于为您提供一个安全、防关联的多账号身份管理环境。
 
 ---
 
