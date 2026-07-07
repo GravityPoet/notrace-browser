@@ -147,6 +147,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [planLoading, setPlanLoading] = useState(false);
   const [error, setError] = useState<string>("");
+  const [notice, setNotice] = useState<string>("");
   const [dialogError, setDialogError] = useState<string>("");
   const [plan, setPlan] = useState<LaunchPlan | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
@@ -249,6 +250,12 @@ export default function App() {
     const timer = window.setTimeout(() => setError(""), 5000);
     return () => window.clearTimeout(timer);
   }, [error]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 5000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => {
     if (!groupContextMenu && !accountContextMenu) return;
@@ -598,13 +605,19 @@ export default function App() {
 
   async function launchWebStore(account: Account) {
     if (account.trashed) return;
+    setNotice(`正在用 ${middleTruncate(account.name, 42)} 打开商店…`);
     const checked = await runFullPreflight(account);
-    if (!checked) return;
+    if (!checked) {
+      setNotice("");
+      return;
+    }
     if (checked.privacy_failures.length > 0) {
+      setNotice("");
       setError("启动检查未通过，已停止打开商店。");
       return;
     }
-    await run(() => call<void>("launch_web_store", { name: account.name }));
+    const result = await run(() => call<void>("launch_web_store", { name: account.name }));
+    if (result === null) setNotice("");
   }
 
   async function runFullPreflight(account: Account): Promise<LaunchPlan | null> {
@@ -1073,7 +1086,8 @@ export default function App() {
         </div>
       ) : null}
 
-      {error && !dialog ? <div className="toast">{error}</div> : null}
+      {error && !dialog ? <div className="toast errorToast">{error}</div> : null}
+      {!error && notice && !dialog ? <div className="toast noticeToast">{notice}</div> : null}
       {dialog ? (
         <EditorDialog
           dialog={dialog}

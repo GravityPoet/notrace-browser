@@ -50,8 +50,13 @@ compute_hash() {
         -type f \( -name '*.json' -o -name '*.toml' \) 2>/dev/null \
         | sort \
         | while IFS= read -r f; do /usr/bin/shasum -a 256 "$f" | awk '{print $1}'; done
+      find cloak-picker/src -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.css' \) 2>/dev/null \
+        | sort \
+        | while IFS= read -r f; do /usr/bin/shasum -a 256 "$f" | awk '{print $1}'; done
       [ -f cloak-picker/src-tauri/tauri.conf.json ] && \
         /usr/bin/shasum -a 256 cloak-picker/src-tauri/tauri.conf.json | awk '{print $1}'
+      [ -f cloak-picker/package-lock.json ] && \
+        /usr/bin/shasum -a 256 cloak-picker/package-lock.json | awk '{print $1}'
     } | /usr/bin/shasum -a 256 | awk '{print $1}'
   )
 }
