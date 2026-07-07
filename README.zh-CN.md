@@ -37,6 +37,19 @@ graph TD
 
 ---
 
+## 🛡️ 隐私防关联与检测绕过 (Stealth Protection & Detection Bypassing)
+
+NoTrace Browser 旨在绕过 Cloudflare Turnstile、FingerprintJS (FPJS Pro)、CreepJS 等业内最严格的防机器人与指纹采集栅栏。它并非仅在 JS 层进行简单的覆盖，而是实施了深度的内核级防御：
+
+* **WebGL/GPU Metal 渲染器伪装**：基于账号 Seed 注入随机化的 Apple M1–M4 ANGLE Metal 渲染配置（Vendor 为 `Google Inc. (Apple)`），消除了会导致 CreepJS 判定为“类似无头浏览器 (like headless)”的渲染特征矛盾。
+* **WebRTC IP 泄露物理隔离**：利用 CloakBrowser 底层的 `--fingerprint-webrtc-ip` 参数，将 WebRTC 的 Local/Public candidate 候选地址强制绑定至当前代理的出口 IP。这彻底消除了内网子网 IP 和物理真实外网 IP 的泄漏风险。
+* **UA 与高熵客户端提示 (Client Hints) 一致性**：严格同步 User Agent 与 `navigator.userAgentData` 的高熵属性（包括 `fullVersionList`、`platformVersion` 和 `architecture`），防止因版本不一致而被风控系统判定为机器行为，并与 TLS/JA3/JA4 握手特征完美对齐。
+* **自动化痕迹深度擦除**：通过 `--disable-blink-features=AutomationControlled` 底层擦除 `navigator.webdriver` 足迹，使得 bot.sannysoft.com 的所有机器人检测项全部呈绿色通过。
+* **Web Worker 级时区物理同步**：不同于市面上仅修改网页主线程的时区插件，NoTrace 通过 `--fingerprint-timezone` 参数与 `TZ` 环境变量双管下，使**主线程与 Web Workers 线程**的时区完全一致，堵住了常见的时区不一致漏洞。
+* **语系 Locale 与 GeoIP 智能对齐**：根据代理出口 IP 的 GeoIP 位置，自动适配并生成匹配的 Primary Locale 语言和 `Accept-Language` 请求头，确保网络地理位置与请求语言完全一致。
+
+---
+
 ## 🌟 核心特性
 
 ### 1. 深度 C++ 级底层指纹防御

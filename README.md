@@ -37,6 +37,19 @@ graph TD
 
 ---
 
+## 🛡️ Stealth Protection & Detection Bypassing
+
+NoTrace Browser is engineered to bypass aggressive anti-bot gates like Cloudflare Turnstile, FingerprintJS (FPJS Pro), and CreepJS. Instead of simple surface-level JavaScript overrides, it implements deep defenses:
+
+* **WebGL/GPU Metal Renderer Spoofing**: Injects seed-based randomized ANGLE Metal renderer configurations (matching M1–M4 chips, vendor `Google Inc. (Apple)`). This avoids the unmasked renderer inconsistencies that trigger CreepJS's `like headless` penalties.
+* **WebRTC Leak Protection**: Leverages CloakBrowser's `--fingerprint-webrtc-ip` parameter to bind WebRTC local/public candidates directly to your proxy's exit IP. This completely disables local subnet and host IP leakage.
+* **UA & High-Entropy Client Hints Consistency**: Synchronizes User Agent strings with `navigator.userAgentData` (including `fullVersionList`, `platformVersion`, and `architecture`). This prevents version-consistency alerts and aligns with TLS/JA3 handshakes.
+* **Under-the-Hood Automation Erasure**: Launches with `--disable-blink-features=AutomationControlled` to drop the `navigator.webdriver` footprint, rendering sannysoft bot verification entirely green.
+* **Web Worker Timezone Synchronization**: Unlike extension-only spoofs, the `--fingerprint-timezone` flag and `TZ` environment variables enforce clock alignment in **both the main thread and Web Workers**, eliminating the primary timezone-mismatch trigger.
+* **Locale & Accept-Language Alignment**: Automatically configures the appropriate primary language and `Accept-Language` headers according to the proxy's GeoIP exit country to match geolocation constraints.
+
+---
+
 ## 🌟 Key Features
 
 ### 1. Hardened C++ Fingerprinting Defenses
