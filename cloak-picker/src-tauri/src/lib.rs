@@ -1,7 +1,8 @@
 use cloak_core::{
     build_launch_plan, create_account_with_group as core_create_account_with_group,
     delete_account as core_delete_account, launch_account as core_launch_account,
-    list_accounts as core_list_accounts, list_trashed_accounts as core_list_trashed_accounts,
+    launch_chrome_web_store as core_launch_chrome_web_store, list_accounts as core_list_accounts,
+    list_trashed_accounts as core_list_trashed_accounts,
     permanently_delete_account as core_permanently_delete_account,
     rename_account as core_rename_account, set_account_trashed as core_set_account_trashed,
     set_group as core_set_group, set_proxy as core_set_proxy, set_region as core_set_region,
@@ -91,6 +92,12 @@ fn launch_account(name: String) -> Result<(), String> {
     core_launch_account(&config()?, &name, &options).map_err(|err| err.to_string())
 }
 
+#[tauri::command]
+fn launch_web_store(name: String) -> Result<(), String> {
+    let options = LaunchOptions::from_env(false);
+    core_launch_chrome_web_store(&config()?, &name, &options).map_err(|err| err.to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -129,7 +136,8 @@ pub fn run() {
             toggle_locale,
             launch_dry_run,
             launch_preflight,
-            launch_account
+            launch_account,
+            launch_web_store
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cloak picker");

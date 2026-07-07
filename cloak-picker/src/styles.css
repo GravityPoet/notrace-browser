@@ -577,6 +577,13 @@ summary:focus-visible {
   backdrop-filter: saturate(180%) blur(20px);
 }
 
+.detailHeaderActions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
 .detailScroll {
   min-width: 0;
   min-height: 0;

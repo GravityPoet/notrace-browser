@@ -16,6 +16,7 @@ import {
   Plus,
   RefreshCw,
   ShieldCheck,
+  Store,
   Tag,
   Trash2,
   X,
@@ -595,6 +596,17 @@ export default function App() {
     await run(() => call<void>("launch_account", { name: account.name }));
   }
 
+  async function launchWebStore(account: Account) {
+    if (account.trashed) return;
+    const checked = await runFullPreflight(account);
+    if (!checked) return;
+    if (checked.privacy_failures.length > 0) {
+      setError("启动检查未通过，已停止打开商店。");
+      return;
+    }
+    await run(() => call<void>("launch_web_store", { name: account.name }));
+  }
+
   async function runFullPreflight(account: Account): Promise<LaunchPlan | null> {
     setPlanLoading(true);
     setError("");
@@ -886,10 +898,21 @@ export default function App() {
                     恢复
                   </button>
                 ) : (
-                  <button className="launchButton" disabled={busy || planLoading} onClick={() => void launchAccount(selected)}>
-                    <Play size={16} />
-                    启动
-                  </button>
+                  <div className="detailHeaderActions">
+                    <button
+                      className="secondaryButton"
+                      disabled={busy || planLoading}
+                      title="用当前账号打开 Chrome Web Store"
+                      onClick={() => void launchWebStore(selected)}
+                    >
+                      <Store size={16} />
+                      商店
+                    </button>
+                    <button className="launchButton" disabled={busy || planLoading} onClick={() => void launchAccount(selected)}>
+                      <Play size={16} />
+                      启动
+                    </button>
+                  </div>
                 )}
               </header>
 

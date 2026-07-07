@@ -21,6 +21,7 @@ use url::Url;
 use walkdir::WalkDir;
 
 const CHATGPT_URL: &str = "https://chatgpt.com/";
+const CHROME_WEB_STORE_URL: &str = "https://chromewebstore.google.com/";
 const RELAY_PLACEHOLDER: &str = "socks5://127.0.0.1:<relay-port>";
 const CLOAK_CHROME_MAJOR_FALLBACK: &str = "145";
 const CLOAK_MAC_UA_VERSION: &str = "10_15_7";
@@ -589,6 +590,15 @@ pub fn build_launch_plan(
     name: &str,
     options: &LaunchOptions,
 ) -> Result<LaunchPlan> {
+    build_launch_plan_for_url(config, name, options, CHATGPT_URL)
+}
+
+fn build_launch_plan_for_url(
+    config: &CloakConfig,
+    name: &str,
+    options: &LaunchOptions,
+    launch_url: &str,
+) -> Result<LaunchPlan> {
     validate_account_name(name)?;
     if !config.extension_source.is_dir() {
         return Err(CloakError::ExtensionMissing(
@@ -730,7 +740,7 @@ pub fn build_launch_plan(
         argv.push(format!("--proxy-server={proxy_arg}"));
     }
     argv.push("--new-window".to_string());
-    argv.push(CHATGPT_URL.to_string());
+    argv.push(launch_url.to_string());
 
     Ok(LaunchPlan {
         account: name.to_string(),
@@ -758,6 +768,19 @@ pub fn build_launch_plan(
 
 pub fn launch_account(config: &CloakConfig, name: &str, options: &LaunchOptions) -> Result<()> {
     let plan = build_launch_plan(config, name, options)?;
+    launch_plan(config, plan, options)
+}
+
+pub fn launch_chrome_web_store(
+    config: &CloakConfig,
+    name: &str,
+    options: &LaunchOptions,
+) -> Result<()> {
+    let plan = build_launch_plan_for_url(config, name, options, CHROME_WEB_STORE_URL)?;
+    launch_plan(config, plan, options)
+}
+
+fn launch_plan(config: &CloakConfig, plan: LaunchPlan, options: &LaunchOptions) -> Result<()> {
     if !plan.privacy_failures.is_empty() && !options.allow_privacy_fail {
         return Err(CloakError::PrivacyGate(plan.privacy_failures.join("\n")));
     }
@@ -2642,6 +2665,46 @@ mod tests {
             .iter()
             .any(|arg| arg.starts_with("--accept-lang=")));
         assert!(plan.privacy_failures.is_empty());
+    }
+
+    #[test]
+    fn launch_plan_for_web_store_uses_store_url_without_changing_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = CloakConfig {
+            repo_root: dir.path().to_path_buf(),
+            account_base: dir.path().join("accounts"),
+            extension_source: dir.path().join("extension"),
+            cloakbrowser_root: dir.path().join("browser"),
+        };
+        fs::create_dir_all(&config.extension_source).unwrap();
+        let browser = config
+            .cloakbrowser_root
+            .join(current_browser_relative_path());
+        fs::create_dir_all(browser.parent().unwrap()).unwrap();
+        fs::write(&browser, "").unwrap();
+        fs::create_dir_all(config.profile_dir("work")).unwrap();
+
+        let options = LaunchOptions {
+            dry_run: true,
+            skip_geo: true,
+            ..LaunchOptions::default()
+        };
+        let chatgpt_plan = build_launch_plan(&config, "work", &options).unwrap();
+        let store_plan =
+            build_launch_plan_for_url(&config, "work", &options, CHROME_WEB_STORE_URL).unwrap();
+
+        assert_eq!(
+            chatgpt_plan.argv.last().map(String::as_str),
+            Some(CHATGPT_URL)
+        );
+        assert_eq!(
+            store_plan.argv.last().map(String::as_str),
+            Some(CHROME_WEB_STORE_URL)
+        );
+        assert_eq!(
+            chatgpt_plan.profile_path, store_plan.profile_path,
+            "store launch must keep the selected account profile"
+        );
     }
 
     #[test]
