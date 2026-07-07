@@ -147,7 +147,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [planLoading, setPlanLoading] = useState(false);
   const [error, setError] = useState<string>("");
-  const [notice, setNotice] = useState<string>("");
+  const [webStoreOpeningName, setWebStoreOpeningName] = useState<string>("");
   const [dialogError, setDialogError] = useState<string>("");
   const [plan, setPlan] = useState<LaunchPlan | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
@@ -252,10 +252,10 @@ export default function App() {
   }, [error]);
 
   useEffect(() => {
-    if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(""), 5000);
+    if (!webStoreOpeningName) return;
+    const timer = window.setTimeout(() => setWebStoreOpeningName(""), 8000);
     return () => window.clearTimeout(timer);
-  }, [notice]);
+  }, [webStoreOpeningName]);
 
   useEffect(() => {
     if (!groupContextMenu && !accountContextMenu) return;
@@ -605,19 +605,19 @@ export default function App() {
 
   async function launchWebStore(account: Account) {
     if (account.trashed) return;
-    setNotice(`正在用 ${middleTruncate(account.name, 42)} 打开商店…`);
+    setWebStoreOpeningName(account.name);
     const checked = await runFullPreflight(account);
     if (!checked) {
-      setNotice("");
+      setWebStoreOpeningName("");
       return;
     }
     if (checked.privacy_failures.length > 0) {
-      setNotice("");
+      setWebStoreOpeningName("");
       setError("启动检查未通过，已停止打开商店。");
       return;
     }
     const result = await run(() => call<void>("launch_web_store", { name: account.name }));
-    if (result === null) setNotice("");
+    if (result === null) setWebStoreOpeningName("");
   }
 
   async function runFullPreflight(account: Account): Promise<LaunchPlan | null> {
@@ -729,6 +729,9 @@ export default function App() {
   const emptyAction = accountView === "active" ? "新建账号" : "查看活跃";
   const proxyLabel = selected ? middleTruncate(selected.proxy_display, 48) : "";
   const statusLabel = selected?.trashed ? "已移入回收站" : "活跃";
+  const webStoreOpeningLabel = webStoreOpeningName
+    ? `正在用 ${middleTruncate(webStoreOpeningName, 42)} 打开商店…`
+    : "";
   const workspaceStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties & {
     "--sidebar-width": string;
   };
@@ -911,20 +914,27 @@ export default function App() {
                     恢复
                   </button>
                 ) : (
-                  <div className="detailHeaderActions">
-                    <button
-                      className="secondaryButton"
-                      disabled={busy || planLoading}
-                      title="用当前账号打开 Chrome Web Store"
-                      onClick={() => void launchWebStore(selected)}
-                    >
-                      <Store size={16} />
-                      商店
-                    </button>
-                    <button className="launchButton" disabled={busy || planLoading} onClick={() => void launchAccount(selected)}>
-                      <Play size={16} />
-                      启动
-                    </button>
+                  <div className="detailHeaderControl">
+                    <div className="detailHeaderActions">
+                      <button
+                        className="secondaryButton"
+                        disabled={busy || planLoading}
+                        title="用当前账号打开 Chrome Web Store"
+                        onClick={() => void launchWebStore(selected)}
+                      >
+                        <Store size={16} />
+                        {webStoreOpeningName === selected.name ? "打开中" : "商店"}
+                      </button>
+                      <button className="launchButton" disabled={busy || planLoading} onClick={() => void launchAccount(selected)}>
+                        <Play size={16} />
+                        启动
+                      </button>
+                    </div>
+                    {webStoreOpeningLabel ? (
+                      <span className="detailHeaderNotice" title={webStoreOpeningLabel}>
+                        {webStoreOpeningLabel}
+                      </span>
+                    ) : null}
                   </div>
                 )}
               </header>
@@ -1087,7 +1097,6 @@ export default function App() {
       ) : null}
 
       {error && !dialog ? <div className="toast errorToast">{error}</div> : null}
-      {!error && notice && !dialog ? <div className="toast noticeToast">{notice}</div> : null}
       {dialog ? (
         <EditorDialog
           dialog={dialog}

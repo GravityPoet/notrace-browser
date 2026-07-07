@@ -577,11 +577,33 @@ summary:focus-visible {
   backdrop-filter: saturate(180%) blur(20px);
 }
 
+.detailHeaderControl {
+  display: grid;
+  flex: 0 0 auto;
+  justify-items: end;
+  gap: 5px;
+  max-width: min(380px, 48%);
+}
+
 .detailHeaderActions {
   display: inline-flex;
-  flex: 0 0 auto;
   align-items: center;
   gap: 8px;
+}
+
+.detailHeaderNotice {
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(0, 113, 227, 0.22);
+  border-radius: 999px;
+  background: #f3f8ff;
+  color: var(--accent);
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .detailScroll {
@@ -918,12 +940,6 @@ button:disabled {
   border: 1px solid #f2b8b5;
   background: #fff4f2;
   color: #b42318;
-}
-
-.noticeToast {
-  border: 1px solid rgba(0, 113, 227, 0.22);
-  background: #f3f8ff;
-  color: var(--accent);
 }
 
 .contextMenu {
