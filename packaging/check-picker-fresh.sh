@@ -10,8 +10,8 @@ set -euo pipefail
 # the CloakBrowser *binary* but never the Picker, so a code edit can silently ship an
 # old launch plan. This script closes that gap.
 #
-# Mechanism: hash the Rust source the Picker embeds (content-only, path/mtime
-# independent), stamp it at install time, and compare on demand.
+# Mechanism: hash the Rust source/config the Picker embeds (content-only,
+# path/mtime independent), stamp it at install time, and compare on demand.
 #
 # Modes:
 #   (default)   check: app missing or hash != stamp => stale. Stale handling:
@@ -46,6 +46,12 @@ compute_hash() {
       for extra in crates/cloak-core/Cargo.toml cloak-picker/src-tauri/Cargo.toml Cargo.lock; do
         [ -f "$extra" ] && /usr/bin/shasum -a 256 "$extra" | awk '{print $1}'
       done
+      find cloak-picker/src-tauri/capabilities cloak-picker/src-tauri/permissions \
+        -type f \( -name '*.json' -o -name '*.toml' \) 2>/dev/null \
+        | sort \
+        | while IFS= read -r f; do /usr/bin/shasum -a 256 "$f" | awk '{print $1}'; done
+      [ -f cloak-picker/src-tauri/tauri.conf.json ] && \
+        /usr/bin/shasum -a 256 cloak-picker/src-tauri/tauri.conf.json | awk '{print $1}'
     } | /usr/bin/shasum -a 256 | awk '{print $1}'
   )
 }

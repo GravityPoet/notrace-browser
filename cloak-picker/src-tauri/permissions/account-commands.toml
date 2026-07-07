@@ -16,4 +16,5 @@ commands.allow = [
   "launch_dry_run",
   "launch_preflight",
   "launch_account",
+  "launch_web_store",
 ]
