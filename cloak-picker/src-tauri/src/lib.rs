@@ -1,5 +1,6 @@
 use cloak_core::{
-    build_launch_plan, create_account_with_group as core_create_account_with_group,
+    account_is_running as core_account_is_running, build_launch_plan,
+    create_account_with_group as core_create_account_with_group,
     delete_account as core_delete_account, launch_account as core_launch_account,
     launch_chrome_web_store as core_launch_chrome_web_store, list_accounts as core_list_accounts,
     list_trashed_accounts as core_list_trashed_accounts,
@@ -99,6 +100,11 @@ fn launch_web_store(name: String) -> Result<LaunchResult, String> {
     core_launch_chrome_web_store(&config()?, &name, &options).map_err(|err| err.to_string())
 }
 
+#[tauri::command]
+fn account_is_running(name: String) -> Result<bool, String> {
+    core_account_is_running(&config()?, &name).map_err(|err| err.to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -138,7 +144,8 @@ pub fn run() {
             launch_dry_run,
             launch_preflight,
             launch_account,
-            launch_web_store
+            launch_web_store,
+            account_is_running
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cloak picker");

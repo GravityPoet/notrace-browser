@@ -269,6 +269,25 @@ export default function App() {
   }, [error]);
 
   useEffect(() => {
+    if (webStoreStatus?.phase !== "opened") return;
+    let cancelled = false;
+    const checkRunning = () => {
+      call<boolean>("account_is_running", { name: webStoreStatus.accountName })
+        .then((running) => {
+          if (!cancelled && !running) setWebStoreStatus(null);
+        })
+        .catch(() => {
+          if (!cancelled) setWebStoreStatus(null);
+        });
+    };
+    const timer = window.setInterval(checkRunning, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [webStoreStatus]);
+
+  useEffect(() => {
     if (!groupContextMenu && !accountContextMenu) return;
     const close = () => {
       setGroupContextMenu(null);

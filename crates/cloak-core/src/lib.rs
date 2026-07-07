@@ -595,6 +595,15 @@ pub fn toggle_locale(config: &CloakConfig, name: &str) -> Result<Account> {
     read_account(config, name)
 }
 
+pub fn account_is_running(config: &CloakConfig, name: &str) -> Result<bool> {
+    validate_account_name(name)?;
+    let profile = config.profile_dir(name);
+    if !profile.exists() {
+        return Err(CloakError::AccountMissing(name.to_string()));
+    }
+    account_profile_is_running(&profile)
+}
+
 pub fn build_launch_plan(
     config: &CloakConfig,
     name: &str,
