@@ -175,3 +175,10 @@ Validate CLI arguments, contract hooks, and headless privacy engines:
 * **Google Translation Failure**: CloakBrowser is an *ungoogled-chromium* compilation; Google domains are decoupled (`chrome.9oo91e.qjz9zk`) at the network layer. Built-in translation will fail.
   * *Workaround*: Sideload your preferred translation plugin as an **unpacked extension** in your profile workspace.
 * **PWA Flag Limitations**: The daily PWA launcher (launched directly from macOS Launchpad/Dock) cannot receive runtime flags like `--proxy-server` or `--fingerprint-webrtc-ip`. Use the **Multi-Account Picker** when strict proxy isolation and advanced seed-level masking are required.
+
+---
+
+## 🤝 Credits & Acknowledgements
+
+NoTrace Browser is built on top of the powerful C++ patched anti-fingerprinting Chromium core from **CloakBrowser**. We acknowledge and pay tribute to their brilliant engine implementation. NoTrace Browser serves as an orchestration, native macOS experience enhancer, and automation tooling wrapper on top of their core binary distributions.
+

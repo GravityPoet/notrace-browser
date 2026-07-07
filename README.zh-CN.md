@@ -175,3 +175,10 @@ node selftest/run-live-challenge-audit.mjs --headed --site browserscan --site fi
 * **内置网页翻译不可用**：CloakBrowser 采用了 *ungoogled-chromium* 编译版，在网络底层剥离了 Google 域名（重定向至 `chrome.9oo91e.qjz9zk`）和 Chrome 应用商店接口。因此，Chromium 右键的“翻译此页”会报错失效。
   * *避坑方案*：将您喜欢的翻译插件打包为 **已解压的扩展程序** (unpacked) 并在您的账号 Profile 页面手动加载即可。
 * **原生 PWA 的启动参数限制**：如果您从 Launchpad 或 Dock 直接点击创建的单 PWA 应用，macOS 的快捷方式机制不支持在启动时追加命令行 flag（例如 `--proxy-server` 或 `--fingerprint-webrtc-ip` 无法直接传入）。如需要严格的代理隔离与高级 Seed 指纹防关联，请务必使用 **多账号选择器 (Cloak Picker)** 启动独立实例。
+
+---
+
+## 🤝 致谢与致敬 (Credits & Acknowledgements)
+
+NoTrace Browser 的底层防指纹 Chromium 浏览器内核及其 C++ 补丁包来自并致敬 **CloakBrowser** 项目。我们非常感谢并敬佩 CloakBrowser 团队在该领域做出的出色工作。NoTrace Browser 主要是在其强大的防指纹核心基础之上，进行了 macOS PWA、系统级 TCC 权限修护、本地代理自动中转与多账号命令行工具等生态的构建和封装。
+
