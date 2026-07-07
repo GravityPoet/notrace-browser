@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-NoTrace Browser is a high-performance, open-source, anti-fingerprinting browser client optimized for macOS. It integrates **CloakBrowser's C++ patched Chromium core** with macOS native integration (PWAs, System TCC fixes, and account pickers) to deliver a seamless, anti-association multi-identity management environment for any web service (AI platforms, Web3, Social Media, eCommerce, etc.).
+NoTrace Browser is a generic, high-performance, open-source, anti-fingerprinting browser client. It integrates **CloakBrowser's C++ patched Chromium core** with native desktop integrations (PWAs, OS sandboxing, and Tauri-based account pickers) to deliver a seamless, anti-association multi-identity management environment for any web service (AI platforms, Web3, Social Media, eCommerce, etc.).
 
 ---
 
@@ -12,7 +12,7 @@ Modern web applications, AI platforms, and online services employ aggressive bot
 
 When you use ordinary browser profiles (e.g., Chrome Profiles) or native webviews (Tauri/WKWebView) to manage multiple accounts, they **share the same device fingerprint, process host, and timezone metadata**. This makes your accounts linkable, triggering frequent CAPTCHAs, restriction screens, or permanent bans.
 
-NoTrace Browser solves this by giving each account a **completely unique, isolated digital fingerprint and network exit** inside a native macOS app experience.
+NoTrace Browser solves this by giving each account a **completely unique, isolated digital fingerprint and network exit** inside a native desktop app experience.
 
 ```mermaid
 graph TD
@@ -27,12 +27,12 @@ graph TD
 ### ⚡ NoTrace Browser vs. Competitors
 
 | Feature | NoTrace Browser | Ordinary Chrome Profiles | Paid Antidetect Browsers |
-| :--- | :---: | :---: | :---: |
+| :--- | :--- | :--- | :--- |
 | **Data & Cookie Isolation** | **Yes** (Isolated folder paths) | **Yes** (Cookie Isolation) | **Yes** (Profile Sandbox) |
 | **C++ Fingerprint Spoofer** | **Yes** (Randomized WebGL/Canvas/Audio) | **No** (Leaks host fingerprint) | **Yes** (But heavily subscription-based) |
 | **Web Worker Timezone** | **Yes** (Forced system-level TZ sync) | **No** (Leaks host OS timezone) | **Varies** (Often bypasses Workers) |
 | **SOCKS5 Proxy w/ Auth** | **Yes** (Built-in proxy relay launcher) | **No** (Needs third-party plugins) | **Yes** |
-| **macOS Native Integration** | **Yes** (Full-bleed PWA shims + TCC patches) | **No** (Standard browser windows) | **No** (Bulky Electron interfaces) |
+| **Native OS Integration** | **Yes** (PWA shims + TCC/sandbox patches) | **No** (Standard browser windows) | **No** (Bulky Electron interfaces) |
 | **Cost** | **100% Free & Open-source** | **Free** (But unsafe for multi-accs) | **Paid** ($50–$300+/month) |
 
 ---
@@ -97,9 +97,9 @@ Every account workspace in NoTrace Browser can be fully automated using the comp
 
 ---
 
-## 🍎 Native macOS UX & TCC Permissions
+## 🍎 macOS Native UX & TCC Permissions (macOS Specific)
 
-NoTrace Browser is built specifically to feel like a premium macOS application:
+NoTrace Browser is built specifically to feel like a premium application on macOS:
 
 - **Durable Green Icon**: Chromium shims overwrite `app.icns` on updates, stripping custom PWA icons. NoTrace applies a Finder-level custom icon (`kHasCustomIcon` + bundle-root `Icon\r` resource) via `NSWorkspace setIcon:forFile:`. This custom icon is preferred by LaunchServices and **survives browser engine rebuilds**.
 - **TCC Permission Patching**: Chromium compiled ad-hoc lacks microphone, camera, and Bluetooth usage descriptions. macOS TCC terminates the process instantly when a page requests voice input. NoTrace provides `patch-chromium.sh` which injects `NSMicrophoneUsageDescription`, `NSCameraUsageDescription`, and `NSBluetoothAlwaysUsageDescription` into `Info.plist` and re-signs the application, resolving voice search and passkey authorization crashes.
