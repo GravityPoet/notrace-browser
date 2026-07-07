@@ -243,6 +243,16 @@ pub struct LaunchPlan {
     pub privacy_failures: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaunchResult {
+    pub account: String,
+    pub profile_path: PathBuf,
+    pub browser_binary: PathBuf,
+    pub url: String,
+    pub pid: u32,
+    pub launched_at: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LaunchOptions {
     pub dry_run: bool,
@@ -766,7 +776,11 @@ fn build_launch_plan_for_url(
     })
 }
 
-pub fn launch_account(config: &CloakConfig, name: &str, options: &LaunchOptions) -> Result<()> {
+pub fn launch_account(
+    config: &CloakConfig,
+    name: &str,
+    options: &LaunchOptions,
+) -> Result<LaunchResult> {
     let plan = build_launch_plan(config, name, options)?;
     launch_plan(config, plan, options)
 }
@@ -775,12 +789,16 @@ pub fn launch_chrome_web_store(
     config: &CloakConfig,
     name: &str,
     options: &LaunchOptions,
-) -> Result<()> {
+) -> Result<LaunchResult> {
     let plan = build_launch_plan_for_url(config, name, options, CHROME_WEB_STORE_URL)?;
     launch_plan(config, plan, options)
 }
 
-fn launch_plan(config: &CloakConfig, plan: LaunchPlan, options: &LaunchOptions) -> Result<()> {
+fn launch_plan(
+    config: &CloakConfig,
+    plan: LaunchPlan,
+    options: &LaunchOptions,
+) -> Result<LaunchResult> {
     if !plan.privacy_failures.is_empty() && !options.allow_privacy_fail {
         return Err(CloakError::PrivacyGate(plan.privacy_failures.join("\n")));
     }
@@ -807,6 +825,7 @@ fn launch_plan(config: &CloakConfig, plan: LaunchPlan, options: &LaunchOptions) 
         }
     }
 
+    let url = argv.last().cloned().unwrap_or_default();
     if options.preflight == PreflightMode::Strict {
         run_selftest(config, &plan, &argv, true)?;
     }
@@ -819,13 +838,21 @@ fn launch_plan(config: &CloakConfig, plan: LaunchPlan, options: &LaunchOptions) 
     command.stdin(Stdio::null());
     command.stdout(Stdio::null());
     command.stderr(Stdio::null());
-    command.spawn()?;
+    let child = command.spawn()?;
+    let result = LaunchResult {
+        account: plan.account.clone(),
+        profile_path: plan.profile_path.clone(),
+        browser_binary: plan.browser_binary.clone(),
+        url,
+        pid: child.id(),
+        launched_at: current_created_at(),
+    };
 
     if options.preflight == PreflightMode::Async {
         let _ = run_selftest(config, &plan, &argv, false);
     }
 
-    Ok(())
+    Ok(result)
 }
 
 pub fn maybe_run_relay_supervisor() -> Result<bool> {

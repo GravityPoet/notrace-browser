@@ -638,15 +638,27 @@ h1 {
   white-space: nowrap;
 }
 
+.webStoreTarget,
 .webStoreStatus {
   min-width: 0;
   overflow: hidden;
-  color: var(--accent);
   font-size: 11px;
   font-weight: 650;
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.webStoreTarget {
+  color: #6b7280;
+}
+
+.webStoreStatus.current {
+  color: var(--accent);
+}
+
+.webStoreStatus.other {
+  color: #a15c00;
 }
 
 h2 {

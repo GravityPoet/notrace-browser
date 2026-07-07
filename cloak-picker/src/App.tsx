@@ -74,6 +74,15 @@ type LaunchPlan = {
   privacy_failures: string[];
 };
 
+type LaunchResult = {
+  account: string;
+  profile_path: string;
+  browser_binary: string;
+  url: string;
+  pid: number;
+  launched_at: number;
+};
+
 type DialogState =
   | { kind: "create"; value: string; group: string }
   | { kind: "rename"; account: Account; value: string }
@@ -149,7 +158,12 @@ export default function App() {
   const [error, setError] = useState<string>("");
   const [webStoreStatus, setWebStoreStatus] = useState<{
     accountName: string;
-    phase: "opening" | "opened";
+    phase: "opening";
+    startedAt: number;
+  } | {
+    accountName: string;
+    phase: "opened";
+    result: LaunchResult;
   } | null>(null);
   const [dialogError, setDialogError] = useState<string>("");
   const [plan, setPlan] = useState<LaunchPlan | null>(null);
@@ -597,12 +611,12 @@ export default function App() {
       setError("启动检查未通过，已停止启动。");
       return;
     }
-    await run(() => call<void>("launch_account", { name: account.name }));
+    await run(() => call<LaunchResult>("launch_account", { name: account.name }));
   }
 
   async function launchWebStore(account: Account) {
     if (account.trashed) return;
-    setWebStoreStatus({ accountName: account.name, phase: "opening" });
+    setWebStoreStatus({ accountName: account.name, phase: "opening", startedAt: Date.now() });
     const checked = await runFullPreflight(account);
     if (!checked) {
       setWebStoreStatus(null);
@@ -613,8 +627,8 @@ export default function App() {
       setError("启动检查未通过，已停止打开商店。");
       return;
     }
-    const result = await run(() => call<void>("launch_web_store", { name: account.name }));
-    setWebStoreStatus(result === null ? null : { accountName: account.name, phase: "opened" });
+    const result = await run(() => call<LaunchResult>("launch_web_store", { name: account.name }));
+    setWebStoreStatus(result === null ? null : { accountName: result.account, phase: "opened", result });
   }
 
   async function runFullPreflight(account: Account): Promise<LaunchPlan | null> {
@@ -727,12 +741,11 @@ export default function App() {
   const proxyLabel = selected ? middleTruncate(selected.proxy_display, 48) : "";
   const statusLabel = selected?.trashed ? "已移入回收站" : "活跃";
   const selectedStoreAccount = selected ? middleTruncate(selected.name, 42) : "";
-  const webStoreStatusLabel = selected
-    ? webStoreStatus?.accountName === selected.name
-      ? webStoreStatus.phase === "opening"
-        ? `正在用 ${selectedStoreAccount} 打开商店…`
-        : `最近打开商店：${selectedStoreAccount}`
-      : `商店账号：${selectedStoreAccount}`
+  const webStoreTargetLabel = selected ? `商店目标：${selectedStoreAccount}` : "";
+  const webStoreStatusLabel = webStoreStatus
+    ? webStoreStatus.phase === "opening"
+      ? `正在打开商店窗口：${middleTruncate(webStoreStatus.accountName, 34)}`
+      : `已打开商店窗口：${middleTruncate(webStoreStatus.accountName, 34)} · PID ${webStoreStatus.result.pid} · ${formatLaunchClock(webStoreStatus.result.launched_at)}`
     : "";
   const workspaceStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties & {
     "--sidebar-width": string;
@@ -909,8 +922,20 @@ export default function App() {
                 <div className="titleBlock">
                   <span className="eyebrow">隔离身份</span>
                   <h1 title={selected.name}>{middleTruncate(selected.name, 44)}</h1>
+                  {webStoreTargetLabel ? (
+                    <span className="webStoreTarget" title={`当前点击商店将使用：${selected.name}`}>
+                      {webStoreTargetLabel}
+                    </span>
+                  ) : null}
                   {webStoreStatusLabel ? (
-                    <span className="webStoreStatus" title={webStoreStatusLabel}>
+                    <span
+                      className={`webStoreStatus ${webStoreStatus?.accountName === selected.name ? "current" : "other"}`}
+                      title={
+                        webStoreStatus?.phase === "opened"
+                          ? `${webStoreStatusLabel}｜profile=${webStoreStatus.result.profile_path}`
+                          : webStoreStatusLabel
+                      }
+                    >
                       {webStoreStatusLabel}
                     </span>
                   ) : null}
@@ -1787,6 +1812,15 @@ function formatCreatedAt(createdAtMicros: number) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(Math.floor(createdAtMicros / 1000)));
+}
+
+function formatLaunchClock(launchedAtMicros: number) {
+  if (!Number.isFinite(launchedAtMicros) || launchedAtMicros <= 0) return "未知时间";
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(Math.floor(launchedAtMicros / 1000)));
 }
 
 function formatCreatedDate(createdAtMicros: number) {

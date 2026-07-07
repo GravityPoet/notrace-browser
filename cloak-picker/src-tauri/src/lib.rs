@@ -7,6 +7,7 @@ use cloak_core::{
     rename_account as core_rename_account, set_account_trashed as core_set_account_trashed,
     set_group as core_set_group, set_proxy as core_set_proxy, set_region as core_set_region,
     toggle_locale as core_toggle_locale, Account, CloakConfig, LaunchOptions, LaunchPlan,
+    LaunchResult,
 };
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -87,13 +88,13 @@ fn launch_preflight(name: String) -> Result<LaunchPlan, String> {
 }
 
 #[tauri::command]
-fn launch_account(name: String) -> Result<(), String> {
+fn launch_account(name: String) -> Result<LaunchResult, String> {
     let options = LaunchOptions::from_env(false);
     core_launch_account(&config()?, &name, &options).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-fn launch_web_store(name: String) -> Result<(), String> {
+fn launch_web_store(name: String) -> Result<LaunchResult, String> {
     let options = LaunchOptions::from_env(false);
     core_launch_chrome_web_store(&config()?, &name, &options).map_err(|err| err.to_string())
 }
