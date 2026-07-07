@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-NoTrace Browser is a generic, high-performance, open-source, anti-fingerprinting browser client. It integrates **CloakBrowser's C++ patched Chromium core** with native desktop integrations (PWAs, OS sandboxing, and Tauri-based account pickers) to deliver a seamless, anti-association multi-identity management environment for any web service (AI platforms, Web3, Social Media, eCommerce, etc.).
+NoTrace Browser is a high-performance, open-source, anti-fingerprinting browser client. It integrates **CloakBrowser's C++ patched Chromium core** with native desktop integrations (PWAs, OS sandboxing, and Tauri-based account pickers) to deliver a seamless, anti-association multi-identity management environment for any web service (AI platforms, Web3, Social Media, eCommerce, etc.).
 
 ---
 
