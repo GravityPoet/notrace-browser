@@ -180,5 +180,5 @@ node selftest/run-live-challenge-audit.mjs --headed --site browserscan --site fi
 
 ## 🤝 致谢与致敬 (Credits & Acknowledgements)
 
-NoTrace Browser 的底层防指纹 Chromium 浏览器内核及其 C++ 补丁包来自并致敬 **CloakBrowser** 项目。我们非常感谢并敬佩 CloakBrowser 团队在该领域做出的出色工作。NoTrace Browser 主要是在其强大的防指纹核心基础之上，进行了 macOS PWA、系统级 TCC 权限修护、本地代理自动中转与多账号命令行工具等生态的构建和封装。
+NoTrace Browser 的底层防指纹 Chromium 浏览器内核及其 C++ 补丁包来自并致敬 **CloakBrowser** 项目。我们非常感谢并敬佩 CloakBrowser 团队在该领域做出的出色工作。NoTrace Browser 主要是在其强大的防指纹核心基础之上，进行了 macOS PWA、系统级 TCC 权限修护、本地代理自动中转与多账号命令行工具等生态的更强的升级。
 
