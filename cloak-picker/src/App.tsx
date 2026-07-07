@@ -147,7 +147,10 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [planLoading, setPlanLoading] = useState(false);
   const [error, setError] = useState<string>("");
-  const [webStoreOpeningName, setWebStoreOpeningName] = useState<string>("");
+  const [webStoreStatus, setWebStoreStatus] = useState<{
+    accountName: string;
+    phase: "opening" | "opened";
+  } | null>(null);
   const [dialogError, setDialogError] = useState<string>("");
   const [plan, setPlan] = useState<LaunchPlan | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
@@ -250,12 +253,6 @@ export default function App() {
     const timer = window.setTimeout(() => setError(""), 5000);
     return () => window.clearTimeout(timer);
   }, [error]);
-
-  useEffect(() => {
-    if (!webStoreOpeningName) return;
-    const timer = window.setTimeout(() => setWebStoreOpeningName(""), 8000);
-    return () => window.clearTimeout(timer);
-  }, [webStoreOpeningName]);
 
   useEffect(() => {
     if (!groupContextMenu && !accountContextMenu) return;
@@ -605,19 +602,19 @@ export default function App() {
 
   async function launchWebStore(account: Account) {
     if (account.trashed) return;
-    setWebStoreOpeningName(account.name);
+    setWebStoreStatus({ accountName: account.name, phase: "opening" });
     const checked = await runFullPreflight(account);
     if (!checked) {
-      setWebStoreOpeningName("");
+      setWebStoreStatus(null);
       return;
     }
     if (checked.privacy_failures.length > 0) {
-      setWebStoreOpeningName("");
+      setWebStoreStatus(null);
       setError("启动检查未通过，已停止打开商店。");
       return;
     }
     const result = await run(() => call<void>("launch_web_store", { name: account.name }));
-    if (result === null) setWebStoreOpeningName("");
+    setWebStoreStatus(result === null ? null : { accountName: account.name, phase: "opened" });
   }
 
   async function runFullPreflight(account: Account): Promise<LaunchPlan | null> {
@@ -729,8 +726,10 @@ export default function App() {
   const emptyAction = accountView === "active" ? "新建账号" : "查看活跃";
   const proxyLabel = selected ? middleTruncate(selected.proxy_display, 48) : "";
   const statusLabel = selected?.trashed ? "已移入回收站" : "活跃";
-  const webStoreOpeningLabel = webStoreOpeningName
-    ? `正在用 ${middleTruncate(webStoreOpeningName, 42)} 打开商店…`
+  const webStoreStatusLabel = webStoreStatus
+    ? webStoreStatus.phase === "opening"
+      ? `正在用 ${middleTruncate(webStoreStatus.accountName, 42)} 打开商店…`
+      : `最近打开商店：${middleTruncate(webStoreStatus.accountName, 42)}`
     : "";
   const workspaceStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties & {
     "--sidebar-width": string;
@@ -907,6 +906,11 @@ export default function App() {
                 <div className="titleBlock">
                   <span className="eyebrow">隔离身份</span>
                   <h1 title={selected.name}>{middleTruncate(selected.name, 44)}</h1>
+                  {webStoreStatusLabel ? (
+                    <span className="webStoreStatus" title={webStoreStatusLabel}>
+                      {webStoreStatusLabel}
+                    </span>
+                  ) : null}
                 </div>
                 {selected.trashed ? (
                   <button className="launchButton" disabled={busy} onClick={() => void restoreAccount(selected)}>
@@ -923,18 +927,13 @@ export default function App() {
                         onClick={() => void launchWebStore(selected)}
                       >
                         <Store size={16} />
-                        {webStoreOpeningName === selected.name ? "打开中" : "商店"}
+                        {webStoreStatus?.phase === "opening" && webStoreStatus.accountName === selected.name ? "打开中" : "商店"}
                       </button>
                       <button className="launchButton" disabled={busy || planLoading} onClick={() => void launchAccount(selected)}>
                         <Play size={16} />
                         启动
                       </button>
                     </div>
-                    {webStoreOpeningLabel ? (
-                      <span className="detailHeaderNotice" title={webStoreOpeningLabel}>
-                        {webStoreOpeningLabel}
-                      </span>
-                    ) : null}
                   </div>
                 )}
               </header>
