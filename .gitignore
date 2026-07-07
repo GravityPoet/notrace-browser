@@ -1,0 +1,32 @@
+.DS_Store
+.build/
+.swiftpm/
+target/
+node_modules/
+cloak-picker/node_modules/
+cloak-picker/src-tauri/target/
+dist/
+*.app/
+*.dmg
+*.log
+*.tmp
+.opencode/
+.playwright-mcp/
+task.md
+walkthrough.md
+
+# Runtime-generated extension files (written by prepare_companion_extension)
+extension/cloak-companion/browser-identity-main.js
+extension/cloak-companion/browser-identity-worker.js
+extension/cloak-companion/rules/
+
+# Test artifacts
+selftest/live-results/
+
+.env
+.env.*
+*cookie*
+*cookies*
+*session*
+*token*
+*secret*
