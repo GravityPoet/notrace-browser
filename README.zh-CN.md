@@ -37,39 +37,72 @@ graph TD
 
 ---
 
-## 🛡️ 隐私防关联与检测绕过 (Stealth Protection & Detection Bypassing)
+## 🛡️ 隐私防关联与检测绕过机制
 
-NoTrace Browser 旨在绕过 Cloudflare Turnstile、FingerprintJS (FPJS Pro)、CreepJS 等业内最严格的防机器人与指纹采集栅栏。它并非仅在 JS 层进行简单的覆盖，而是实施了深度的内核级防御：
+NoTrace Browser 并非仅在 JS 层进行简单的覆盖，而是实施了深度的内核级 C++ 修改与动态伴侣插件相结合的防御体系，以绕过 Cloudflare Turnstile、FingerprintJS (FPJS Pro)、CreepJS 等业内最严格的防机器人与指纹采集栅栏：
 
-* **WebGL/GPU Metal 渲染器伪装**：基于账号 Seed 注入随机化的 Apple M1–M4 ANGLE Metal 渲染配置（Vendor 为 `Google Inc. (Apple)`），消除了会导致 CreepJS 判定为“类似无头浏览器 (like headless)”的渲染特征矛盾。
-* **WebRTC IP 泄露物理隔离**：利用 CloakBrowser 底层的 `--fingerprint-webrtc-ip` 参数，将 WebRTC 的 Local/Public candidate 候选地址强制绑定至当前代理的出口 IP。这彻底消除了内网子网 IP 和物理真实外网 IP 的泄漏风险。
-* **UA 与高熵客户端提示 (Client Hints) 一致性**：严格同步 User Agent 与 `navigator.userAgentData` 的高熵属性（包括 `fullVersionList`、`platformVersion` 和 `architecture`），防止因版本不一致而被风控系统判定为机器行为，并与 TLS/JA3/JA4 握手特征完美对齐。
-* **自动化痕迹深度擦除**：通过 `--disable-blink-features=AutomationControlled` 底层擦除 `navigator.webdriver` 足迹，使得 bot.sannysoft.com 的所有机器人检测项全部呈绿色通过。
-* **Web Worker 级时区物理同步**：不同于市面上仅修改网页主线程的时区插件，NoTrace 通过 `--fingerprint-timezone` 参数与 `TZ` 环境变量双管下，使**主线程与 Web Workers 线程**的时区完全一致，堵住了常见的时区不一致漏洞。
-* **语系 Locale 与 GeoIP 智能对齐**：根据代理出口 IP 的 GeoIP 位置，自动适配并生成匹配的 Primary Locale 语言和 `Accept-Language` 请求头，确保网络地理位置与请求语言完全一致。
+### 1. WebGL/GPU 渲染器伪装
+隐去真实的 GPU 型号（如 `Apple M4 Pro`），基于账号 Seed 注入随机化的 Apple M1–M4 渲染配置，统一上报为通用的 Metal 渲染字符串（`ANGLE (Apple, ANGLE Metal Renderer: Apple M1-M4, Unspecified Version)`，Vendor 为 `Google Inc. (Apple)`），彻底消除会导致 CreepJS 判定为“类似无头浏览器 (like headless)”的渲染特征矛盾。
+
+### 2. WebRTC IP 泄露物理隔离
+利用 CloakBrowser 底层的 `--fingerprint-webrtc-ip` 参数，将 WebRTC 的 Local/Public candidate 候选地址强制绑定至当前代理的出口 IP。这彻底消除了内网子网 IP 和物理真实外网 IP 的泄漏风险，完美通过 browserleaks 的 WebRTC 泄漏审计。
+
+### 3. UA 与高熵客户端提示 (Client Hints) 一致性
+如果仅仅修改 User Agent 却不改 Client Hints 会产生巨大的信息矛盾。NoTrace 严格同步 User Agent 与 `navigator.userAgentData` 的高熵属性（包括 `fullVersionList`、`platformVersion` 和 `architecture`），防止因版本不一致而被风控系统拦截，并与 TCP/TLS 握手特征（JA3/JA4 指纹）完美对齐。
+
+### 4. 无损 Canvas 与 Audio 噪声扰动
+- **Canvas 噪声**：如果持续扭曲 Canvas 画布会导致网页图像绘制异常。NoTrace 仅在网页调用 `toDataURL` 和 `toBlob` 导出图像时拦截，临时为 8 个随机像素注入微小的、基于 Seed 的颜色偏置，提取数据后**立刻恢复像素原状**。这在不破坏网页实际渲染的情况下，生成了完全独特的 Canvas 图像指纹。
+- **Audio 噪声**：拦截 `OfflineAudioContext.startRendering` 生成的音频信号，并在返回的 `AudioBuffer` 采样点中，按特定步长注入 $10^{-7}$ 级别的微小偏置，从而干扰 Audio 唯一指纹。
+
+### 5. Web Worker 级时区物理同步
+普通插件无法将时区脚本注入到 Web Workers 线程中运行。NoTrace 通过 `--fingerprint-timezone` 参数与 `TZ` 环境变量双管齐下，在操作系统/进程底层对齐时区，使**主页面线程与 Web Workers 线程**的时区完全一致，堵住了常见的 Worker 时区泄露漏洞。
+
+### 6. 防检测 API 垫片与反劫持防护
+- 补齐了在自动化/无头浏览器中常常缺失的 API（如 `ContentIndex`、`navigator.contacts` 下的 `ContactsManager`、`navigator.connection` 的 `downlinkMax`）。
+- 将所有劫持逻辑隐藏于 Proxy 之下，并修改 `Function.prototype.toString.toString()` 使其保持原生态格式，防止风控脚本探测到 JavaScript 函数被代理污染。
 
 ---
 
-## 🌟 核心特性
+## ⚙️ 内置 Rust 多线程代理中转守护程序
 
-### 1. 深度 C++ 级底层指纹防御
-基于 C++ 深度修改的 Chromium 内核，NoTrace Browser 能有效拦截并欺骗 JavaScript 指纹采集：
-- **WebGL & GPU 伪装**：隐去真实的 GPU 型号（如 `Apple M4 Pro`），统一上报为通用的 Metal 渲染字符串（`ANGLE (Apple, ANGLE Metal Renderer: Apple M1-M4, Unspecified Version)`）。
-- **Canvas & Audio 混淆**：为每个账号注入稳定且唯一的指纹噪音，使得通过 `getImageData()` 和 Audio 接口计算出的浏览器唯一 Visitor ID 完全独立，但看起来又如同真实设备一般合理。
-- **Client Hints 与 User Agent**：自动生成合成的 macOS 版本，并搭配符合规范的 GREASE 灰度版本号列表。
+Chromium 自身并不原生支持带有用户名密码认证的 SOCKS5 代理 (`socks5://user:pass@host:port`)。
 
-### 2. 基于唯一 Seed 的多账号物理隔离
-- 通过 `launch-account.sh <name>` 启动账号时，系统会为其生成一个独一无二的随机种子并写入 `.cloak-seed`。
-- 进程级别的物理隔离确保了内存空间和 Cookie 容器绝对独立。与 Chromium 的原生多开不同，这保证了账号之间**绝不会因物理设备特征被 OpenAI 关联封禁**。
+NoTrace Browser 在 CLI 内部直接集成了一个用 Rust (基于 Tokio 与 Rustls 库) 编写的**多线程代理中转守护进程 (Proxy Relay)**。
+- **自动生命周期管理**：当拉起配置了认证代理的账号时，CLI 会自动在后台开启该代理中转，随机绑定一个本地空闲 TCP 端口，通过 Socks5 握手自检成功后引导浏览器连接该端口。
+- **零资源泄漏**：主进程退出时，Relay Supervisor 会自动销毁后台中转程序，防止残留进程占用系统端口和套接字。
+- **支持协议**：SOCKS5 (无认证 / 用户名密码认证)、HTTP 以及 HTTPS (使用 Rustls 的 TLS 隧道)。
 
-### 3. IP-时区与 Locale 智能对齐
-- **代理中转模块**：支持为每个账号配置专属 Proxy（写入 `Accounts/<name>/.cloak-proxy`）。对于需要密码认证的 SOCKS5 代理 (`socks5://user:pass@host:port`)，由于 Chromium 自身不支持 SOCKS5 代理鉴权，NoTrace 会自动拉起一个轻量本地 SOCKS5 relay 中转进程 (`packaging/proxy-relay.py`)，并在浏览器退出时自动销毁，防止端口占用。
-- **时区伴侣插件**：内置 MV3 浏览器插件 (`extension/cloak-companion/`)，不仅能修改主页面线程的 `Intl` 与 `Date`，还能覆盖 Web Workers 线程的时区，确保与您的代理 IP 地理位置完美一致。
-- **语言 Locale 对齐**：动态修改浏览器的 `--lang` 和 `Accept-Language` 请求头，确保语系与您的 VPN/Proxy 出口国家相符，杜绝异常标记。
+---
 
-### 4. macOS 原生 PWA 优化与系统 TCC 修复
-- **单 Dock 图标体验**：将目标网站包装为 Chromium 风格的独立 PWA 窗口，并应用精心设计的全画幅绿色 macOS 风格 Dock 图标，即使浏览器版本升级图标也不会丢失。
-- **TCC 权限补丁修复**：直接将麦克风、摄像头和蓝牙的隐私描述（`NSMicrophoneUsageDescription` 等）注入 Chromium 引擎的 `Info.plist` 并完成 ad-hoc 签名。这彻底修复了当网页请求语音输入或通过蓝牙调用手机 Passkey（免密安全密钥登录）时导致 `"Chromium" 意外退出` 的闪退崩溃问题。
+## 🛠️ `cloak` 命令行管理工具箱
+
+NoTrace Browser 的每个账号工作区都可以通过编译生成的 `cloak` 命令行工具实现完全的自动化管理。
+
+| 子命令 | 语法结构 | 描述 |
+| :--- | :--- | :--- |
+| **列出活跃账号** | `cloak account list [--json]` | 列出所有处于活跃状态的账号，展示 Seed 种子和代理配置。 |
+| **列出回收站** | `cloak account list-trashed [--json]` | 列出已被移入回收站（软删除）的账号目录。 |
+| **创建账号环境** | `cloak account create <name> [--json]` | 创建一个新的隔离账号工作区，生成并锁定独立的 Seed 指纹。 |
+| **重命名账号** | `cloak account rename <old> <new>` | 重命名账号，同时安全继承其稳定的 Seed 和数据，不影响指纹。 |
+| **软删除账号** | `cloak account delete <name>` | 安全将账号工作区移至回收站，可随时还原。 |
+| **硬删除账号** | `cloak account purge <name>` | 永久从磁盘中擦除账号文件夹的全部数据。 |
+| **还原账号** | `cloak account restore <name>` | 将处于回收站的账号恢复为活跃状态。 |
+| **设置出口代理** | `cloak account set-proxy <name> [url] [--clear]`| 为账号绑定指定的代理服务器 (SOCKS5/HTTP/HTTPS)。 |
+| **设置区域约束** | `cloak account set-region <name> [code] [--clear]`| 绑定地理区域标识，防止国家/时区对齐出现偏差。 |
+| **设置账号分组** | `cloak account set-group <name> [group] [--clear]`| 将账号归入特定的分组，方便批量管理。 |
+| **语言跟随开关** | `cloak account toggle-locale <name>` | 开启/关闭让浏览器的 Accept-Language 等随出口 IP 自动同步。 |
+| **显示账号配置** | `cloak account show <name> [--json]` | 打印账号环境的所有详细元数据配置。 |
+| **启动浏览器实例**| `cloak launch <name> [--dry-run] [--skip-geo]`| 带指纹参数拉起实例。`--dry-run` 仅输出最终组装的启动 flags。 |
+| **环境自我诊断** | `cloak self-check [--json]` | 校验 CloakBrowser 内核完整性、签名以及插件目录是否准备就绪。 |
+
+---
+
+## 🍎 macOS 原生桌面体验与 TCC 系统权限修护
+
+NoTrace Browser 针对 macOS 进行了深度的适配：
+
+- **顽固的绿色桌面图标**：Chromium 在更新 PWA 快捷方式时会自动重写并覆盖 `app.icns`，导致自定义图标丢失。NoTrace 通过 `NSWorkspace setIcon:forFile:` 接口，强行在 Bundle 根目录下设置 Finder 级的自定义 Custom Icon (`kHasCustomIcon` 属性与 `Icon\r` 资源文件)。这使得 LaunchServices 和 Dock 能持久锁定绿色的应用图标，**即使浏览器内核重构更新也不会丢失**。
+- **系统级 TCC 权限修护**： ad-hoc 签名编译的 Chromium 内核默认缺少麦克风、摄像头和蓝牙的隐私描述。当网页尝试录音时，macOS 系统安全组件 (TCC) 会直接强行闪退该进程。NoTrace 的 `patch-chromium.sh` 脚本在打包时将 `NSMicrophoneUsageDescription`、`NSCameraUsageDescription` 与 `NSBluetoothAlwaysUsageDescription` 写入 `Info.plist` 并重新签名，彻底解决了网页语音输入和手机蓝牙 Passkey 登录时的系统崩溃闪退问题。
 
 ---
 
@@ -112,32 +145,6 @@ NoTrace Browser 旨在绕过 Cloudflare Turnstile、FingerprintJS (FPJS Pro)、C
 
 ---
 
-## 🛠️ 多账号管理与 CLI 使用
-
-NoTrace Browser 提供了三种方式来管理您的 AI 账号工作区：
-
-### 1. Tauri 图形界面 (推荐)
-打开原生的多账号图形工作区面板：
-```bash
-# 打开 /Applications/Cloak Picker.app
-./packaging/pick-account.sh
-```
-在该面板中，您可以一键创建、重命名新账号（重命名不会改变其指纹 Seed）、切换 Locale、配置每个账号的出口代理，并同时并发启动多个互相独立的浏览器实例。
-
-### 2. Terminal 命令行直接启动
-在终端中直接带隔离参数拉起指定的浏览器环境：
-```bash
-# 启动名为 AccountA 的独立环境
-./packaging/launch-account.sh AccountA
-```
-
-### 3. SOCKS5 代理鉴权与中转
-如果某个账号在 `Accounts/<name>/.cloak-proxy` 中配置了代理：
-- **无密码代理**：直接作为浏览器启动参数生效。
-- **带密码认证的 SOCKS5/HTTP 代理**：将自动在后台启动代理中转守护程序 (`packaging/proxy-relay.py`) 以转发流量。浏览器一旦关闭，中转服务也会随之销毁，确保系统资源干净无残留。
-
----
-
 ## 🔍 指纹防关联审计与状态验证
 
 我们使用持续集成验证脚本对市面主流的防关联/Bot 检测网站进行了长期测试：
@@ -166,5 +173,5 @@ node selftest/run-live-challenge-audit.mjs --headed --site browserscan --site fi
 ## ⚠️ 局限性与避坑指南
 
 * **内置网页翻译不可用**：CloakBrowser 采用了 *ungoogled-chromium* 编译版，在网络底层剥离了 Google 域名（重定向至 `chrome.9oo91e.qjz9zk`）和 Chrome 应用商店接口。因此，Chromium 右键的“翻译此页”会报错失效。
-  * *避坑方案*：将您喜欢的翻译插件（如沉浸式翻译等）打包为 **已解压的扩展程序** (unpacked) 并在您的账号 Profile 页面手动加载即可。
-* **原生 PWA 的启动参数限制**：如果您从 Launchpad 或 Dock 直接点击创建的单 ChatGPT PWA 应用（对应 `main` profile），macOS 的快捷方式机制不支持在启动时追加命令行 flag（例如 `--proxy-server` 或 `--fingerprint-webrtc-ip` 无法直接传入）。如需要严格的代理隔离与高级 Seed 指纹防关联，请务必使用 **多账号选择器 (Cloak Picker)** 启动独立实例。
+  * *避坑方案*：将您喜欢的翻译插件打包为 **已解压的扩展程序** (unpacked) 并在您的账号 Profile 页面手动加载即可。
+* **原生 PWA 的启动参数限制**：如果您从 Launchpad 或 Dock 直接点击创建的单 PWA 应用，macOS 的快捷方式机制不支持在启动时追加命令行 flag（例如 `--proxy-server` 或 `--fingerprint-webrtc-ip` 无法直接传入）。如需要严格的代理隔离与高级 Seed 指纹防关联，请务必使用 **多账号选择器 (Cloak Picker)** 启动独立实例。

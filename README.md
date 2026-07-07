@@ -2,15 +2,15 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-NoTrace Browser is a generic, high-performance, open-source, anti-fingerprinting browser client optimized for macOS. It is designed to support any web service (ChatGPT, Claude, Web3 platforms, Social Media, eCommerce, etc.) where identity isolation is required. It integrates **CloakBrowser's C++ patched Chromium core** with macOS native integration (PWAs, System TCC fixes, and account pickers) to deliver a seamless, anti-association multi-account identity management environment.
+NoTrace Browser is a high-performance, open-source, anti-fingerprinting browser client optimized for macOS. It integrates **CloakBrowser's C++ patched Chromium core** with macOS native integration (PWAs, System TCC fixes, and account pickers) to deliver a seamless, anti-association multi-identity management environment for any web service (AI platforms, Web3, Social Media, eCommerce, etc.).
 
 ---
 
 ## 💡 Why NoTrace Browser?
 
-Modern web services, AI platforms, and online systems employ aggressive bot-detection and anti-fraud systems (like Cloudflare Turnstile, FingerprintJS, and CreepJS) to track user hardware fingerprints and IP-to-timezone consistency. 
+Modern web applications, AI platforms, and online services employ aggressive bot-detection and anti-fraud systems (like Cloudflare Turnstile, FingerprintJS, and CreepJS) to track user hardware fingerprints and IP-to-timezone consistency.
 
-When you use ordinary browser profiles (e.g., Chrome Profiles) or native webviews (Tauri/WKWebView) to manage multiple accounts, they **share the same device fingerprint, process host, and timezone metadata**. This makes your accounts linkable, triggering frequent CAPTCHAs, restriction screens, or permanent bans. 
+When you use ordinary browser profiles (e.g., Chrome Profiles) or native webviews (Tauri/WKWebView) to manage multiple accounts, they **share the same device fingerprint, process host, and timezone metadata**. This makes your accounts linkable, triggering frequent CAPTCHAs, restriction screens, or permanent bans.
 
 NoTrace Browser solves this by giving each account a **completely unique, isolated digital fingerprint and network exit** inside a native macOS app experience.
 
@@ -37,39 +37,72 @@ graph TD
 
 ---
 
-## 🛡️ Stealth Protection & Detection Bypassing
+## 🛡️ Deep Stealth & Anti-Fingerprinting Mechanisms
 
-NoTrace Browser is engineered to bypass aggressive anti-bot gates like Cloudflare Turnstile, FingerprintJS (FPJS Pro), and CreepJS. Instead of simple surface-level JavaScript overrides, it implements deep defenses:
+NoTrace Browser goes beyond simple superficial Javascript overrides. It employs kernel-level C++ modifications coupled with a dynamic companion extension to shield your identity:
 
-* **WebGL/GPU Metal Renderer Spoofing**: Injects seed-based randomized ANGLE Metal renderer configurations (matching M1–M4 chips, vendor `Google Inc. (Apple)`). This avoids the unmasked renderer inconsistencies that trigger CreepJS's `like headless` penalties.
-* **WebRTC Leak Protection**: Leverages CloakBrowser's `--fingerprint-webrtc-ip` parameter to bind WebRTC local/public candidates directly to your proxy's exit IP. This completely disables local subnet and host IP leakage.
-* **UA & High-Entropy Client Hints Consistency**: Synchronizes User Agent strings with `navigator.userAgentData` (including `fullVersionList`, `platformVersion`, and `architecture`). This prevents version-consistency alerts and aligns with TLS/JA3 handshakes.
-* **Under-the-Hood Automation Erasure**: Launches with `--disable-blink-features=AutomationControlled` to drop the `navigator.webdriver` footprint, rendering sannysoft bot verification entirely green.
-* **Web Worker Timezone Synchronization**: Unlike extension-only spoofs, the `--fingerprint-timezone` flag and `TZ` environment variables enforce clock alignment in **both the main thread and Web Workers**, eliminating the primary timezone-mismatch trigger.
-* **Locale & Accept-Language Alignment**: Automatically configures the appropriate primary language and `Accept-Language` headers according to the proxy's GeoIP exit country to match geolocation constraints.
+### 1. WebGL & GPU Masking
+Instead of reporting your physical GPU model (e.g., `Apple M4 Pro`), NoTrace overrides rendering parameters to report a generic Metal string (`ANGLE (Apple, ANGLE Metal Renderer: Apple M1-M4, Unspecified Version)`) with vendor `Google Inc. (Apple)`. This eliminates discrepancies that trigger CreepJS's `like headless` flags.
+
+### 2. Physical WebRTC Isolation
+Utilizing CloakBrowser's `--fingerprint-webrtc-ip`, NoTrace forces WebRTC local and public candidates to route through and present your proxy's exit IP. This completely masks your real local subnet and public IP addresses, passing browserleaks WebRTC audits cleanly.
+
+### 3. UA & High-Entropy Client Hints Consistency
+Modifying the User Agent alone creates a massive version-consistency discrepancy (UA vs. High-Entropy Client Hints vs. TLS/JA3/JA4 fingerprints). NoTrace automatically maps User Agent strings with `navigator.userAgentData` (matching `fullVersionList`, `platformVersion`, and `architecture`), matching TCP/TLS handshakes perfectly.
+
+### 4. Non-Destructive Canvas & Audio Noise
+- **Canvas Noise**: Instead of constantly distorting Canvas which breaks normal rendering, NoTrace intercepts `toDataURL` and `toBlob`. It injects a stable, seed-based noise to 8 random pixels, extracts the data, and **instantly restores the original pixels**. Your pages render normally, but fingerprinters get a completely unique Canvas ID.
+- **Audio Noise**: Intercepts `OfflineAudioContext.startRendering` to inject a stable $10^{-7}$ level delta noise across channels in the returned `AudioBuffer` samples, generating unique audio fingerprints.
+
+### 5. Worker-Thread Timezone Sync
+Normal extensions cannot inject scripts into Web Workers, allowing fingerprinters to detect timezone mismatches inside Worker threads. NoTrace synchronizes the timezone at the operating system/process layer using the `--fingerprint-timezone` flag and the `TZ` environment variables, covering both the main window and Web Workers.
+
+### 6. Anti-Detection API Shims & Anti-Tampering
+- Re-injects native browser APIs commonly missing in automated environments (e.g., `ContentIndex`, `ContactsManager` in `navigator.contacts`, `downlinkMax` in `navigator.connection`).
+- Wraps overridden properties inside clean Proxies and patches `Function.prototype.toString.toString()` to prevent checkers from detecting JS hooks.
 
 ---
 
-## 🌟 Key Features
+## ⚙️ Embedded SOCKS5 & HTTP Proxy Relay
 
-### 1. Hardened C++ Fingerprinting Defenses
-Powered by C++ patched Chromium, NoTrace Browser spoofs low-level APIs that Javascript fingerprinters exploit:
-- **WebGL & GPU Masking**: Replaces your real GPU model (e.g., `Apple M4 Pro`) with a generic Metal string (`ANGLE (Apple, ANGLE Metal Renderer: Apple M1-M4, Unspecified Version)`).
-- **Canvas & Audio Spoofing**: Injects stable per-account noise, ensuring that `getImageData()` and Audio API queries yield unique, consistent visitor IDs without looking suspicious.
-- **Client Hints & User Agent**: Reports synthetic macOS versions with GREASE-correct full-version lists.
+Chromium lacks native support for authenticated SOCKS5 proxies (`socks5://user:pass@host:port`). 
 
-### 2. Multi-Account Identities with Stable Seeds
-- Launching an account via `launch-account.sh <name>` generates a stable random seed pinned in `.cloak-seed`.
-- The process boundary ensures separate memory spaces and cookie jars. Unlike Chromium's native switcher, this guarantees accounts are **never linkable by device characteristics**.
+NoTrace Browser integrates an **embedded multi-threaded Proxy Relay daemon** written in Rust (using Tokio & Rustls) directly inside the CLI. 
+- **Automated Lifecycle**: When an account with an authenticated proxy is launched, the CLI automatically boots the relay in the background on a randomized local port, validates ready-state with a local Socks5 handshake, and directs the browser to it.
+- **Zero Resource Leaks**: The supervisor checks process bounds and automatically tears down the relay when the browser quits, preventing port collisions and socket leaks.
+- **Protocols Supported**: SOCKS5 (no auth / user-pass auth), HTTP, and HTTPS (TLS tunneling via Rustls).
 
-### 3. IP-Timezone & Locale Alignment
-- **Proxy Relay Launcher**: Supports per-account proxy settings (written to `Accounts/<name>/.cloak-proxy`). For authenticated SOCKS5 proxies (`socks5://user:pass@host:port`), NoTrace automatically boots a local proxy-relay daemon (`packaging/proxy-relay.py`) since Chromium natively lacks SOCKS5 authentication support.
-- **Companion Extension**: The MV3 companion extension (`extension/cloak-companion/`) overrides page-visible timezones (`Intl` and `Date`) to match your exit proxy's location, fully supporting Web Workers.
-- **Geo-Matched Languages**: Dynamically modifies `--lang` and `Accept-Language` headers to prevent region mismatches.
+---
 
-### 4. Native macOS PWA Integration & TCC Fixes
-- **Single-Tile Launchers**: Packages any target web application inside a sleek Chromium-installed PWA window with a custom, full-bleed green Dock tile that survives browser engine updates.
-- **TCC Permission Patches**: Adds required microphone, camera, and Bluetooth usage descriptions (`NSMicrophoneUsageDescription`, etc.) directly into Chromium's `Info.plist` and re-signs the binary. This fixes the `"Chromium" exited unexpectedly` crash that happens when a web page attempts to record voice inputs or initiate WebAuthn hybrid passkeys.
+## 🛠️ The `cloak` CLI Workspace Toolkit
+
+Every account workspace in NoTrace Browser can be fully automated using the compiled `cloak` CLI tool.
+
+| Subcommand | Syntax | Description |
+| :--- | :--- | :--- |
+| **List Accounts** | `cloak account list [--json]` | Lists all active account workspaces with seed and proxy status. |
+| **List Trashed** | `cloak account list-trashed [--json]` | Lists soft-deleted accounts currently in the trash. |
+| **Create Account** | `cloak account create <name> [--json]` | Creates a new isolated profile with a pinned random seed. |
+| **Rename Account** | `cloak account rename <old> <new>` | Renames an account while retaining its stable fingerprint seed. |
+| **Delete Account** | `cloak account delete <name>` | Safely moves an account workspace to the trash. |
+| **Purge Account** | `cloak account purge <name>` | Permanently deletes account folder data from disk. |
+| **Restore Account**| `cloak account restore <name>` | Restores a soft-deleted account back to active status. |
+| **Set Proxy** | `cloak account set-proxy <name> [url] [--clear]`| Binds an upstream proxy (SOCKS5/HTTP/HTTPS) to the account. |
+| **Set Region** | `cloak account set-region <name> [code] [--clear]`| Sets geographical region constraint labels. |
+| **Set Group** | `cloak account set-group <name> [group] [--clear]`| Assigns the workspace to an organizational group. |
+| **Toggle Locale** | `cloak account toggle-locale <name>` | Toggles IP-matched Accept-Language / lang header synchronization. |
+| **Show Detail** | `cloak account show <name> [--json]` | Prints all metadata configuration of the account workspace. |
+| **Launch Account** | `cloak launch <name> [--dry-run] [--skip-geo]`| Launches the engine instance. Use `--dry-run` to output flags. |
+| **Self Check** | `cloak self-check [--json]` | Verifies local engine integrity and unpacked extensions path. |
+
+---
+
+## 🍎 Native macOS UX & TCC Permissions
+
+NoTrace Browser is built specifically to feel like a premium macOS application:
+
+- **Durable Green Icon**: Chromium shims overwrite `app.icns` on updates, stripping custom PWA icons. NoTrace applies a Finder-level custom icon (`kHasCustomIcon` + bundle-root `Icon\r` resource) via `NSWorkspace setIcon:forFile:`. This custom icon is preferred by LaunchServices and **survives browser engine rebuilds**.
+- **TCC Permission Patching**: Chromium compiled ad-hoc lacks microphone, camera, and Bluetooth usage descriptions. macOS TCC terminates the process instantly when a page requests voice input. NoTrace provides `patch-chromium.sh` which injects `NSMicrophoneUsageDescription`, `NSCameraUsageDescription`, and `NSBluetoothAlwaysUsageDescription` into `Info.plist` and re-signs the application, resolving voice search and passkey authorization crashes.
 
 ---
 
@@ -109,32 +142,6 @@ Chromium PWAs default to a low-res green badge on a white tile. Set the beautifu
 2. Toggle **Developer mode** (top-right).
 3. Click **Load unpacked** and select `extension/cloak-companion/` from this repo.
 4. Click the extension toolbar icon and enable **自动匹配当前 IP** (Auto-match IP Timezone).
-
----
-
-## 🛠️ Multi-Account Picker & CLI Usage
-
-NoTrace Browser offers three ways to manage your account workspace:
-
-### 1. Tauri GUI (Recommended)
-Launch the graphical workspace switcher:
-```bash
-# Opens /Applications/Cloak Picker.app
-./packaging/pick-account.sh
-```
-In the GUI, you can create new profiles, rename them (retaining the seed), toggle localized headers, configure region proxies, and boot isolated browser instances concurrently.
-
-### 2. CLI Launches
-Launch an account profile directly from your terminal:
-```bash
-# Launch a profile named "AccountA"
-./packaging/launch-account.sh AccountA
-```
-
-### 3. SOCKS5 Relay & Network Operations
-If your account carries a proxy configuration inside `Accounts/<name>/.cloak-proxy`:
-- **Unauthenticated SOCKS5/HTTP**: Configured directly in the browser launch arguments.
-- **Authenticated SOCKS5/HTTP**: Starts a background relay (`packaging/proxy-relay.py`) routing authentication over localhost. Automatically shuts down once the browser process terminates to prevent socket leakage.
 
 ---
 
