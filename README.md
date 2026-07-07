@@ -2,15 +2,15 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-NoTrace Browser is a high-performance, open-source, anti-fingerprinting browser client optimized for ChatGPT Web on macOS. It integrates **CloakBrowser's C++ patched Chromium core** with macOS native integration (PWAs, System TCC fixes, and account pickers) to deliver a seamless, anti-ban multi-account identity management environment.
+NoTrace Browser is a generic, high-performance, open-source, anti-fingerprinting browser client optimized for macOS. It is designed to support any web service (ChatGPT, Claude, Web3 platforms, Social Media, eCommerce, etc.) where identity isolation is required. It integrates **CloakBrowser's C++ patched Chromium core** with macOS native integration (PWAs, System TCC fixes, and account pickers) to deliver a seamless, anti-association multi-account identity management environment.
 
 ---
 
 ## 💡 Why NoTrace Browser?
 
-ChatGPT and AI platforms employ aggressive bot-detection and anti-fraud systems (like Cloudflare Turnstile, FingerprintJS, and CreepJS) to track user hardware fingerprints and IP-to-timezone consistency. 
+Modern web services, AI platforms, and online systems employ aggressive bot-detection and anti-fraud systems (like Cloudflare Turnstile, FingerprintJS, and CreepJS) to track user hardware fingerprints and IP-to-timezone consistency. 
 
-When you use ordinary browser profiles (e.g., Chrome Profiles) or native webviews (Tauri/WKWebView), they **share the same device fingerprint, process host, and timezone metadata**. This makes your accounts linkable, triggering frequent CAPTCHAs, restriction screens, or permanent bans. 
+When you use ordinary browser profiles (e.g., Chrome Profiles) or native webviews (Tauri/WKWebView) to manage multiple accounts, they **share the same device fingerprint, process host, and timezone metadata**. This makes your accounts linkable, triggering frequent CAPTCHAs, restriction screens, or permanent bans. 
 
 NoTrace Browser solves this by giving each account a **completely unique, isolated digital fingerprint and network exit** inside a native macOS app experience.
 
@@ -21,7 +21,7 @@ graph TD
     B -->|Proxy Relay Launcher| D[Authenticated SOCKS5 Exit]
     B -->|Companion Extension| E[Matched Intl Timezone / Worker TZ]
     B -->|TCC Patched Engine| F[Microphone Voice / Bluetooth Passkeys]
-    D -->|Target Network| G[chatgpt.com / Claude / Web3]
+    D -->|Target Network| G[Websites / AI / Web3 / Socials / eCommerce]
 ```
 
 ### ⚡ NoTrace Browser vs. Competitors
@@ -55,8 +55,8 @@ Powered by C++ patched Chromium, NoTrace Browser spoofs low-level APIs that Java
 - **Geo-Matched Languages**: Dynamically modifies `--lang` and `Accept-Language` headers to prevent region mismatches.
 
 ### 4. Native macOS PWA Integration & TCC Fixes
-- **Single-Tile Launchers**: Packages ChatGPT Web inside a sleek Chromium-installed PWA window with a custom, full-bleed green Dock tile that survives browser engine updates.
-- **TCC Permission Patches**: Adds required microphone, camera, and Bluetooth usage descriptions (`NSMicrophoneUsageDescription`, etc.) directly into Chromium's `Info.plist` and re-signs the binary. This fixes the `"Chromium" exited unexpectedly` crash that happens when ChatGPT attempts to record voice inputs or initiate WebAuthn hybrid passkeys.
+- **Single-Tile Launchers**: Packages any target web application inside a sleek Chromium-installed PWA window with a custom, full-bleed green Dock tile that survives browser engine updates.
+- **TCC Permission Patches**: Adds required microphone, camera, and Bluetooth usage descriptions (`NSMicrophoneUsageDescription`, etc.) directly into Chromium's `Info.plist` and re-signs the binary. This fixes the `"Chromium" exited unexpectedly` crash that happens when a web page attempts to record voice inputs or initiate WebAuthn hybrid passkeys.
 
 ---
 

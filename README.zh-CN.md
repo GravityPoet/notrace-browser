@@ -2,15 +2,15 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-NoTrace Browser 是一款专为 macOS 下 ChatGPT Web 优化的开源、高性能、防关联（防指纹）浏览器客户端。它深度集成了 **CloakBrowser 经 C++ 补丁修改的 Chromium 内核**，并完美融合了 macOS 的原生系统体验（PWA 应用模式、系统级 TCC 权限修护、账号选择器），致力于为您提供一个安全、防封号的 AI 多账号身份隔离与管理环境。
+NoTrace Browser 是一款专为 macOS 优化的通用、开源、高性能、防关联（防指纹）浏览器客户端。它支持任何需要身份隔离与多账号防封锁的 Web 服务（如 ChatGPT、Claude、Web3 平台、社交媒体、跨境电商等）。项目深度集成了 **CloakBrowser 经 C++ 补丁修改的 Chromium 内核**，并完美融合了 macOS 的原生系统体验（PWA 应用模式、系统级 TCC 权限修护、账号选择器），致力于为您提供一个安全、防关联的多账号身份管理环境。
 
 ---
 
 ## 💡 为什么选择 NoTrace Browser？
 
-ChatGPT 和主流 AI 平台采用了极其严格的风控与机器人检测机制（如 Cloudflare Turnstile、FingerprintJS 和 CreepJS 等），用来持续跟踪用户的硬件指纹与 IP-时区一致性。
+现代 Web 应用、AI 平台和各类在线服务采用了极其严格的风控与机器人检测机制（如 Cloudflare Turnstile、FingerprintJS 和 CreepJS 等），用来持续跟踪用户的硬件指纹与 IP-时区一致性。
 
-当您使用普通的浏览器多开（例如 Chrome Profiles）或原生 WebView（如 Tauri、WKWebView）时，它们**实际上都在共享相同的物理设备指纹、进程环境和系统本地时区**。这极易导致您的多个账号被关联判定为“同设备同用户多开”，从而频繁触发验证码（CAPTCHA）、账号限制甚至被永久封号。
+当您使用普通的浏览器多开（例如 Chrome Profiles）或原生 WebView（如 Tauri、WKWebView）管理多个账号时，它们**实际上都在共享相同的物理设备指纹、进程环境和系统本地时区**。这极易导致您的多个账号被关联判定为“同设备同用户多开”，从而频繁触发验证码（CAPTCHA）、账号限制甚至被永久封号。
 
 NoTrace Browser 通过为每个账号注入**完全独特、物理隔离的数字指纹与专属网络出口**，并将其无缝包装为 macOS 原生的独立应用形态，从根本上解决了这一难题。
 
@@ -21,7 +21,7 @@ graph TD
     B -->|内置代理中转| D[独享且带认证的 SOCKS5 出口]
     B -->|伴侣插件| E[自动匹配的 Intl 时区 / Worker TZ]
     B -->|TCC 权限修复引擎| F[麦克风语音输入 / 蓝牙 Passkey 登录]
-    D -->|目标网络| G[chatgpt.com / Claude / Web3 平台]
+    D -->|目标网络| G[目标网站 / AI / Web3 / 社交 / 电商]
 ```
 
 ### ⚡ 功能横向对比
@@ -55,8 +55,8 @@ graph TD
 - **语言 Locale 对齐**：动态修改浏览器的 `--lang` 和 `Accept-Language` 请求头，确保语系与您的 VPN/Proxy 出口国家相符，杜绝异常标记。
 
 ### 4. macOS 原生 PWA 优化与系统 TCC 修复
-- **单 Dock 图标体验**：将 ChatGPT Web 包装为 Chromium 风格的独立 PWA 窗口，并应用精心设计的全画幅绿色 macOS 风格 Dock 图标，即使浏览器版本升级图标也不会丢失。
-- **TCC 权限补丁修复**：直接将麦克风、摄像头和蓝牙的隐私描述（`NSMicrophoneUsageDescription` 等）注入 Chromium 引擎的 `Info.plist` 并完成 ad-hoc 签名。这彻底修复了当 ChatGPT 启用语音输入或通过蓝牙调用手机 Passkey（免密安全密钥登录）时导致 `"Chromium" 意外退出` 的闪退崩溃问题。
+- **单 Dock 图标体验**：将目标网站包装为 Chromium 风格的独立 PWA 窗口，并应用精心设计的全画幅绿色 macOS 风格 Dock 图标，即使浏览器版本升级图标也不会丢失。
+- **TCC 权限补丁修复**：直接将麦克风、摄像头和蓝牙的隐私描述（`NSMicrophoneUsageDescription` 等）注入 Chromium 引擎的 `Info.plist` 并完成 ad-hoc 签名。这彻底修复了当网页请求语音输入或通过蓝牙调用手机 Passkey（免密安全密钥登录）时导致 `"Chromium" 意外退出` 的闪退崩溃问题。
 
 ---
 
@@ -79,7 +79,7 @@ graph TD
 ```
 
 ### 第二步：修补 Chromium TCC 系统权限
-执行权限修补和证书签名，以启用 ChatGPT 语音输入及 Passkey 登录功能，防止崩溃：
+执行权限修补和证书签名，以启用语音输入及 Passkey 登录功能，防止崩溃：
 ```bash
 ./packaging/patch-chromium.sh
 ```
