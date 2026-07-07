@@ -726,10 +726,13 @@ export default function App() {
   const emptyAction = accountView === "active" ? "新建账号" : "查看活跃";
   const proxyLabel = selected ? middleTruncate(selected.proxy_display, 48) : "";
   const statusLabel = selected?.trashed ? "已移入回收站" : "活跃";
-  const webStoreStatusLabel = webStoreStatus
-    ? webStoreStatus.phase === "opening"
-      ? `正在用 ${middleTruncate(webStoreStatus.accountName, 42)} 打开商店…`
-      : `最近打开商店：${middleTruncate(webStoreStatus.accountName, 42)}`
+  const selectedStoreAccount = selected ? middleTruncate(selected.name, 42) : "";
+  const webStoreStatusLabel = selected
+    ? webStoreStatus?.accountName === selected.name
+      ? webStoreStatus.phase === "opening"
+        ? `正在用 ${selectedStoreAccount} 打开商店…`
+        : `最近打开商店：${selectedStoreAccount}`
+      : `商店账号：${selectedStoreAccount}`
     : "";
   const workspaceStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties & {
     "--sidebar-width": string;
@@ -923,7 +926,7 @@ export default function App() {
                       <button
                         className="secondaryButton"
                         disabled={busy || planLoading}
-                        title="用当前账号打开 Chrome Web Store"
+                        title={`用 ${selected.name} 打开 Chrome Web Store`}
                         onClick={() => void launchWebStore(selected)}
                       >
                         <Store size={16} />
