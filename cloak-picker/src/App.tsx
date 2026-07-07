@@ -740,12 +740,15 @@ export default function App() {
   const emptyAction = accountView === "active" ? "新建账号" : "查看活跃";
   const proxyLabel = selected ? middleTruncate(selected.proxy_display, 48) : "";
   const statusLabel = selected?.trashed ? "已移入回收站" : "活跃";
-  const selectedStoreAccount = selected ? middleTruncate(selected.name, 42) : "";
-  const webStoreTargetLabel = selected ? `商店目标：${selectedStoreAccount}` : "";
+  const webStoreStatusIsCurrent = Boolean(selected && webStoreStatus?.accountName === selected.name);
   const webStoreStatusLabel = webStoreStatus
     ? webStoreStatus.phase === "opening"
-      ? `正在打开商店窗口：${middleTruncate(webStoreStatus.accountName, 34)}`
-      : `已打开商店窗口：${middleTruncate(webStoreStatus.accountName, 34)} · PID ${webStoreStatus.result.pid} · ${formatLaunchClock(webStoreStatus.result.launched_at)}`
+      ? webStoreStatusIsCurrent
+        ? "正在打开商店…"
+        : `正在打开商店：${middleTruncate(webStoreStatus.accountName, 34)}`
+      : webStoreStatusIsCurrent
+        ? `商店已打开 · PID ${webStoreStatus.result.pid} · ${formatLaunchClock(webStoreStatus.result.launched_at)}`
+        : `已打开商店：${middleTruncate(webStoreStatus.accountName, 34)} · PID ${webStoreStatus.result.pid} · ${formatLaunchClock(webStoreStatus.result.launched_at)}`
     : "";
   const workspaceStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties & {
     "--sidebar-width": string;
@@ -922,14 +925,9 @@ export default function App() {
                 <div className="titleBlock">
                   <span className="eyebrow">隔离身份</span>
                   <h1 title={selected.name}>{middleTruncate(selected.name, 44)}</h1>
-                  {webStoreTargetLabel ? (
-                    <span className="webStoreTarget" title={`当前点击商店将使用：${selected.name}`}>
-                      {webStoreTargetLabel}
-                    </span>
-                  ) : null}
                   {webStoreStatusLabel ? (
                     <span
-                      className={`webStoreStatus ${webStoreStatus?.accountName === selected.name ? "current" : "other"}`}
+                      className={`webStoreStatus ${webStoreStatusIsCurrent ? "current" : "other"}`}
                       title={
                         webStoreStatus?.phase === "opened"
                           ? `${webStoreStatusLabel}｜profile=${webStoreStatus.result.profile_path}`

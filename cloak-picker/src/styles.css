@@ -638,7 +638,6 @@ h1 {
   white-space: nowrap;
 }
 
-.webStoreTarget,
 .webStoreStatus {
   min-width: 0;
   overflow: hidden;
@@ -647,10 +646,6 @@ h1 {
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.webStoreTarget {
-  color: #6b7280;
 }
 
 .webStoreStatus.current {
