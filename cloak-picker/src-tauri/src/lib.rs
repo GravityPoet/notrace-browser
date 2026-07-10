@@ -6,9 +6,9 @@ use cloak_core::{
     list_trashed_accounts as core_list_trashed_accounts,
     permanently_delete_account as core_permanently_delete_account,
     rename_account as core_rename_account, set_account_trashed as core_set_account_trashed,
-    set_group as core_set_group, set_proxy as core_set_proxy, set_region as core_set_region,
-    toggle_locale as core_toggle_locale, Account, CloakConfig, LaunchOptions, LaunchPlan,
-    LaunchResult,
+    set_group as core_set_group, set_mark as core_set_mark, set_proxy as core_set_proxy,
+    set_region as core_set_region, toggle_locale as core_toggle_locale, Account, CloakConfig,
+    LaunchOptions, LaunchPlan, LaunchResult,
 };
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -65,6 +65,11 @@ fn set_region(name: String, value: Option<String>) -> Result<Account, String> {
 #[tauri::command]
 fn set_group(name: String, value: Option<String>) -> Result<Account, String> {
     core_set_group(&config()?, &name, value.as_deref()).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn set_mark(name: String, marked: bool, note: Option<String>) -> Result<Account, String> {
+    core_set_mark(&config()?, &name, marked, note.as_deref()).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -140,6 +145,7 @@ pub fn run() {
             set_proxy,
             set_region,
             set_group,
+            set_mark,
             toggle_locale,
             launch_dry_run,
             launch_preflight,

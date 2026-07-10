@@ -90,6 +90,7 @@ Every account workspace in NoTrace Browser can be fully automated using the comp
 | **Set Proxy** | `cloak account set-proxy <name> [url] [--clear]`| Binds an upstream proxy (SOCKS5/HTTP/HTTPS) to the account. |
 | **Set Region** | `cloak account set-region <name> [code] [--clear]`| Sets geographical region constraint labels. |
 | **Set Group** | `cloak account set-group <name> [group] [--clear]`| Assigns the workspace to an organizational group. |
+| **Set Mark** | `cloak account set-mark <name> [note] [--clear]`| Adds a red reminder dot with an optional 24-character note; use `--clear` to remove it. |
 | **Toggle Locale** | `cloak account toggle-locale <name>` | Toggles IP-matched Accept-Language / lang header synchronization. |
 | **Show Detail** | `cloak account show <name> [--json]` | Prints all metadata configuration of the account workspace. |
 | **Launch Account** | `cloak launch <name> [--dry-run] [--skip-geo]`| Launches the engine instance. Use `--dry-run` to output flags. |

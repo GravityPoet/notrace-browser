@@ -129,6 +129,8 @@ pub enum CloakError {
     AccountNotTrashed(String),
     #[error("unsupported proxy URL; use socks5://, http://, or https://")]
     InvalidProxy,
+    #[error("account mark is invalid; use one line with at most 24 characters")]
+    InvalidAccountMark,
     #[error("CloakBrowser binary not found")]
     BrowserMissing,
     #[error("companion extension not found: {0}")]
@@ -195,6 +197,8 @@ pub struct Account {
     pub trashed: bool,
     pub seed: String,
     pub group: Option<String>,
+    pub marked: bool,
+    pub mark_note: Option<String>,
     pub region: Option<String>,
     pub locale_enabled: bool,
     pub proxy_display: String,
@@ -418,6 +422,9 @@ pub fn read_account(config: &CloakConfig, name: &str) -> Result<Account> {
     }
     let seed = pinned_seed(&profile_path)?.unwrap_or_else(|| legacy_seed(name));
     let group = read_first_line(&profile_path.join(".cloak-group"))?;
+    let mark_path = profile_path.join(".cloak-marked");
+    let marked = mark_path.exists();
+    let mark_note = read_first_line(&mark_path)?;
     let region = read_first_line(&profile_path.join(".cloak-region"))?;
     let locale_enabled = profile_path.join(".cloak-locale").exists();
     let proxy_raw = read_first_line(&profile_path.join(".cloak-proxy"))?;
@@ -438,6 +445,8 @@ pub fn read_account(config: &CloakConfig, name: &str) -> Result<Account> {
         trashed,
         seed,
         group: group.filter(|s| !s.is_empty()),
+        marked,
+        mark_note,
         region: region.filter(|s| !s.is_empty()),
         locale_enabled,
         proxy_display,
@@ -484,6 +493,9 @@ pub fn rename_account(config: &CloakConfig, old_name: &str, new_name: &str) -> R
         return Err(CloakError::AccountExists(new_name.to_string()));
     }
     secure_account_dir(&old_path)?;
+    if account_profile_is_running(&old_path)? {
+        return Err(CloakError::AccountRunning(old_name.to_string()));
+    }
     let seed = pinned_seed(&old_path)?.unwrap_or_else(|| legacy_seed(old_name));
     write_secret_atomic(&old_path.join(".cloak-seed"), &seed)?;
     fs::rename(&old_path, &new_path)?;
@@ -580,6 +592,28 @@ pub fn set_group(config: &CloakConfig, name: &str, value: Option<&str>) -> Resul
     match value.map(str::trim).filter(|v| !v.is_empty()) {
         Some(raw) => write_secret_atomic(&path, raw)?,
         None => remove_if_present(&path)?,
+    }
+    read_account(config, name)
+}
+
+pub fn set_mark(
+    config: &CloakConfig,
+    name: &str,
+    marked: bool,
+    note: Option<&str>,
+) -> Result<Account> {
+    let profile = ensure_profile(config, name)?;
+    let path = profile.join(".cloak-marked");
+    if marked {
+        let note = note.map(str::trim).filter(|value| !value.is_empty());
+        if note
+            .is_some_and(|value| value.chars().count() > 24 || value.chars().any(char::is_control))
+        {
+            return Err(CloakError::InvalidAccountMark);
+        }
+        write_secret_atomic(&path, note.unwrap_or(""))?;
+    } else {
+        remove_if_present(&path)?;
     }
     read_account(config, name)
 }
@@ -2227,6 +2261,7 @@ fn secure_account_dir(path: &Path) -> Result<()> {
         ".cloak-locale",
         ".cloak-region",
         ".cloak-group",
+        ".cloak-marked",
     ] {
         let path = path.join(file);
         if path.exists() {
@@ -2403,6 +2438,10 @@ mod tests {
         assert_eq!(account.created_at, renamed.created_at);
         assert!(renamed.profile_path.join(".cloak-seed").exists());
         assert!(renamed.profile_path.join(".cloak-created-at").exists());
+        assert!(!config.profile_dir("work").exists());
+        assert_eq!(create_account(&config, "work").unwrap().name, "work");
+        let duplicate = create_account(&config, "work").unwrap_err();
+        assert!(matches!(duplicate, CloakError::AccountExists(name) if name == "work"));
     }
 
     #[test]
@@ -2454,6 +2493,66 @@ mod tests {
         let cleared = set_group(&config, "work2", None).unwrap();
         assert_eq!(cleared.group, None);
         assert!(!config.profile_dir("work2").join(".cloak-group").exists());
+    }
+
+    #[test]
+    fn account_mark_persists_clears_and_survives_account_lifecycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = CloakConfig {
+            repo_root: dir.path().to_path_buf(),
+            account_base: dir.path().join("accounts"),
+            extension_source: dir.path().join("extension"),
+            cloakbrowser_root: dir.path().join("browser"),
+        };
+        fs::create_dir_all(&config.extension_source).unwrap();
+
+        create_account(&config, "work").unwrap();
+        let marked = set_mark(&config, "work", true, None).unwrap();
+        assert!(marked.marked);
+        assert_eq!(marked.mark_note, None);
+        assert!(config.profile_dir("work").join(".cloak-marked").exists());
+
+        let noted = set_mark(&config, "work", true, Some("  待复查  ")).unwrap();
+        assert!(noted.marked);
+        assert_eq!(noted.mark_note.as_deref(), Some("待复查"));
+
+        let renamed = rename_account(&config, "work", "work2").unwrap();
+        assert!(renamed.marked);
+        assert_eq!(renamed.mark_note.as_deref(), Some("待复查"));
+        let trashed = set_account_trashed(&config, "work2", true).unwrap();
+        assert!(trashed.marked);
+        assert_eq!(trashed.mark_note.as_deref(), Some("待复查"));
+        let restored = set_account_trashed(&config, "work2", false).unwrap();
+        assert!(restored.marked);
+        assert_eq!(restored.mark_note.as_deref(), Some("待复查"));
+
+        let cleared = set_mark(&config, "work2", false, None).unwrap();
+        assert!(!cleared.marked);
+        assert_eq!(cleared.mark_note, None);
+        assert!(!config.profile_dir("work2").join(".cloak-marked").exists());
+    }
+
+    #[test]
+    fn account_mark_rejects_multiline_and_overlong_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = CloakConfig {
+            repo_root: dir.path().to_path_buf(),
+            account_base: dir.path().join("accounts"),
+            extension_source: dir.path().join("extension"),
+            cloakbrowser_root: dir.path().join("browser"),
+        };
+        fs::create_dir_all(&config.extension_source).unwrap();
+        create_account(&config, "work").unwrap();
+
+        assert!(matches!(
+            set_mark(&config, "work", true, Some("first\nsecond")),
+            Err(CloakError::InvalidAccountMark)
+        ));
+        assert!(matches!(
+            set_mark(&config, "work", true, Some("1234567890123456789012345")),
+            Err(CloakError::InvalidAccountMark)
+        ));
+        assert!(!read_account(&config, "work").unwrap().marked);
     }
 
     #[test]

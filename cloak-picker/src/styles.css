@@ -540,6 +540,54 @@ summary:focus-visible {
   white-space: nowrap;
 }
 
+.accountMark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+}
+
+.accountMark.withNote {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 92px;
+  justify-content: flex-start;
+  gap: 5px;
+  overflow: hidden;
+  border: 1px solid rgba(217, 45, 32, 0.2);
+  border-radius: 999px;
+  background: var(--danger-soft);
+  padding: 0 7px 0 5px;
+  line-height: 18px;
+}
+
+.markDot,
+.contextMarkDot {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 2px rgba(217, 45, 32, 0.1);
+}
+
+.markNote {
+  min-width: 0;
+  overflow: hidden;
+  color: #b42318;
+  font-size: 10px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contextMarkDot.clear {
+  border: 1.5px solid rgba(217, 45, 32, 0.72);
+  background: transparent;
+  box-shadow: none;
+}
+
 .accountTitle code {
   flex: 0 0 auto;
   min-width: 76px;

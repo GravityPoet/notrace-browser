@@ -3,7 +3,7 @@ use clap::{Args, Parser, Subcommand};
 use cloak_core::{
     build_launch_plan, create_account, delete_account, launch_account, list_accounts,
     list_trashed_accounts, permanently_delete_account, read_account, rename_account, self_check,
-    set_account_trashed, set_group, set_proxy, set_region, toggle_locale, CloakConfig,
+    set_account_trashed, set_group, set_mark, set_proxy, set_region, toggle_locale, CloakConfig,
     LaunchOptions,
 };
 
@@ -76,6 +76,14 @@ enum AccountCommand {
         json: bool,
     },
     SetGroup {
+        name: String,
+        value: Option<String>,
+        #[arg(long)]
+        clear: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    SetMark {
         name: String,
         value: Option<String>,
         #[arg(long)]
@@ -186,6 +194,20 @@ fn handle_account(command: AccountCommand, config: &CloakConfig) -> Result<()> {
             let account = set_group(config, &name, if clear { None } else { value.as_deref() })?;
             print_account(account, json)?;
         }
+        AccountCommand::SetMark {
+            name,
+            value,
+            clear,
+            json,
+        } => {
+            let account = set_mark(
+                config,
+                &name,
+                !clear,
+                if clear { None } else { value.as_deref() },
+            )?;
+            print_account(account, json)?;
+        }
         AccountCommand::ToggleLocale { name, json } => {
             let account = toggle_locale(config, &name)?;
             print_account(account, json)?;
@@ -275,6 +297,7 @@ fn print_account(account: cloak_core::Account, json: bool) -> Result<()> {
     if json {
         print_json(&account)?;
     } else {
+        let mark = account_mark(&account).to_string();
         println!("account : {}", account.name);
         println!("seed    : {}", account.seed);
         println!("status  : {}", account_status(&account));
@@ -282,6 +305,7 @@ fn print_account(account: cloak_core::Account, json: bool) -> Result<()> {
             "group   : {}",
             account.group.unwrap_or_else(|| "-".to_string())
         );
+        println!("mark    : {mark}");
         println!("profile : {}", account.profile_path.display());
         println!(
             "region  : {}",
@@ -301,12 +325,14 @@ fn print_account_list(accounts: Vec<cloak_core::Account>, json: bool) -> Result<
         print_json(&accounts)?;
     } else {
         for account in accounts {
+            let mark = account_mark(&account).to_string();
             println!(
-                "{}\tseed {}\tstatus {}\tgroup {}\tregion {}\tlocale {}\tproxy {}",
+                "{}\tseed {}\tstatus {}\tgroup {}\tmark {}\tregion {}\tlocale {}\tproxy {}",
                 account.name,
                 account.seed,
                 account_status(&account),
                 account.group.unwrap_or_else(|| "-".to_string()),
+                mark,
                 account.region.unwrap_or_else(|| "-".to_string()),
                 if account.locale_enabled { "on" } else { "off" },
                 account.proxy_display
@@ -314,6 +340,14 @@ fn print_account_list(accounts: Vec<cloak_core::Account>, json: bool) -> Result<
         }
     }
     Ok(())
+}
+
+fn account_mark(account: &cloak_core::Account) -> &str {
+    if account.marked {
+        account.mark_note.as_deref().unwrap_or("yes")
+    } else {
+        "-"
+    }
 }
 
 fn account_status(account: &cloak_core::Account) -> &'static str {
