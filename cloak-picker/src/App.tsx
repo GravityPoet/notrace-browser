@@ -42,6 +42,8 @@ type Account = {
   trashed: boolean;
   seed: string;
   group: string | null;
+  marked: boolean;
+  mark_note: string | null;
   region: string | null;
   locale_enabled: boolean;
   proxy_display: string;
@@ -89,6 +91,7 @@ type DialogState =
   | { kind: "proxy"; account: Account; value: string }
   | { kind: "region"; account: Account; value: string }
   | { kind: "group"; account: Account; value: string }
+  | { kind: "mark"; account: Account; value: string }
   | { kind: "delete"; account: Account }
   | { kind: "permanentDelete"; account: Account }
   | { kind: "deleteGroup"; groupLabel: string; count: number };
@@ -113,6 +116,7 @@ const accountContextMenuMaxHeight = 320;
 const contextMenuViewportPadding = 8;
 
 const emptyAccounts: Account[] = [];
+const mockMarkOverrides = new Map<string, { marked: boolean; note: string | null }>();
 type AccountView = "active" | "trash";
 const allGroupsValue = "__all__";
 const allGroupsLabel = "全部";
@@ -403,6 +407,26 @@ export default function App() {
       return;
     }
 
+    if (dialog.kind === "mark") {
+      const currentNote = dialog.account.mark_note?.trim() || "";
+      if (dialog.account.marked && value === currentNote) {
+        setDialog(null);
+        return;
+      }
+      const updated = await run(() =>
+        call<Account>("set_mark", {
+          name: dialog.account.name,
+          marked: true,
+          note: value || null,
+        }),
+      );
+      if (updated) {
+        setDialog(null);
+        await refresh(updated.name);
+      }
+      return;
+    }
+
     const updated = await run(() =>
       call<Account>("set_region", {
         name: dialog.account.name,
@@ -483,6 +507,23 @@ export default function App() {
     setDialog({ kind: "rename", account, value: account.name });
   }
 
+  function markAccountFromContextMenu(account: Account) {
+    setAccountContextMenu(null);
+    setDialog({ kind: "mark", account, value: account.mark_note ?? "" });
+  }
+
+  async function clearAccountMarkFromContextMenu(account: Account) {
+    setAccountContextMenu(null);
+    const updated = await run(() =>
+      call<Account>("set_mark", {
+        name: account.name,
+        marked: false,
+        note: null,
+      }),
+    );
+    if (updated) await refresh(updated.name);
+  }
+
   function deleteAccountFromContextMenu(account: Account) {
     setAccountContextMenu(null);
     setDialog(account.trashed ? { kind: "permanentDelete", account } : { kind: "delete", account });
@@ -495,7 +536,7 @@ export default function App() {
       event.clientX,
       event.clientY,
       accountContextMenuWidth,
-      accountContextMenuHeight(groupOptions.length),
+      accountContextMenuHeight(groupOptions.length, account.marked),
     );
     setGroupContextMenu(null);
     setSelectedName(account.name);
@@ -1122,6 +1163,28 @@ export default function App() {
             disabled={busy}
             type="button"
             role="menuitem"
+            onClick={() => markAccountFromContextMenu(accountContextMenu.account)}
+          >
+            <span className="contextMarkDot" aria-hidden="true" />
+            <span className="contextMenuItemLabel">{accountContextMenu.account.marked ? "编辑标记" : "标记"}</span>
+          </button>
+          {accountContextMenu.account.marked ? (
+            <button
+              className="contextMenuItem"
+              disabled={busy}
+              type="button"
+              role="menuitem"
+              onClick={() => void clearAccountMarkFromContextMenu(accountContextMenu.account)}
+            >
+              <span className="contextMarkDot clear" aria-hidden="true" />
+              <span className="contextMenuItemLabel">取消标记</span>
+            </button>
+          ) : null}
+          <button
+            className="contextMenuItem"
+            disabled={busy}
+            type="button"
+            role="menuitem"
             onClick={() => renameAccountFromContextMenu(accountContextMenu.account)}
           >
             <Pencil size={14} />
@@ -1235,7 +1298,7 @@ function AccountGroupSection({
               className={`accountRow ${account.name === selectedName ? "selected" : ""}`}
               draggable={!account.trashed}
               key={account.name}
-              title={account.trashed ? account.name : `${account.name}｜拖动可调整分组`}
+              title={`${account.name}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${account.trashed ? "" : "｜拖动可调整分组"}`}
               onClick={() => onSelectAccount(account.name)}
               onContextMenu={(event) => onOpenAccountContextMenu(event, account)}
               onDoubleClick={() => {
@@ -1256,6 +1319,16 @@ function AccountGroupSection({
                 <span className="accountTitle">
                   <GripVertical className="dragHandle" size={14} />
                   <strong title={account.name}>{middleTruncate(account.name, 34)}</strong>
+                  {account.marked ? (
+                    <span
+                      className={`accountMark ${account.mark_note ? "withNote" : ""}`}
+                      title={account.mark_note ?? "已标记"}
+                      aria-label={account.mark_note ? `标记：${account.mark_note}` : "已标记"}
+                    >
+                      <span className="markDot" aria-hidden="true" />
+                      {account.mark_note ? <span className="markNote">{middleTruncate(account.mark_note, 16)}</span> : null}
+                    </span>
+                  ) : null}
                   <code>{formatCreatedDate(account.created_at)}</code>
                 </span>
               </span>
@@ -1412,6 +1485,7 @@ function EditorDialog({
           <span>{config.label}</span>
           <input
             autoFocus
+            maxLength={dialog.kind === "mark" ? 24 : undefined}
             value={dialog.value}
             placeholder={config.placeholder}
             onChange={(event) => onChange({ ...dialog, value: event.currentTarget.value })}
@@ -1459,6 +1533,16 @@ function dialogConfig(
     case "group": {
       const accountName = middleTruncate(dialog.account.name, 28);
       return { title: `分组「${accountName}」`, label: "分组名称", placeholder: "codex / antigravity / claude", action: dialog.account.group ? "保存 / 清除" : "保存" };
+    }
+    case "mark": {
+      const accountName = middleTruncate(dialog.account.name, 28);
+      return {
+        title: `标记「${accountName}」`,
+        label: "标记内容（可选，最多 24 个字符）",
+        placeholder: "例如：待处理 / 备用 / 已验证",
+        action: "保存标记",
+        description: "不输入文字时只显示红色圆圈；输入后会显示在圆圈旁边。",
+      };
     }
   }
 }
@@ -1658,8 +1742,8 @@ function clampNumber(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
-function accountContextMenuHeight(optionCount: number) {
-  return Math.min(accountContextMenuMaxHeight, 70 + optionCount * 32 + 68);
+function accountContextMenuHeight(optionCount: number, marked: boolean) {
+  return Math.min(accountContextMenuMaxHeight, 70 + optionCount * 32 + 100 + (marked ? 32 : 0));
 }
 
 function placeContextMenu(x: number, y: number, width: number, height: number) {
@@ -1698,6 +1782,8 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
       trashed: false,
       seed: "68122",
       group: (args?.group as string | null | undefined) ?? null,
+      marked: false,
+      mark_note: null,
     } as T;
   }
   if (command === "rename_account") return { ...accounts[0], name: String(args?.newName ?? "renamed") } as T;
@@ -1706,12 +1792,20 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
   if (command === "set_group") {
     return { ...accounts[0], name: String(args?.name ?? accounts[0].name), group: (args?.value as string | null | undefined) ?? null } as T;
   }
+  if (command === "set_mark") {
+    const name = String(args?.name ?? accounts[0].name);
+    const marked = Boolean(args?.marked);
+    const note = (args?.note as string | null | undefined) ?? null;
+    mockMarkOverrides.set(name, { marked, note });
+    const account = accounts.find((item) => item.name === name) ?? accounts[0];
+    return { ...account, name, marked, mark_note: marked ? note : null } as T;
+  }
   if (command === "set_proxy" || command === "set_region" || command === "toggle_locale") return accounts[0] as T;
   return undefined as T;
 }
 
 function mockAccounts(): Account[] {
-  return [
+  const accounts: Account[] = [
     {
       name: "demo-alpha@example.test",
       profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-alpha@example.test",
@@ -1720,6 +1814,8 @@ function mockAccounts(): Account[] {
       trashed: false,
       seed: "48366",
       group: "codex",
+      marked: true,
+      mark_note: null,
       region: null,
       locale_enabled: false,
       proxy_display: "关",
@@ -1733,6 +1829,8 @@ function mockAccounts(): Account[] {
       trashed: false,
       seed: "77296",
       group: "claude",
+      marked: false,
+      mark_note: null,
       region: "JP",
       locale_enabled: true,
       proxy_display: "关",
@@ -1746,6 +1844,8 @@ function mockAccounts(): Account[] {
       trashed: false,
       seed: "68098",
       group: "codex",
+      marked: true,
+      mark_note: "待检查",
       region: "US",
       locale_enabled: false,
       proxy_display: "socks5://proxy.example.net:1080（经本机 SOCKS5 中继）",
@@ -1759,12 +1859,20 @@ function mockAccounts(): Account[] {
       trashed: true,
       seed: "51024",
       group: null,
+      marked: false,
+      mark_note: null,
       region: "NL",
       locale_enabled: false,
       proxy_display: "关",
       has_proxy: false,
     },
   ];
+  return accounts.map((account) => {
+    const override = mockMarkOverrides.get(account.name);
+    return override
+      ? { ...account, marked: override.marked, mark_note: override.marked ? override.note : null }
+      : account;
+  });
 }
 
 function mockLaunchPlan(account: Account, full: boolean): LaunchPlan {
@@ -1872,7 +1980,7 @@ function errorMessage(caught: unknown) {
     return `账号不存在：${raw.slice(doesNotExistPrefix.length)}`;
   }
   if (raw.startsWith(runningPrefix)) {
-    return `账号正在运行：${raw.slice(runningPrefix.length)}。请先关闭这个浏览器窗口，再删除、恢复或彻底删除。`;
+    return `账号正在运行：${raw.slice(runningPrefix.length)}。请先关闭这个浏览器窗口，再重命名、删除、恢复或彻底删除。`;
   }
   if (raw.startsWith(trashedPrefix)) {
     return `账号已在回收站：${raw.slice(trashedPrefix.length)}。请先恢复再启动。`;
@@ -1885,6 +1993,9 @@ function errorMessage(caught: unknown) {
   }
   if (raw.includes("unsupported proxy URL")) {
     return "代理须以 socks5://、http:// 或 https:// 开头。";
+  }
+  if (raw.includes("account mark is invalid")) {
+    return "标记内容无效：请使用不超过 24 个字符的单行文字。";
   }
   return raw;
 }
