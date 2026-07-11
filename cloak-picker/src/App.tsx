@@ -377,6 +377,10 @@ export default function App() {
       const group = dialog.group.trim() || null;
       const account = await run(() => call<Account>("create_account", { name: value, group }));
       if (account) {
+        setAccountOrder((current) => [
+          account.name,
+          ...orderedAccountNames(accounts, current).filter((name) => name !== account.name),
+        ]);
         if (group) {
           setHiddenGroups((current) => current.filter((label) => label !== group));
         }
