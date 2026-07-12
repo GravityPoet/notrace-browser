@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify macOS project
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cloak-picker/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: cloak-picker
+
+      - name: Audit frontend dependencies
+        run: npm audit --audit-level=high
+        working-directory: cloak-picker
+
+      - name: Test frontend behavior
+        run: npm test
+        working-directory: cloak-picker
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: cloak-picker
+
+      - name: Enable Rust quality components
+        run: rustup component add clippy rustfmt
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint Rust
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test Rust workspace
+        run: cargo test --workspace
+
+      - name: Build Swift tools
+        run: swift build
+
+      - name: Check script syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'rm -rf packaging/__pycache__' EXIT
+          bash -n packaging/*.sh
+          python3 -m py_compile packaging/*.py
+          for file in extension/cloak-companion/*.js selftest/*.mjs; do
+            node --check "$file"
+          done
+          ./packaging/test-patch-chromium.sh
+
+      - name: Build and install the canonical app shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CLOAK_PICKER_INSTALL_APP="$RUNNER_TEMP/Cloak Picker.app"
+          ./packaging/install-cloak-picker-app.sh
+          codesign --verify --deep --strict "$CLOAK_PICKER_INSTALL_APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$CLOAK_PICKER_INSTALL_APP/Contents/Info.plist")" = "local.cloak.picker"
+          test ! -e "target/release/bundle/macos/Cloak Picker.app"
+          test ! -d "target/release/bundle/dmg"

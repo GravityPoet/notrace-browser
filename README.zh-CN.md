@@ -125,6 +125,8 @@ NoTrace Browser 针对 macOS 系统环境进行了深度的专属适配：
 请按当前[官方安装说明](https://github.com/CloakHQ/CloakBrowser#install)完成首次下载或启动，确保 Chromium 应用包存在于 `~/.cloakbrowser/chromium-*` 下（也支持可选的 `~/.cloakbrowser/current` 软链接）。请根据上游当前授权条款选择免费或 Pro 内核。NoTrace 安装脚本不会为您下载或授权该二进制文件。
 
 ### 第一步：克隆仓库并编译账号选择器
+构建前需要 macOS 12 或更高版本、Xcode Command Line Tools、稳定版 Rust 工具链，以及带 npm 的 Node.js 20 或更高版本。当前端依赖缺失或与 `package.json` 不一致时，安装脚本会自动执行 `npm ci`。
+
 如果您希望使用直观的原生多账号图形选择器（基于 Tauri 开发的日间模式界面）：
 ```bash
 # 构建 Tauri 账号选择器并安装至 /Applications/Cloak Picker.app
@@ -179,6 +181,7 @@ node selftest/run-live-challenge-audit.mjs --headed --site browserscan --site fi
 
 ## ⚠️ 局限性与避坑指南
 
+* **蓝牙 / Passkey 授权范围**：macOS 蓝牙权限属于 CloakBrowser App 的代码身份，并不属于某个 NoTrace 账号；同一份未变化的内核不应再次要求系统授权，但内核升级或确有必要的重签仍可能重新弹窗。Chromium 与网站权限保存在各自隔离的账号 Profile 中，因此每个新建账号第一次使用 Passkey 时仍可能单独询问一次。
 * **内置网页翻译不可用**：CloakBrowser 采用了 *ungoogled-chromium* 编译版，在网络底层剥离了 Google 域名（重定向至 `chrome.9oo91e.qjz9zk`）和 Chrome 应用商店接口。因此，Chromium 右键的“翻译此页”会报错失效。
   * *避坑方案*：将您喜欢的翻译插件打包为 **已解压的扩展程序** (unpacked) 并在您的账号 Profile 页面手动加载即可。
 * **原生 PWA 的启动参数限制**：如果您从 Launchpad 或 Dock 直接点击创建的单 PWA 应用，macOS 的快捷方式机制不支持在启动时追加命令行 flag（例如 `--proxy-server` 或 `--fingerprint-webrtc-ip` 无法直接传入）。如需要严格的代理隔离与高级 Seed 指纹防关联，请务必使用 **多账号选择器 (Cloak Picker)** 启动独立实例。
