@@ -100,12 +100,14 @@ type DialogState =
 type GroupContextMenuState = {
   groupLabel: string;
   count: number;
+  returnFocusElement: HTMLElement | null;
   x: number;
   y: number;
 };
 
 type AccountContextMenuState = {
   account: Account;
+  returnFocusElement: HTMLElement;
   x: number;
   y: number;
 };
@@ -189,6 +191,7 @@ export default function App() {
   const groupDragMovedRef = useRef(false);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const resizingPaneRef = useRef(false);
+  const dialogTriggerRef = useRef<HTMLElement | null>(null);
 
   const orderedAccounts = useMemo(() => orderAccounts(accounts, accountOrder), [accounts, accountOrder]);
   const normalizedAccountSearch = accountSearch.trim().toLocaleLowerCase();
@@ -468,10 +471,16 @@ export default function App() {
     }
   }
 
-  function openCreateDialog() {
+  function openDialog(next: DialogState, trigger?: HTMLElement | null) {
+    dialogTriggerRef.current =
+      trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    setDialog(next);
+  }
+
+  function openCreateDialog(trigger?: HTMLElement | null) {
     setError("");
     setDialogError("");
-    setDialog({ kind: "create", value: "", group: defaultCreateGroupValue() });
+    openDialog({ kind: "create", value: "", group: defaultCreateGroupValue() }, trigger);
   }
 
   function defaultCreateGroupValue() {
@@ -569,14 +578,14 @@ export default function App() {
     await assignAccountGroup(account, value || null, false);
   }
 
-  function renameAccountFromContextMenu(account: Account) {
+  function renameAccountFromContextMenu(account: Account, trigger: HTMLElement) {
     setAccountContextMenu(null);
-    setDialog({ kind: "rename", account, value: account.name });
+    openDialog({ kind: "rename", account, value: account.name }, trigger);
   }
 
-  function markAccountFromContextMenu(account: Account) {
+  function markAccountFromContextMenu(account: Account, trigger: HTMLElement) {
     setAccountContextMenu(null);
-    setDialog({ kind: "mark", account, value: account.mark_note ?? "" });
+    openDialog({ kind: "mark", account, value: account.mark_note ?? "" }, trigger);
   }
 
   async function clearAccountMarkFromContextMenu(account: Account) {
@@ -591,9 +600,9 @@ export default function App() {
     if (updated) await refresh(updated.name);
   }
 
-  function deleteAccountFromContextMenu(account: Account) {
+  function deleteAccountFromContextMenu(account: Account, trigger: HTMLElement) {
     setAccountContextMenu(null);
-    setDialog(account.trashed ? { kind: "permanentDelete", account } : { kind: "delete", account });
+    openDialog(account.trashed ? { kind: "permanentDelete", account } : { kind: "delete", account }, trigger);
   }
 
   function openAccountContextMenu(event: MouseEvent<HTMLButtonElement>, account: Account) {
@@ -609,6 +618,7 @@ export default function App() {
     setSelectedName(account.name);
     setAccountContextMenu({
       account,
+      returnFocusElement: event.currentTarget,
       x: menuPosition.x,
       y: menuPosition.y,
     });
@@ -899,7 +909,7 @@ export default function App() {
           <IconButton label="刷新" disabled={busy} onClick={() => void run(() => refresh())}>
             <RefreshCw size={15} />
           </IconButton>
-          <button className="primaryButton" disabled={busy} onClick={openCreateDialog}>
+          <button className="primaryButton" disabled={busy} onClick={(event) => openCreateDialog(event.currentTarget)}>
             <Plus size={15} />
             新建
           </button>
@@ -939,7 +949,7 @@ export default function App() {
               <input
                 aria-label="搜索账号"
                 autoComplete="off"
-                placeholder="搜索账号或标记"
+                placeholder="搜索账号、分组或标记"
                 spellCheck={false}
                 type="search"
                 value={accountSearch}
@@ -994,6 +1004,7 @@ export default function App() {
                     setGroupContextMenu({
                       groupLabel: group.label,
                       count: group.count,
+                      returnFocusElement: event.currentTarget.querySelector<HTMLElement>(".groupFilterSelect"),
                       x: menuPosition.x,
                       y: menuPosition.y,
                     });
@@ -1034,7 +1045,7 @@ export default function App() {
                     hasAccountSearch
                       ? () => setAccountSearch("")
                       : accountView === "active"
-                        ? openCreateDialog
+                        ? (event) => openCreateDialog(event.currentTarget)
                         : () => setAccountView("active")
                   }
                 >
@@ -1183,16 +1194,16 @@ export default function App() {
                   {selected.trashed ? (
                     <>
                       <ActionButton icon={<ArchiveRestore size={15} />} label="恢复账号" onClick={() => void restoreAccount(selected)} />
-                      <ActionButton danger icon={<Trash2 size={15} />} label="彻底删除" onClick={() => setDialog({ kind: "permanentDelete", account: selected })} />
+                      <ActionButton danger icon={<Trash2 size={15} />} label="彻底删除" onClick={(event) => openDialog({ kind: "permanentDelete", account: selected }, event.currentTarget)} />
                     </>
                   ) : (
                     <>
-                      <ActionButton icon={<Network size={15} />} label="代理" onClick={() => setDialog({ kind: "proxy", account: selected, value: "" })} />
-                      <ActionButton icon={<Tag size={15} />} label="区域" onClick={() => setDialog({ kind: "region", account: selected, value: selected.region ?? "" })} />
-                      <ActionButton icon={<Folder size={15} />} label="分组" onClick={() => setDialog({ kind: "group", account: selected, value: selected.group ?? "" })} />
+                      <ActionButton icon={<Network size={15} />} label="代理" onClick={(event) => openDialog({ kind: "proxy", account: selected, value: "" }, event.currentTarget)} />
+                      <ActionButton icon={<Tag size={15} />} label="区域" onClick={(event) => openDialog({ kind: "region", account: selected, value: selected.region ?? "" }, event.currentTarget)} />
+                      <ActionButton icon={<Folder size={15} />} label="分组" onClick={(event) => openDialog({ kind: "group", account: selected, value: selected.group ?? "" }, event.currentTarget)} />
                       <ActionButton icon={<Globe2 size={15} />} label={selected.locale_enabled ? "关闭语言" : "开启语言"} onClick={() => void toggleLocale(selected)} />
-                      <ActionButton icon={<Pencil size={15} />} label="重命名" onClick={() => setDialog({ kind: "rename", account: selected, value: selected.name })} />
-                      <ActionButton danger icon={<Trash2 size={15} />} label="删除" onClick={() => setDialog({ kind: "delete", account: selected })} />
+                      <ActionButton icon={<Pencil size={15} />} label="重命名" onClick={(event) => openDialog({ kind: "rename", account: selected, value: selected.name }, event.currentTarget)} />
+                      <ActionButton danger icon={<Trash2 size={15} />} label="删除" onClick={(event) => openDialog({ kind: "delete", account: selected }, event.currentTarget)} />
                     </>
                   )}
                 </div>
@@ -1222,11 +1233,11 @@ export default function App() {
             type="button"
             role="menuitem"
             onClick={() => {
-              setDialog({
+              openDialog({
                 kind: "deleteGroup",
                 groupLabel: groupContextMenu.groupLabel,
                 count: groupContextMenu.count,
-              });
+              }, groupContextMenu.returnFocusElement);
               setGroupContextMenu(null);
             }}
           >
@@ -1278,7 +1289,9 @@ export default function App() {
             disabled={busy}
             type="button"
             role="menuitem"
-            onClick={() => markAccountFromContextMenu(accountContextMenu.account)}
+            onClick={() =>
+              markAccountFromContextMenu(accountContextMenu.account, accountContextMenu.returnFocusElement)
+            }
           >
             <span className="contextMarkDot" aria-hidden="true" />
             <span className="contextMenuItemLabel">{accountContextMenu.account.marked ? "编辑标记" : "标记"}</span>
@@ -1300,7 +1313,9 @@ export default function App() {
             disabled={busy}
             type="button"
             role="menuitem"
-            onClick={() => renameAccountFromContextMenu(accountContextMenu.account)}
+            onClick={() =>
+              renameAccountFromContextMenu(accountContextMenu.account, accountContextMenu.returnFocusElement)
+            }
           >
             <Pencil size={14} />
             <span className="contextMenuItemLabel">重命名</span>
@@ -1310,7 +1325,9 @@ export default function App() {
             disabled={busy}
             type="button"
             role="menuitem"
-            onClick={() => deleteAccountFromContextMenu(accountContextMenu.account)}
+            onClick={() =>
+              deleteAccountFromContextMenu(accountContextMenu.account, accountContextMenu.returnFocusElement)
+            }
           >
             <Trash2 size={14} />
             <span className="contextMenuItemLabel">{accountContextMenu.account.trashed ? "彻底删除" : "删除"}</span>
@@ -1324,6 +1341,7 @@ export default function App() {
           dialog={dialog}
           busy={busy}
           error={dialogError}
+          returnFocusElement={dialogTriggerRef.current}
           onChange={(next) => {
             setDialogError("");
             setDialog(next);
@@ -1471,6 +1489,7 @@ function EditorDialog({
   dialog,
   busy,
   error,
+  returnFocusElement,
   onChange,
   onClose,
   onConfirmDelete,
@@ -1483,6 +1502,7 @@ function EditorDialog({
   dialog: DialogState;
   busy: boolean;
   error: string;
+  returnFocusElement: HTMLElement | null;
   onChange: (next: DialogState | null) => void;
   onClose: () => void;
   onConfirmDelete: (account: Account) => void;
@@ -1492,14 +1512,80 @@ function EditorDialog({
   onQuickGroup: (account: Account, value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
+  const modalRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  const busyRef = useRef(busy);
+  const previouslyFocusedRef = useRef<HTMLElement | null>(
+    returnFocusElement ??
+      (typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null),
+  );
+  const dialogTitleId = "cloak-editor-dialog-title";
+
+  onCloseRef.current = onClose;
+  busyRef.current = busy;
+
+  useEffect(() => {
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      const modal = modalRef.current;
+      if (!modal) return;
+
+      if (event.key === "Escape") {
+        if (busyRef.current) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onCloseRef.current();
+        return;
+      }
+
+      if (event.key !== "Tab") return;
+      const focusable = dialogFocusableElements(modal);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        modal.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !modal.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || !modal.contains(active))) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown, true);
+      const previous = previouslyFocusedRef.current;
+      window.requestAnimationFrame(() => {
+        if (!modalRef.current && previous?.isConnected) previous.focus();
+      });
+    };
+  }, []);
+
   if (dialog.kind === "delete") {
     return (
       <div className="modalBackdrop">
-        <div className="modal" role="dialog" aria-modal="true">
+        <div
+          aria-labelledby={dialogTitleId}
+          aria-modal="true"
+          className="modal"
+          ref={(node) => {
+            modalRef.current = node;
+          }}
+          role="dialog"
+          tabIndex={-1}
+        >
           <button className="modalClose" type="button" aria-label="关闭" onClick={onClose}>
             <X size={15} />
           </button>
-          <h2 title={`删除「${dialog.account.name}」？`}>
+          <h2 id={dialogTitleId} title={`删除「${dialog.account.name}」？`}>
             删除「<span className="dialogAccountName">{middleTruncate(dialog.account.name, 28)}</span>」？
           </h2>
           <p>账号会移入回收站，可恢复；账号目录、登录数据和缓存会保留，不会立即释放磁盘。</p>
@@ -1520,11 +1606,20 @@ function EditorDialog({
   if (dialog.kind === "permanentDelete") {
     return (
       <div className="modalBackdrop">
-        <div className="modal" role="alertdialog" aria-modal="true">
+        <div
+          aria-labelledby={dialogTitleId}
+          aria-modal="true"
+          className="modal"
+          ref={(node) => {
+            modalRef.current = node;
+          }}
+          role="alertdialog"
+          tabIndex={-1}
+        >
           <button className="modalClose" type="button" aria-label="关闭" onClick={onClose}>
             <X size={15} />
           </button>
-          <h2 title={`彻底删除「${dialog.account.name}」？`}>
+          <h2 id={dialogTitleId} title={`彻底删除「${dialog.account.name}」？`}>
             彻底删除「<span className="dialogAccountName">{middleTruncate(dialog.account.name, 28)}</span>」？
           </h2>
           <p>将永久删除该账号目录、登录数据和缓存。此操作不可恢复。</p>
@@ -1545,11 +1640,20 @@ function EditorDialog({
   if (dialog.kind === "deleteGroup") {
     return (
       <div className="modalBackdrop">
-        <div className="modal" role="alertdialog" aria-modal="true">
+        <div
+          aria-labelledby={dialogTitleId}
+          aria-modal="true"
+          className="modal"
+          ref={(node) => {
+            modalRef.current = node;
+          }}
+          role="alertdialog"
+          tabIndex={-1}
+        >
           <button className="modalClose" type="button" aria-label="关闭" onClick={onClose}>
             <X size={15} />
           </button>
-          <h2 title={`删除分组「${dialog.groupLabel}」？`}>
+          <h2 id={dialogTitleId} title={`删除分组「${dialog.groupLabel}」？`}>
             删除分组「<span className="dialogAccountName">{middleTruncate(dialog.groupLabel, 28)}</span>」？
           </h2>
           <p>
@@ -1603,11 +1707,21 @@ function EditorDialog({
     ) : null;
   return (
     <div className="modalBackdrop">
-      <form className="modal" onSubmit={onSubmit}>
+      <form
+        aria-labelledby={dialogTitleId}
+        aria-modal="true"
+        className="modal"
+        onSubmit={onSubmit}
+        ref={(node) => {
+          modalRef.current = node;
+        }}
+        role="dialog"
+        tabIndex={-1}
+      >
         <button className="modalClose" type="button" aria-label="关闭" onClick={onClose}>
           <X size={15} />
         </button>
-        <h2>{config.title}</h2>
+        <h2 id={dialogTitleId}>{config.title}</h2>
         {config.description ? <p>{config.description}</p> : null}
         {dialog.kind === "group" ? groupPicker : null}
         <label className="field">
@@ -1653,7 +1767,15 @@ function dialogConfig(
     }
     case "proxy": {
       const accountName = middleTruncate(dialog.account.name, 28);
-      return { title: `代理「${accountName}」`, label: "代理地址", placeholder: "socks5://user:pass@host:1080", action: dialog.account.has_proxy ? "保存 / 清除" : "保存" };
+      return {
+        title: `代理「${accountName}」`,
+        label: "代理地址",
+        placeholder: "socks5://user:pass@host:1080",
+        action: dialog.account.has_proxy ? "保存 / 清除" : "保存",
+        description: dialog.account.has_proxy
+          ? "现有代理已配置但不会回显。输入完整新地址可替换；留空并保存会清除当前代理。"
+          : "支持 socks5://、http:// 和 https://。包含凭据时不会在账号详情中回显。",
+      };
     }
     case "region": {
       const accountName = middleTruncate(dialog.account.name, 28);
@@ -1674,6 +1796,14 @@ function dialogConfig(
       };
     }
   }
+}
+
+function dialogFocusableElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => element.getClientRects().length > 0 && element.getAttribute("aria-hidden") !== "true");
 }
 
 function IconButton({
@@ -1702,7 +1832,7 @@ function ActionButton({
 }: {
   icon: ReactNode;
   label: string;
-  onClick: () => void;
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void;
   danger?: boolean;
 }) {
   return (
@@ -2014,7 +2144,7 @@ function mockAccounts(): Account[] {
       profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-gamma",
       created_at: 1_700_000_003_000_000,
       archived: true,
-      trashed: false,
+      trashed: true,
       seed: "68098",
       group: "codex",
       marked: true,
