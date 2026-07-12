@@ -16,9 +16,10 @@ set -euo pipefail
 # present in the binary (webauthn.cablev2_pairings); only the usage-description key is missing.
 #
 # Fix: inject NSMicrophoneUsageDescription + NSCameraUsageDescription + NSBluetoothAlwaysUsageDescription
-# into the main app and its helper bundles, then ad-hoc re-sign so the bundle seals stay
-# consistent. Idempotent and re-runnable. CloakBrowser upgrades replace Chromium and drop the keys
-# again, so re-run after every CloakBrowser upgrade.
+# into the main app and its helper bundles, then ad-hoc re-sign only when those files changed
+# or the existing signature is invalid. Avoiding unnecessary re-signing preserves the app's
+# CDHash and therefore its existing macOS TCC permission identity. CloakBrowser upgrades replace
+# Chromium and drop the keys again, so re-run after every CloakBrowser upgrade.
 #
 # Note: Chromium is intentionally NOT rebranded. The green ChatGPT identity belongs to the
 # NoTrace Browser launcher; the Chromium it drives stays a plain browser so the two are distinct.
@@ -51,14 +52,20 @@ done
 
 set_key() {
   local plist="$1" key="$2" val="$3"
-  if "$PLISTBUDDY" -c "Print :$key" "$plist" >/dev/null 2>&1; then
+  local current
+  if current="$("$PLISTBUDDY" -c "Print :$key" "$plist" 2>/dev/null)"; then
+    if [[ "$current" == "$val" ]]; then
+      return
+    fi
     "$PLISTBUDDY" -c "Set :$key $val" "$plist"
   else
     "$PLISTBUDDY" -c "Add :$key string $val" "$plist"
   fi
+  plist_changed=1
 }
 
 for APP in "${APPS[@]}"; do
+  plist_changed=0
   PLISTS=("$APP/Contents/Info.plist")
   HELPERS_DIR="$APP/Contents/Frameworks/Chromium Framework.framework/Versions/Current/Helpers"
   for HELPER in "$HELPERS_DIR"/*.app; do
@@ -72,12 +79,15 @@ for APP in "${APPS[@]}"; do
     set_key "$PLIST" NSBluetoothAlwaysUsageDescription "$BT_DESC"
   done
 
-  # Re-sign bottom-up so the modified Info.plist hashes and nested seals match again.
-  # The build is already ad-hoc (no Team ID, no notarization), so ad-hoc re-sign is equivalent.
-  /usr/bin/codesign --force --deep --sign - "$APP"
-  /usr/bin/codesign --verify --deep --strict "$APP"
-
-  printf 'patched + resigned: %s\n' "$APP"
+  if [[ "$plist_changed" == "1" ]] || ! /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
+    # Re-sign bottom-up so modified Info.plist hashes and nested seals match again.
+    # The upstream build is ad-hoc (no Team ID), so the default remains ad-hoc.
+    /usr/bin/codesign --force --deep --sign - "$APP"
+    /usr/bin/codesign --verify --deep --strict "$APP"
+    printf 'patched + resigned: %s\n' "$APP"
+  else
+    printf 'already patched; signature preserved: %s\n' "$APP"
+  fi
 done
 
 printf '\ndone. Quit any running Cloak Chromium and relaunch NoTrace Browser for the change to take effect.\n'

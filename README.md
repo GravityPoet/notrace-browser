@@ -125,6 +125,8 @@ NoTrace Browser is built specifically to feel like a premium application on macO
 Follow the current [official installation instructions](https://github.com/CloakHQ/CloakBrowser#install) and complete an initial download or launch so a Chromium bundle exists under `~/.cloakbrowser/chromium-*` (the optional `~/.cloakbrowser/current` symlink is also supported). Choose the upstream free or Pro build according to its current licensing terms. NoTrace installation scripts do not download or license this binary for you.
 
 ### Step 1: Clone the Repository & Build Picker
+Build prerequisites are macOS 12 or later, Xcode Command Line Tools, a stable Rust toolchain, and Node.js 20 or later with npm. The installer automatically runs `npm ci` when frontend dependencies are missing or do not match `package.json`.
+
 If you want to use the native graphical multi-account picker (Tauri-based):
 ```bash
 # Build the day-mode Tauri picker and install to /Applications/Cloak Picker.app
@@ -179,6 +181,7 @@ Validate CLI arguments, contract hooks, and headless privacy engines:
 
 ## ⚠️ Limitations & Workarounds
 
+* **Bluetooth / Passkey Permission Scope**: macOS Bluetooth access belongs to the CloakBrowser app's code identity, not to a NoTrace account. Reusing the same unchanged engine should not require a new system grant, although an engine upgrade or necessary re-sign can prompt again. Chromium and website permissions are stored inside each isolated account profile, so each newly created account may still ask once on first Passkey use.
 * **Google Translation Failure**: CloakBrowser is an *ungoogled-chromium* compilation; Google domains are decoupled (`chrome.9oo91e.qjz9zk`) at the network layer. Built-in translation will fail.
   * *Workaround*: Sideload your preferred translation plugin as an **unpacked extension** in your profile workspace.
 * **PWA Flag Limitations**: The daily PWA launcher (launched directly from macOS Launchpad/Dock) cannot receive runtime flags like `--proxy-server` or `--fingerprint-webrtc-ip`. Use the **Multi-Account Picker** when strict proxy isolation and advanced seed-level masking are required.

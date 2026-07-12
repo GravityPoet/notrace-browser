@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PICKER_DIR="$ROOT/cloak-picker"
 APP_NAME="Cloak Picker"
 BUILT_APP="$ROOT/target/release/bundle/macos/$APP_NAME.app"
 INSTALL_APP="${CLOAK_PICKER_INSTALL_APP:-/Applications/$APP_NAME.app}"
@@ -12,8 +13,22 @@ LSREG="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/L
 
 printf '%s\n' "backup: skipped; Cloak Picker.app is a generated Tauri bundle and is reinstallable from this script."
 
+command -v npm >/dev/null 2>&1 || {
+  printf '%s\n' "error: npm not found; install Node.js before building Cloak Picker" >&2
+  exit 1
+}
+command -v cargo >/dev/null 2>&1 || {
+  printf '%s\n' "error: cargo not found; install the Rust toolchain before building Cloak Picker" >&2
+  exit 1
+}
+
+if [[ ! -d "$PICKER_DIR/node_modules" ]] || ! npm --prefix "$PICKER_DIR" ls --depth=0 >/dev/null 2>&1; then
+  printf '%s\n' "frontend dependencies missing or stale; running npm ci"
+  npm --prefix "$PICKER_DIR" ci
+fi
+
 cd "$ROOT"
-npm --prefix "$ROOT/cloak-picker" run tauri -- build --bundles app
+npm --prefix "$PICKER_DIR" run tauri -- build --bundles app
 
 if [[ ! -d "$BUILT_APP" ]]; then
   printf 'error: built app not found: %s\n' "$BUILT_APP" >&2
