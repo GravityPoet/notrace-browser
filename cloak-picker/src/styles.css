@@ -140,7 +140,7 @@ summary:focus-visible {
 
 .sidebar {
   display: grid;
-  grid-template-rows: 40px 42px auto minmax(0, 1fr);
+  grid-template-rows: 40px 42px 40px auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   background: rgba(245, 245, 247, 0.74);
@@ -233,6 +233,80 @@ summary:focus-visible {
   background: rgba(255, 255, 255, 0.92);
   color: var(--accent);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.accountSearch {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(245, 245, 247, 0.6);
+}
+
+.accountSearchField {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 28px;
+  min-width: 0;
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  border-radius: 11px;
+  background: rgba(250, 250, 252, 0.94);
+  color: var(--muted);
+  padding: 0 7px 0 9px;
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.accountSearchField:focus-within {
+  border-color: rgba(0, 113, 227, 0.48);
+  background: #ffffff;
+  box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.14);
+}
+
+.accountSearchField > svg {
+  flex: 0 0 auto;
+}
+
+.accountSearchField input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: -0.12px;
+}
+
+.accountSearchField input::placeholder {
+  color: rgba(0, 0, 0, 0.4);
+}
+
+.accountSearchField input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.accountSearchField button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.09);
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.accountSearchField button:hover {
+  background: rgba(0, 0, 0, 0.14);
+  color: var(--text);
 }
 
 .groupFilter {

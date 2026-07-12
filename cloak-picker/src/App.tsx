@@ -15,6 +15,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Search,
   ShieldCheck,
   Store,
   Tag,
@@ -151,6 +152,7 @@ export default function App() {
   const [accountView, setAccountView] = useState<AccountView>("active");
   const [selectedName, setSelectedName] = useState<string>("");
   const [selectedGroup, setSelectedGroup] = useState<string>(allGroupsValue);
+  const [accountSearch, setAccountSearch] = useState("");
   const [draggingAccountName, setDraggingAccountName] = useState<string>("");
   const [accountDropTarget, setAccountDropTarget] = useState<AccountDropTarget | null>(null);
   const [draggingGroupLabel, setDraggingGroupLabel] = useState<string>("");
@@ -189,17 +191,23 @@ export default function App() {
   const resizingPaneRef = useRef(false);
 
   const orderedAccounts = useMemo(() => orderAccounts(accounts, accountOrder), [accounts, accountOrder]);
+  const normalizedAccountSearch = accountSearch.trim().toLocaleLowerCase();
   const groupFilters = useMemo(
     () => buildGroupFilters(accounts, groupOrder, hiddenGroups),
     [accounts, groupOrder, hiddenGroups],
   );
-  const visibleAccounts = useMemo(
-    () =>
+  const visibleAccounts = useMemo(() => {
+    const scopedAccounts =
       selectedGroup === allGroupsValue
         ? orderedAccounts
-        : orderedAccounts.filter((account) => accountGroupLabel(account) === selectedGroup),
-    [orderedAccounts, selectedGroup],
-  );
+        : orderedAccounts.filter((account) => accountGroupLabel(account) === selectedGroup);
+    if (!normalizedAccountSearch) return scopedAccounts;
+    return scopedAccounts.filter((account) =>
+      [account.name, account.group ?? "", account.mark_note ?? ""].some((value) =>
+        value.toLocaleLowerCase().includes(normalizedAccountSearch),
+      ),
+    );
+  }, [normalizedAccountSearch, orderedAccounts, selectedGroup]);
   const selected = useMemo(
     () => visibleAccounts.find((account) => account.name === selectedName) ?? visibleAccounts[0] ?? null,
     [visibleAccounts, selectedName],
@@ -855,8 +863,13 @@ export default function App() {
     accountView === "trash"
       ? `${selectedGroupLabel}${visibleAccounts.length} 个回收站账号`
       : `${selectedGroupLabel}${visibleAccounts.length} 个活跃账号`;
-  const emptyTitle = accountView === "trash" ? "回收站为空" : "暂无活跃账号";
-  const emptyAction = accountView === "active" ? "新建账号" : "查看活跃";
+  const hasAccountSearch = normalizedAccountSearch.length > 0;
+  const emptyTitle = hasAccountSearch
+    ? "未找到匹配账号"
+    : accountView === "trash"
+      ? "回收站为空"
+      : "暂无活跃账号";
+  const emptyAction = hasAccountSearch ? "清除搜索" : accountView === "active" ? "新建账号" : "查看活跃";
   const proxyLabel = selected ? middleTruncate(selected.proxy_display, 48) : "";
   const statusLabel = selected?.trashed ? "已移入回收站" : "活跃";
   const webStoreStatusIsCurrent = Boolean(selected && webStoreStatus?.accountName === selected.name);
@@ -918,6 +931,32 @@ export default function App() {
             >
               回收站
             </button>
+          </div>
+
+          <div className="accountSearch">
+            <div className="accountSearchField">
+              <Search aria-hidden="true" size={13} />
+              <input
+                aria-label="搜索账号"
+                autoComplete="off"
+                placeholder="搜索账号或标记"
+                spellCheck={false}
+                type="search"
+                value={accountSearch}
+                onChange={(event) => setAccountSearch(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    setAccountSearch("");
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
+              {hasAccountSearch ? (
+                <button aria-label="清除搜索" title="清除搜索" type="button" onClick={() => setAccountSearch("")}>
+                  <X aria-hidden="true" size={11} />
+                </button>
+              ) : null}
+            </div>
           </div>
 
           <div className="groupFilter" aria-label="分组筛选">
@@ -991,9 +1030,21 @@ export default function App() {
                 <strong>{emptyTitle}</strong>
                 <button
                   className="subtleButton"
-                  onClick={accountView === "active" ? openCreateDialog : () => setAccountView("active")}
+                  onClick={
+                    hasAccountSearch
+                      ? () => setAccountSearch("")
+                      : accountView === "active"
+                        ? openCreateDialog
+                        : () => setAccountView("active")
+                  }
                 >
-                  {accountView === "active" ? <Plus size={14} /> : <ArchiveRestore size={14} />}
+                  {hasAccountSearch ? (
+                    <X size={14} />
+                  ) : accountView === "active" ? (
+                    <Plus size={14} />
+                  ) : (
+                    <ArchiveRestore size={14} />
+                  )}
                   {emptyAction}
                 </button>
               </div>
