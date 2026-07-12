@@ -2,7 +2,10 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-NoTrace Browser is a high-performance, open-source, anti-fingerprinting browser client. It integrates **CloakBrowser's C++ patched Chromium core** with native desktop integrations (PWAs, OS sandboxing, and Tauri-based account pickers) to deliver a seamless, anti-association multi-identity management environment for any web service (AI platforms, Web3, Social Media, eCommerce, etc.).
+NoTrace Browser is a source-available, macOS-focused orchestration and multi-account management client for a separately installed **CloakBrowser C++-patched Chromium engine**. This repository provides the native picker, CLI, profile isolation, proxy relay, companion extension, and packaging scripts; it does not contain or redistribute the CloakBrowser binary.
+
+> [!IMPORTANT]
+> **The client and browser engine have separate distribution terms.** Obtain CloakBrowser from its [official repository](https://github.com/CloakHQ/CloakBrowser), [releases](https://github.com/CloakHQ/CloakBrowser/releases), or [website](https://cloakbrowser.dev/). Upstream currently describes its wrappers as MIT-licensed and its binary as a delayed free-release model (an older build is free, while the latest build is Pro). Check the current upstream terms before use or redistribution. This NoTrace repository does not currently include a project license, so source availability alone does not grant reuse or redistribution rights.
 
 ---
 
@@ -12,7 +15,7 @@ Modern web applications, AI platforms, and online services employ aggressive bot
 
 When you use ordinary browser profiles (e.g., Chrome Profiles) or native webviews (Tauri/WKWebView) to manage multiple accounts, they **share the same device fingerprint, process host, and timezone metadata**. This makes your accounts linkable, triggering frequent CAPTCHAs, restriction screens, or permanent bans.
 
-NoTrace Browser solves this by giving each account a **completely unique, isolated digital fingerprint and network exit** inside a native desktop app experience.
+NoTrace Browser reduces accidental cross-account reuse by giving each account a **stable seed, isolated profile directory, and optional dedicated network exit** inside a native desktop app experience.
 
 ```mermaid
 graph TD
@@ -33,29 +36,29 @@ graph TD
 | **Web Worker Timezone** | **Yes** (Forced system-level TZ sync) | **No** (Leaks host OS timezone) | **Varies** (Often bypasses Workers) |
 | **SOCKS5 Proxy w/ Auth** | **Yes** (Built-in proxy relay launcher) | **No** (Needs third-party plugins) | **Yes** |
 | **Native OS Integration** | **Yes** (PWA shims + TCC/sandbox patches) | **No** (Standard browser windows) | **No** (Bulky Electron interfaces) |
-| **Cost** | **100% Free & Open-source** | **Free** (But unsafe for multi-accs) | **Paid** ($50–$300+/month) |
+| **Cost** | **NoTrace source available; CloakBrowser engine is separately Free/Pro** | **Free** (But unsafe for multi-accs) | **Paid** ($50–$300+/month) |
 
 ---
 
 ## 🛡️ Deep Stealth & Anti-Fingerprinting Mechanisms
 
-NoTrace Browser goes beyond simple superficial Javascript overrides. It employs kernel-level C++ modifications coupled with a dynamic companion extension to shield your identity:
+NoTrace Browser combines CloakBrowser's source-level engine patches with a companion extension and per-account launch configuration. These mechanisms are intended to reduce cross-account correlation; results still depend on the exact engine version, proxy quality, network path, and target site's changing detection logic.
 
 ### 1. WebGL & GPU Masking
-Instead of reporting your physical GPU model (e.g., `Apple M4 Pro`), NoTrace overrides rendering parameters to report a generic Metal string (`ANGLE (Apple, ANGLE Metal Renderer: Apple M1-M4, Unspecified Version)`) with vendor `Google Inc. (Apple)`. This eliminates discrepancies that trigger CreepJS's `like headless` flags.
+Instead of reporting your physical GPU model (e.g., `Apple M4 Pro`), NoTrace overrides rendering parameters to report a generic Metal string (`ANGLE (Apple, ANGLE Metal Renderer: Apple M1-M4, Unspecified Version)`) with vendor `Google Inc. (Apple)`. This aims to reduce renderer inconsistencies that can contribute to CreepJS's `like headless` flags.
 
 ### 2. Physical WebRTC Isolation
-Utilizing CloakBrowser's `--fingerprint-webrtc-ip`, NoTrace forces WebRTC local and public candidates to route through and present your proxy's exit IP. This completely masks your real local subnet and public IP addresses, passing browserleaks WebRTC audits cleanly.
+Utilizing CloakBrowser's `--fingerprint-webrtc-ip`, NoTrace asks supported engine builds to present the configured proxy exit IP in WebRTC candidates. Verify the result after every engine or proxy change because browser, network, and proxy behavior can still affect leakage tests.
 
 ### 3. UA & High-Entropy Client Hints Consistency
-Modifying the User Agent alone creates a massive version-consistency discrepancy (UA vs. High-Entropy Client Hints vs. TLS/JA3/JA4 fingerprints). NoTrace automatically maps User Agent strings with `navigator.userAgentData` (matching `fullVersionList`, `platformVersion`, and `architecture`), matching TCP/TLS handshakes perfectly.
+Modifying the User Agent alone creates a version-consistency discrepancy (UA vs. High-Entropy Client Hints vs. TLS/JA3/JA4 fingerprints). NoTrace maps User Agent strings with `navigator.userAgentData` (including `fullVersionList`, `platformVersion`, and `architecture`) to reduce application-layer mismatches. Network-layer TLS characteristics still depend on the selected engine build and network path.
 
 ### 4. Non-Destructive Canvas & Audio Noise
-- **Canvas Noise**: Instead of constantly distorting Canvas which breaks normal rendering, NoTrace intercepts `toDataURL` and `toBlob`. It injects a stable, seed-based noise to 8 random pixels, extracts the data, and **instantly restores the original pixels**. Your pages render normally, but fingerprinters get a completely unique Canvas ID.
+- **Canvas Noise**: Instead of constantly distorting Canvas which breaks normal rendering, NoTrace intercepts `toDataURL` and `toBlob`. It injects stable, seed-based noise into 8 pixels, extracts the data, and **instantly restores the original pixels**. This produces account-specific, seed-stable output without intentionally changing the visible canvas.
 - **Audio Noise**: Intercepts `OfflineAudioContext.startRendering` to inject a stable $10^{-7}$ level delta noise across channels in the returned `AudioBuffer` samples, generating unique audio fingerprints.
 
 ### 5. Worker-Thread Timezone Sync
-Normal extensions cannot inject scripts into Web Workers, allowing fingerprinters to detect timezone mismatches inside Worker threads. NoTrace synchronizes the timezone at the operating system/process layer using the `--fingerprint-timezone` flag and the `TZ` environment variables, covering both the main window and Web Workers.
+Normal extensions cannot inject scripts into Web Workers, allowing fingerprinters to detect timezone mismatches inside Worker threads. NoTrace applies the `--fingerprint-timezone` flag and the `TZ` environment variable at launch so supported builds can align both the main window and Web Workers.
 
 ### 6. Anti-Detection API Shims & Anti-Tampering
 - Re-injects native browser APIs commonly missing in automated environments (e.g., `ContentIndex`, `ContactsManager` in `navigator.contacts`, `downlinkMax` in `navigator.connection`).
@@ -118,6 +121,9 @@ NoTrace Browser is built specifically to feel like a premium application on macO
 
 ## 🚀 Setup & Installation
 
+### Prerequisite: Obtain the CloakBrowser Engine Separately
+Follow the current [official installation instructions](https://github.com/CloakHQ/CloakBrowser#install) and complete an initial download or launch so a Chromium bundle exists under `~/.cloakbrowser/chromium-*` (the optional `~/.cloakbrowser/current` symlink is also supported). Choose the upstream free or Pro build according to its current licensing terms. NoTrace installation scripts do not download or license this binary for you.
+
 ### Step 1: Clone the Repository & Build Picker
 If you want to use the native graphical multi-account picker (Tauri-based):
 ```bash
@@ -148,7 +154,7 @@ Chromium PWAs default to a low-res green badge on a white tile. Set the beautifu
 
 ## 🔍 Audit & Verification Status
 
-We run continuous verification scripts against popular anti-bot sites to audit browser stealth.
+This repository provides local contract checks and a headed live-audit script. Live detection outcomes are point-in-time observations, not permanent guarantees: rerun them for your exact CloakBrowser version, proxy, and network path after every relevant change.
 
 ### Running Live Audits
 To inspect your current fingerprint stealth under headed mode:
@@ -162,12 +168,12 @@ Validate CLI arguments, contract hooks, and headless privacy engines:
 ./packaging/verify-challenge-contract.sh
 ```
 
-### Current Status Matrix
-* **`navigator.webdriver`**: Hidden (All rows green on bot.sannysoft.com).
-* **WebRTC Leakage**: Fully blocked (No local or real public IP leak).
-* **BrowserScan Detection**: "Bot Detection: No Detection".
-* **CreepJS Stealth Rating**: 0% headless/stealth warnings, reports active Metal GPU and stable WebGL signatures.
-* **FingerprintPro**: Resolves a stable visitor ID per-account seed without triggering fraud/proxy alerts.
+### Verification Targets
+* **`navigator.webdriver`**: Confirm that the live page does not expose automation state.
+* **WebRTC Leakage**: Confirm that candidates do not reveal the real local or public IP.
+* **BrowserScan**: Record the current bot-detection result for the exact engine build.
+* **CreepJS**: Inspect headless/stealth warnings and renderer consistency.
+* **FingerprintJS Pro**: Compare visitor stability within one account and separation across accounts; treat fraud/proxy scoring as site-dependent.
 
 ---
 
@@ -181,5 +187,4 @@ Validate CLI arguments, contract hooks, and headless privacy engines:
 
 ## 🤝 Credits & Acknowledgements
 
-NoTrace Browser is built on top of the powerful C++ patched anti-fingerprinting Chromium core from **CloakBrowser**. We acknowledge and pay tribute to their brilliant engine implementation. NoTrace Browser serves as an orchestration, native macOS experience enhancer, and automation tooling wrapper on top of their core binary distributions.
-
+NoTrace Browser orchestrates a separately obtained **CloakBrowser** Chromium binary and adds a native macOS picker, account workspace management, proxy tooling, and companion integration. The upstream wrapper and binary have distinct licensing and release terms; NoTrace does not bundle the binary, and users or distributors must follow the current [CloakBrowser terms](https://github.com/CloakHQ/CloakBrowser#cloakbrowser-pro).

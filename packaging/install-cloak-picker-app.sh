@@ -13,7 +13,7 @@ LSREG="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/L
 printf '%s\n' "backup: skipped; Cloak Picker.app is a generated Tauri bundle and is reinstallable from this script."
 
 cd "$ROOT"
-npm --prefix "$ROOT/cloak-picker" run tauri -- build
+npm --prefix "$ROOT/cloak-picker" run tauri -- build --bundles app
 
 if [[ ! -d "$BUILT_APP" ]]; then
   printf 'error: built app not found: %s\n' "$BUILT_APP" >&2
@@ -50,10 +50,19 @@ fi
 /usr/bin/touch "$INSTALL_APP"
 if [[ -x "$LSREG" ]]; then
   "$LSREG" -f "$INSTALL_APP" >/dev/null 2>&1 || true
+  if [[ "$BUILT_APP" != "$INSTALL_APP" ]]; then
+    "$LSREG" -u "$BUILT_APP" >/dev/null 2>&1 || true
+  fi
 fi
 
 # Record which cloak-core source this build embeds so check-picker-fresh.sh can later
 # detect when a code edit has outdated the installed Picker.
 "$ROOT/packaging/check-picker-fresh.sh" --stamp >/dev/null 2>&1 || true
+
+# The generated bundle is only a staging artifact. Keeping it creates a second
+# LaunchServices candidate with the same bundle identifier as the canonical app.
+if [[ "$BUILT_APP" != "$INSTALL_APP" ]]; then
+  /bin/rm -rf "$BUILT_APP"
+fi
 
 printf '%s\n' "$INSTALL_APP"
