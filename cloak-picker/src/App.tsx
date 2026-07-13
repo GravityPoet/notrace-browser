@@ -905,6 +905,31 @@ export default function App() {
             <span>{accountCountLabel}</span>
           </div>
         </div>
+        <div className="accountSearch">
+          <div className="accountSearchField">
+            <Search aria-hidden="true" size={15} />
+            <input
+              aria-label="搜索账号"
+              autoComplete="off"
+              placeholder="搜索账号、分组或标记"
+              spellCheck={false}
+              type="search"
+              value={accountSearch}
+              onChange={(event) => setAccountSearch(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  setAccountSearch("");
+                  event.currentTarget.blur();
+                }
+              }}
+            />
+            {hasAccountSearch ? (
+              <button aria-label="清除搜索" title="清除搜索" type="button" onClick={() => setAccountSearch("")}>
+                <X aria-hidden="true" size={11} />
+              </button>
+            ) : null}
+          </div>
+        </div>
         <div className="topActions">
           <IconButton label="刷新" disabled={busy} onClick={() => void run(() => refresh())}>
             <RefreshCw size={15} />
@@ -941,32 +966,6 @@ export default function App() {
             >
               回收站
             </button>
-          </div>
-
-          <div className="accountSearch">
-            <div className="accountSearchField">
-              <Search aria-hidden="true" size={13} />
-              <input
-                aria-label="搜索账号"
-                autoComplete="off"
-                placeholder="搜索账号、分组或标记"
-                spellCheck={false}
-                type="search"
-                value={accountSearch}
-                onChange={(event) => setAccountSearch(event.currentTarget.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    setAccountSearch("");
-                    event.currentTarget.blur();
-                  }
-                }}
-              />
-              {hasAccountSearch ? (
-                <button aria-label="清除搜索" title="清除搜索" type="button" onClick={() => setAccountSearch("")}>
-                  <X aria-hidden="true" size={11} />
-                </button>
-              ) : null}
-            </div>
           </div>
 
           <div className="groupFilter" aria-label="分组筛选">

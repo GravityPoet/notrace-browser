@@ -150,9 +150,10 @@ describe("Cloak Picker dialog regressions", () => {
   });
 
   it("keeps legacy archived accounts in the trash workflow", async () => {
-    expect(document.querySelector<HTMLInputElement>('input[type="search"]')?.placeholder).toBe(
-      "搜索账号、分组或标记",
-    );
+    const accountSearch = document.querySelector<HTMLInputElement>('input[type="search"]');
+    expect(accountSearch?.placeholder).toBe("搜索账号、分组或标记");
+    expect(accountSearch?.closest(".topbar")).not.toBeNull();
+    expect(document.querySelector('.sidebar input[type="search"]')).toBeNull();
 
     await click(buttonWithText("回收站"));
     await settle(120);
