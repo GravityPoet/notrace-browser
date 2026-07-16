@@ -350,11 +350,11 @@ EOF
         { "header": "Sec-CH-UA-Mobile", "operation": "set", "value": "?0" },
         { "header": "Sec-CH-UA-Platform", "operation": "set", "value": "\"macOS\"" },
         { "header": "Sec-CH-UA-Full-Version-List", "operation": "set", "value": "\"Google Chrome\";v=\"$CLOAK_CHROME_FULL\", \"Chromium\";v=\"$CLOAK_CHROME_FULL\", \"Not)A;Brand\";v=\"24.0.0.0\"" },
-        { "header": "Sec-CH-UA-Full-Version", "operation": "set", "value": \"$CLOAK_CHROME_FULL\" },
-        { "header": "Sec-CH-UA-Platform-Version", "operation": "set", "value": \"$CLOAK_MAC_PLATFORM_VERSION\" },
-        { "header": "Sec-CH-UA-Arch", "operation": "set", "value": \"arm\" },
-        { "header": "Sec-CH-UA-Bitness", "operation": "set", "value": \"64\" },
-        { "header": "Sec-CH-UA-Model", "operation": "set", "value": \"\" }
+        { "header": "Sec-CH-UA-Full-Version", "operation": "set", "value": "\"$CLOAK_CHROME_FULL\"" },
+        { "header": "Sec-CH-UA-Platform-Version", "operation": "set", "value": "\"$CLOAK_MAC_PLATFORM_VERSION\"" },
+        { "header": "Sec-CH-UA-Arch", "operation": "set", "value": "\"arm\"" },
+        { "header": "Sec-CH-UA-Bitness", "operation": "set", "value": "\"64\"" },
+        { "header": "Sec-CH-UA-Model", "operation": "set", "value": "\"\"" }
       ]
     },
     "condition": {
@@ -364,6 +364,10 @@ EOF
   }
 ]
 EOF
+  if ! /usr/bin/plutil -convert xml1 -o /dev/null -- "$EXT_RUNTIME/rules/browser-identity-headers.json" >/dev/null 2>&1; then
+    printf 'error: generated companion header rules are invalid JSON\n' >&2
+    return 1
+  fi
   if companion_page_spoof_enabled; then
     printf 'window.__cloakAccountSeed = "%s";\n' "$seed" > "$EXT_RUNTIME/account-seed-main.js"
   else
