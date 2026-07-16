@@ -6,6 +6,7 @@
 // detection-site verdicts, and saves a JSON report plus screenshots.
 
 import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
 import {
   cpSync,
   existsSync,
@@ -19,6 +20,11 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  cloudflareMitigationSignal,
+  mergeChallengeResponses,
+} from "./challenge-signals.mjs";
+
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(__dir);
 const CLOAK = join(ROOT, "target", "debug", "cloak");
@@ -27,10 +33,14 @@ const DEFAULT_BIN = `${process.env.HOME}/.cloakbrowser/current/Chromium.app/Cont
 const RUNTIME_SHA_FILE = `${process.env.HOME}/.cloakbrowser/current.sha256`;
 const SHA_FILE = process.env.CLOAK_BROWSER_SHA_FILE
   || (existsSync(RUNTIME_SHA_FILE) ? RUNTIME_SHA_FILE : join(ROOT, "packaging", "cloakbrowser-current.sha256"));
+const TURNSTILE_TEST_SITE_KEY = "1x00000000000000000000AA";
+const TURNSTILE_TEST_VALIDATION_KEY = "1x0000000000000000000000000000000AA";
 
 const SITE_DEFS = {
   "version-consistency": {
-    url: "about:blank",
+    // Replaced at runtime with a local HTTP origin. The companion extension
+    // intentionally matches web origins, not browser-internal about: pages.
+    url: "local://version-consistency",
     waitMs: 1000,
     evaluate: `(async () => {
       const ua = navigator.userAgent || "";
@@ -72,6 +82,35 @@ const SITE_DEFS = {
         uaData: uaDataResult,
         issues,
         passed: issues.length === 0,
+      };
+    })()`,
+  },
+  "cloudflare-turnstile-test": {
+    // Replaced at runtime with a local page using Cloudflare's official
+    // always-pass dummy key. No production credential or challenge bypass is
+    // involved.
+    url: "local://cloudflare-turnstile-test",
+    waitMs: 10000,
+    expectedChallengeKind: "turnstile-widget",
+    evaluate: `(async () => {
+      const state = window.__turnstileAudit || {};
+      const input = document.querySelector('input[name="cf-turnstile-response"]');
+      const token = state.token || input?.value || "";
+      const iframe = document.querySelector('iframe[src*="challenges.cloudflare.com"]');
+      const apiLoaded = Boolean(window.turnstile && typeof window.turnstile.render === "function");
+      return {
+        apiLoaded,
+        iframePresentAtSample: Boolean(iframe),
+        widgetCompleted: state.status === "passed" && token.length > 0,
+        callbackStatus: state.status || "pending",
+        tokenPresent: token.length > 0,
+        dummyToken: /DUMMY\\.TOKEN/i.test(token),
+        clientError: state.error || null,
+        _turnstileToken: token,
+        passed: apiLoaded
+          && state.status === "passed"
+          && /DUMMY\\.TOKEN/i.test(token)
+          && !state.error,
       };
     })()`,
   },
@@ -534,6 +573,85 @@ async function sleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function startLocalAuditServer() {
+  const server = createServer((request, response) => {
+    response.writeHead(200, {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/html; charset=utf-8",
+    });
+    if (request.url === "/turnstile") {
+      response.end(`<!doctype html>
+<meta charset="utf-8">
+<title>Cloudflare Turnstile compatibility audit</title>
+<script>
+window.__turnstileAudit = { status: "loading", token: "", error: null };
+function onTurnstileSuccess(token) {
+  window.__turnstileAudit = { status: "passed", token: token, error: null };
+}
+function onTurnstileError(code) {
+  window.__turnstileAudit = { status: "error", token: "", error: String(code) };
+  return true;
+}
+</script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+<main>
+  <h1>Turnstile compatibility audit</h1>
+  <div class="cf-turnstile"
+       data-sitekey="${TURNSTILE_TEST_SITE_KEY}"
+       data-action="notrace_audit"
+       data-callback="onTurnstileSuccess"
+       data-error-callback="onTurnstileError"></div>
+</main>`);
+      return;
+    }
+    response.end("<!doctype html><meta charset=utf-8><title>Version consistency audit</title><p>version consistency audit</p>");
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const listenerInfo = server.address();
+  if (!listenerInfo || typeof listenerInfo === "string") {
+    await new Promise((resolve) => server.close(resolve));
+    throw new Error("local audit server did not expose a port");
+  }
+  return {
+    versionUrl: `http://127.0.0.1:${listenerInfo.port}/version`,
+    turnstileUrl: `http://127.0.0.1:${listenerInfo.port}/turnstile`,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
+async function validateTurnstileTestResponse(widgetResponse) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams([
+        ["secret", TURNSTILE_TEST_VALIDATION_KEY],
+        ["response", widgetResponse],
+      ]),
+      signal: controller.signal,
+    });
+    const result = await response.json();
+    return {
+      success: response.ok && result?.success === true,
+      httpStatus: response.status,
+      hostname: result?.hostname || null,
+      errorCodes: Array.isArray(result?.["error-codes"]) ? result["error-codes"] : [],
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: String(error?.message || error),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function cdp(wsUrl) {
   const ws = new WebSocket(wsUrl);
   await new Promise((resolve, reject) => {
@@ -549,6 +667,7 @@ async function cdp(wsUrl) {
   });
   let id = 0;
   const pending = new Map();
+  const listeners = new Map();
   const failAll = (error) => {
     for (const [current, entry] of pending) {
       clearTimeout(entry.timer);
@@ -567,6 +686,16 @@ async function cdp(wsUrl) {
       } else {
         resolve(message);
       }
+      return;
+    }
+    if (message.method && listeners.has(message.method)) {
+      for (const listener of listeners.get(message.method)) {
+        try {
+          listener(message);
+        } catch {
+          // A diagnostic listener must never break the CDP transport.
+        }
+      }
     }
   };
   ws.onerror = () => failAll(new Error("CDP websocket error"));
@@ -580,8 +709,18 @@ async function cdp(wsUrl) {
     pending.set(current, { resolve, reject, timer });
     ws.send(JSON.stringify({ id: current, method, params }));
   });
+  const on = (method, listener) => {
+    const methodListeners = listeners.get(method) || new Set();
+    methodListeners.add(listener);
+    listeners.set(method, methodListeners);
+    return () => {
+      methodListeners.delete(listener);
+      if (methodListeners.size === 0) listeners.delete(method);
+    };
+  };
   const close = () => new Promise((resolve) => {
     try {
+      listeners.clear();
       ws.onmessage = null;
       ws.onerror = null;
       failAll(new Error("CDP websocket closing"));
@@ -592,7 +731,7 @@ async function cdp(wsUrl) {
       resolve();
     }
   });
-  return { send, close };
+  return { send, on, close };
 }
 
 async function evaluate(client, expression, timeoutMs) {
@@ -618,7 +757,46 @@ async function evaluateJson(client, expression, timeoutMs) {
 }
 
 function siteEvaluateExpression(site, plan) {
-  return site.evaluate.replaceAll("__EXPECTED_IP__", JSON.stringify(plan.geo?.exit_ip || ""));
+  const evaluation = site.evaluate.replaceAll("__EXPECTED_IP__", JSON.stringify(plan.geo?.exit_ip || ""));
+  // Keep challenge detection orthogonal to each site's bespoke fingerprint
+  // score. A page may load successfully while Cloudflare/Turnstile has put the
+  // request into a challenge state; report that explicitly so a release gate
+  // cannot mistake a challenge page for a clean pass.
+  return `(async () => {
+    const base = await (${evaluation});
+    const body = document.body?.innerText || "";
+    const title = document.title || "";
+    const frameSources = Array.from(document.querySelectorAll("iframe[src]"))
+      .map((frame) => frame.getAttribute("src") || "");
+    const haystack = [body, title, ...frameSources].join("\\n");
+    const interstitialMarkers = [
+      /cf-chl-/i,
+      /challenge-platform/i,
+      /verify you are human/i,
+      /just a moment/i,
+      /checking your browser/i,
+      /attention required/i,
+    ].filter((pattern) => pattern.test(haystack)).map((pattern) => pattern.source);
+    const widgetMarkers = [
+      /challenges\\.cloudflare\\.com/i,
+      /turnstile/i,
+    ].filter((pattern) => pattern.test(haystack)).map((pattern) => pattern.source);
+    const markers = [...interstitialMarkers, ...widgetMarkers];
+    const blocked = interstitialMarkers.length > 0;
+    const challenge = {
+      detected: markers.length > 0,
+      blocked,
+      kind: blocked ? "interstitial" : (widgetMarkers.length > 0 ? "turnstile-widget" : null),
+      provider: markers.some((marker) => /turnstile|cloudflare|cf-chl|challenge-platform/i.test(marker))
+        ? "cloudflare"
+        : null,
+      markers,
+      url: location.href,
+      title,
+    };
+    const output = base && typeof base === "object" ? base : { value: base };
+    return { ...output, challenge, challenge_blocked: challenge.blocked };
+  })()`;
 }
 
 async function waitForDevTools(profilePath, timeoutMs) {
@@ -645,6 +823,16 @@ async function navigate(client, url, waitMs, timeoutMs) {
   await client.send("Runtime.enable");
   await client.send("Page.navigate", { url });
   await sleep(Math.min(waitMs, timeoutMs));
+}
+
+async function collectChallengeResponses(client) {
+  const signals = [];
+  const off = client.on("Network.responseReceived", (message) => {
+    const signal = cloudflareMitigationSignal(message);
+    if (signal) signals.push(signal);
+  });
+  await client.send("Network.enable");
+  return { signals, off };
 }
 
 async function captureScreenshot(client, path) {
@@ -706,6 +894,7 @@ async function run() {
   });
 
   let client = null;
+  let localAuditServer = null;
   const report = {
     ts: new Date().toISOString(),
     mode: opts.headless ? "headless" : "headed",
@@ -721,6 +910,9 @@ async function run() {
   };
 
   try {
+    if (opts.sites.some((site) => ["version-consistency", "cloudflare-turnstile-test"].includes(site))) {
+      localAuditServer = await startLocalAuditServer();
+    }
     const reconnect = async () => {
       if (client) {
         try { await client.close(); } catch {}
@@ -732,16 +924,41 @@ async function run() {
 
     for (const siteName of opts.sites) {
       const site = SITE_DEFS[siteName];
-      const item = { name: siteName, url: site.url, passed: false };
+      const siteUrl = siteName === "version-consistency"
+        ? localAuditServer.versionUrl
+        : siteName === "cloudflare-turnstile-test"
+          ? localAuditServer.turnstileUrl
+          : site.url;
+      const item = { name: siteName, url: siteUrl, passed: false };
+      let challengeResponses = null;
       try {
         await reconnect();
-        await navigate(client, site.url, site.waitMs, opts.timeoutMs);
+        challengeResponses = await collectChallengeResponses(client);
+        await navigate(client, siteUrl, site.waitMs, opts.timeoutMs);
         if (site.beforeEvaluate) {
           item.action = await evaluate(client, site.beforeEvaluate, 5000);
           await sleep(site.afterActionWaitMs || 3000);
         }
-        item.details = await evaluateJson(client, siteEvaluateExpression(site, plan), 12000);
-        item.passed = Boolean(item.details?.passed);
+        item.details = mergeChallengeResponses(
+          await evaluateJson(client, siteEvaluateExpression(site, plan), 12000),
+          challengeResponses.signals,
+        );
+        if (siteName === "cloudflare-turnstile-test") {
+          const widgetResponse = item.details?._turnstileToken || "";
+          if (item.details && typeof item.details === "object") {
+            delete item.details._turnstileToken;
+            item.details.serverValidation = widgetResponse
+              ? await validateTurnstileTestResponse(widgetResponse)
+              : { success: false, error: "dummy token missing" };
+            item.details.passed = Boolean(item.details.passed)
+              && item.details.serverValidation.success === true;
+          }
+        }
+        if (site.expectedChallengeKind && item.details?.challenge?.kind !== site.expectedChallengeKind) {
+          item.details.passed = false;
+          item.details.expectedChallengeKind = site.expectedChallengeKind;
+        }
+        item.passed = Boolean(item.details?.passed) && item.details?.challenge_blocked !== true;
         if (opts.screenshots) {
           item.screenshot = join(resultDir, `${siteName}.png`);
           try {
@@ -752,6 +969,8 @@ async function run() {
         }
       } catch (error) {
         item.error = String(error?.message || error);
+      } finally {
+        challengeResponses?.off();
       }
       report.results.push(item);
       console.log(`${item.passed ? "PASS" : "CHECK"} ${siteName}: ${JSON.stringify(item.details || item.error || {})}`);
@@ -762,10 +981,13 @@ async function run() {
       manualIndex += 1;
       const name = `manual-${manualIndex}`;
       const item = { name, url, passed: null, manual: true };
+      let challengeResponses = null;
       try {
         await reconnect();
+        challengeResponses = await collectChallengeResponses(client);
         await navigate(client, url, 12000, opts.timeoutMs);
         item.sample = await evaluate(client, "document.body.innerText.slice(0, 1200)", 10000);
+        item.challenge = mergeChallengeResponses({}, challengeResponses.signals).challenge || null;
         if (opts.screenshots) {
           item.screenshot = join(resultDir, `${name}.png`);
           try {
@@ -776,12 +998,15 @@ async function run() {
         }
       } catch (error) {
         item.error = String(error?.message || error);
+      } finally {
+        challengeResponses?.off();
       }
       report.results.push(item);
       console.log(`MANUAL ${url}: ${item.screenshot || item.error || "loaded"}`);
     }
   } finally {
     if (client) await client.close();
+    if (localAuditServer) await localAuditServer.close();
     if (!opts.keep) {
       try { child.kill("SIGKILL"); } catch {}
       rmSync(tempRoot, { recursive: true, force: true });

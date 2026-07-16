@@ -94,6 +94,9 @@ assert(plan.browser_identity?.uaData?.architecture === "arm", "browser identity 
 assert(plan.browser_identity?.uaData?.bitness === "64", "browser identity missing bitness");
 assert(Array.isArray(plan.browser_identity?.uaData?.fullVersionList), "browser identity missing fullVersionList");
 assert(typeof plan.browser_identity?.uaData?.uaFullVersion === "string", "browser identity missing uaFullVersion");
+assert(typeof plan.engine_major === "string" && plan.engine_major.length > 0, "missing detected engine major");
+assert(typeof plan.engine_version === "string" && plan.engine_version.startsWith(`${plan.engine_major}.`), "engine version is not coherent");
+assert(!Object.prototype.hasOwnProperty.call(plan.proxy || {}, "raw_url"), "proxy credentials crossed JSON boundary");
 // Version consistency: UA major must match fullVersionList major
 const uaMajor = plan.browser_identity?.userAgent?.match(/Chrome\/(\d+)/)?.[1];
 const fvlMajor = plan.browser_identity?.uaData?.fullVersionList?.[0]?.version?.split(".")?.[0];

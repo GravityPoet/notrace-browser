@@ -60,18 +60,20 @@ type LaunchPlan = {
   extra_extension_paths: string[];
   selftest_extension_paths: string[];
   browser_binary: string;
+  engine_major: string;
+  engine_version: string;
   proxy: {
     mode: "none" | "direct" | "relay";
     display: string;
     browser_arg: string | null;
     relay_needed: boolean;
-    raw_url: string | null;
   };
   geo: {
     exit_ip: string | null;
     country: string | null;
     timezone: string | null;
   };
+  geo_cache_hit: boolean;
   locale: string | null;
   argv: string[];
   privacy_failures: string[];
@@ -84,6 +86,56 @@ type LaunchResult = {
   url: string;
   pid: number;
   launched_at: number;
+  diagnostics: {
+    engine_major: string;
+    engine_version: string;
+    proxy_mode: "none" | "direct" | "relay";
+    proxy_display: string;
+    exit_ip: string | null;
+    country: string | null;
+    timezone: string | null;
+    geo_cache_hit: boolean;
+    preflight_ms: number;
+    launch_ms: number;
+    capabilities: string[];
+  };
+};
+
+type LaunchStatus = {
+  accountName: string;
+  target: "chatgpt" | "web-store";
+  phase: "checking" | "starting" | "cancelling" | "cancelled" | "opened" | "failed";
+  startedAt: number;
+  result?: LaunchResult;
+};
+
+type ChallengeAuditResult = {
+  passed: boolean;
+  duration_ms: number;
+  browser_sha256: string;
+  error: string | null;
+  results: Array<{
+    name: string;
+    passed: boolean;
+    details?: {
+      issues?: string[];
+      challenge?: {
+        detected?: boolean;
+        blocked?: boolean;
+        kind?: string | null;
+      };
+      apiLoaded?: boolean;
+      widgetCompleted?: boolean;
+      serverValidation?: { success?: boolean };
+    };
+    error?: string;
+  }>;
+};
+
+type ChallengeAuditStatus = {
+  phase: "running" | "passed" | "failed";
+  result?: ChallengeAuditResult;
+  error?: string;
 };
 
 type DialogState =
@@ -125,6 +177,24 @@ const contextMenuViewportPadding = 8;
 
 const emptyAccounts: Account[] = [];
 const mockMarkOverrides = new Map<string, { marked: boolean; note: string | null }>();
+const mockCommandCounts = new Map<string, number>();
+const mockCommandFailures = new Map<string, number>();
+const mockCancelledLaunches = new Set<string>();
+
+export function resetMockCommandsForTest() {
+  mockCommandCounts.clear();
+  mockCommandFailures.clear();
+  mockCancelledLaunches.clear();
+}
+
+export function mockCommandCountForTest(command: string) {
+  return mockCommandCounts.get(command) ?? 0;
+}
+
+export function failNextMockCommandForTest(command: string) {
+  mockCommandFailures.set(command, (mockCommandFailures.get(command) ?? 0) + 1);
+}
+
 type AccountView = "active" | "trash";
 const allGroupsValue = "__all__";
 const allGroupsLabel = "全部";
@@ -172,6 +242,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [planLoading, setPlanLoading] = useState(false);
   const [error, setError] = useState<string>("");
+  const [launchStatus, setLaunchStatus] = useState<LaunchStatus | null>(null);
+  const [challengeAudit, setChallengeAudit] = useState<ChallengeAuditStatus | null>(null);
   const [webStoreStatus, setWebStoreStatus] = useState<{
     accountName: string;
     phase: "opening";
@@ -740,49 +812,125 @@ export default function App() {
     if (updated) await refresh(updated.name);
   }
 
-  async function launchAccount(account: Account) {
+  async function diagnoseAccount(account: Account) {
     if (account.trashed) return;
-    const checked = await runFullPreflight(account);
-    if (!checked) return;
-    if (checked.privacy_failures.length > 0) {
-      setError("启动检查未通过，已停止启动。");
-      return;
-    }
-    await run(() => call<LaunchResult>("launch_account", { name: account.name }));
-  }
-
-  async function launchWebStore(account: Account) {
-    if (account.trashed) return;
-    setWebStoreStatus({ accountName: account.name, phase: "opening", startedAt: Date.now() });
-    const checked = await runFullPreflight(account);
-    if (!checked) {
-      setWebStoreStatus(null);
-      return;
-    }
-    if (checked.privacy_failures.length > 0) {
-      setWebStoreStatus(null);
-      setError("启动检查未通过，已停止打开商店。");
-      return;
-    }
-    const result = await run(() => call<LaunchResult>("launch_web_store", { name: account.name }));
-    setWebStoreStatus(result === null ? null : { accountName: result.account, phase: "opened", result });
-  }
-
-  async function runFullPreflight(account: Account): Promise<LaunchPlan | null> {
     setPlanLoading(true);
     setError("");
     try {
       const checked = await call<LaunchPlan>("launch_preflight", { name: account.name });
       setPlan(checked);
-      return checked;
+      if (checked.privacy_failures.length > 0) {
+        setError("出口/隐私契约检查未通过；启动仍会被核心安全闸门拦截。");
+      }
     } catch (caught) {
-      const message = errorMessage(caught);
       setPlan(null);
-      setError(message);
-      return null;
+      setError(errorMessage(caught));
     } finally {
       setPlanLoading(false);
     }
+  }
+
+  async function auditChallengeCompatibility() {
+    setChallengeAudit({ phase: "running" });
+    setError("");
+    try {
+      const result = await call<ChallengeAuditResult>("run_challenge_audit");
+      setChallengeAudit({
+        phase: result.passed ? "passed" : "failed",
+        result,
+        error: result.error ?? undefined,
+      });
+    } catch (caught) {
+      const message = errorMessage(caught);
+      setChallengeAudit({ phase: "failed", error: message });
+      setError(message);
+    }
+  }
+
+  async function launchAccount(account: Account) {
+    if (account.trashed) return;
+    setError("");
+    setLaunchStatus({ accountName: account.name, target: "chatgpt", phase: "checking", startedAt: Date.now() });
+    // The backend now performs the privacy/GeoIP preflight and launch in one
+    // blocking worker. This avoids the old check-then-launch double network
+    // round-trip while keeping the strict privacy gate in the core.
+    setLaunchStatus((current) => current?.accountName === account.name ? { ...current, phase: "starting" } : current);
+    try {
+      const result = await call<LaunchResult>("launch_account", { name: account.name });
+      applyLaunchDiagnostics(result);
+      setLaunchStatus({ accountName: result.account, target: "chatgpt", phase: "opened", startedAt: Date.now(), result });
+    } catch (caught) {
+      const message = errorMessage(caught);
+      const cancelled = isLaunchCancelledError(message);
+      setLaunchStatus((current) => current?.accountName === account.name
+        ? { ...current, phase: cancelled ? "cancelled" : "failed" }
+        : current);
+      setError(cancelled ? "启动已取消，账号和隐私配置未改变。" : message);
+    }
+  }
+
+  async function launchWebStore(account: Account) {
+    if (account.trashed) return;
+    setError("");
+    setWebStoreStatus({ accountName: account.name, phase: "opening", startedAt: Date.now() });
+    setLaunchStatus({ accountName: account.name, target: "web-store", phase: "checking", startedAt: Date.now() });
+    setLaunchStatus((current) => current?.accountName === account.name ? { ...current, phase: "starting" } : current);
+    try {
+      const result = await call<LaunchResult>("launch_web_store", { name: account.name });
+      applyLaunchDiagnostics(result);
+      setWebStoreStatus({ accountName: result.account, phase: "opened", result });
+      setLaunchStatus({ accountName: result.account, target: "web-store", phase: "opened", startedAt: Date.now(), result });
+    } catch (caught) {
+      const message = errorMessage(caught);
+      const cancelled = isLaunchCancelledError(message);
+      setWebStoreStatus(null);
+      setLaunchStatus((current) => current?.accountName === account.name
+        ? { ...current, phase: cancelled ? "cancelled" : "failed" }
+        : current);
+      setError(cancelled ? "启动已取消，账号和隐私配置未改变。" : message);
+    }
+  }
+
+  async function cancelLaunch(account: Account) {
+    if (launchStatus?.accountName !== account.name) return;
+    setLaunchStatus((current) => current?.accountName === account.name
+      ? { ...current, phase: "cancelling" }
+      : current);
+    try {
+      const cancelled = await call<boolean>("cancel_launch", { name: account.name });
+      if (cancelled) {
+        setLaunchStatus((current) => current?.accountName === account.name
+          ? { ...current, phase: "cancelled" }
+          : current);
+        setWebStoreStatus((current) => current?.accountName === account.name ? null : current);
+      } else {
+        setLaunchStatus((current) => current?.accountName === account.name
+          ? { ...current, phase: "starting" }
+          : current);
+      }
+    } catch (caught) {
+      setError(errorMessage(caught));
+      setLaunchStatus((current) => current?.accountName === account.name
+        ? { ...current, phase: "failed" }
+        : current);
+    }
+  }
+
+  function applyLaunchDiagnostics(result: LaunchResult) {
+    setPlan((current) => {
+      if (!current || current.account !== result.account) return current;
+      return {
+        ...current,
+        engine_major: result.diagnostics.engine_major,
+        engine_version: result.diagnostics.engine_version,
+        geo_cache_hit: result.diagnostics.geo_cache_hit,
+        geo: {
+          exit_ip: result.diagnostics.exit_ip,
+          country: result.diagnostics.country,
+          timezone: result.diagnostics.timezone,
+        },
+      };
+    });
   }
 
   async function confirmDeleteAccount(account: Account) {
@@ -892,6 +1040,36 @@ export default function App() {
         ? `商店已打开 · PID ${webStoreStatus.result.pid} · ${formatLaunchClock(webStoreStatus.result.launched_at)}`
         : `已打开商店：${middleTruncate(webStoreStatus.accountName, 34)} · PID ${webStoreStatus.result.pid} · ${formatLaunchClock(webStoreStatus.result.launched_at)}`
     : "";
+  const launchStatusIsCurrent = Boolean(selected && launchStatus?.accountName === selected.name);
+  const launchStatusIsPending = Boolean(
+    launchStatusIsCurrent
+    && launchStatus
+    && ["checking", "starting", "cancelling"].includes(launchStatus.phase),
+  );
+  const launchStatusLabel = launchStatus
+    ? launchStatus.phase === "checking"
+      ? launchStatusIsCurrent ? "正在检查出口与隐私契约…" : `正在检查：${middleTruncate(launchStatus.accountName, 34)}`
+      : launchStatus.phase === "starting"
+        ? launchStatusIsCurrent ? "检查通过，正在启动…" : `正在启动：${middleTruncate(launchStatus.accountName, 34)}`
+        : launchStatus.phase === "cancelling"
+          ? launchStatusIsCurrent ? "正在取消…" : `正在取消：${middleTruncate(launchStatus.accountName, 34)}`
+          : launchStatus.phase === "cancelled"
+            ? launchStatusIsCurrent ? "已取消，可重新启动" : `已取消：${middleTruncate(launchStatus.accountName, 34)}`
+        : launchStatus.phase === "failed"
+          ? launchStatusIsCurrent ? "启动失败，可重试" : `启动失败：${middleTruncate(launchStatus.accountName, 34)}`
+          : launchStatusIsCurrent
+            ? `${launchStatus.target === "web-store" ? "商店" : "已启动"} · ${launchStatus.result?.diagnostics.launch_ms ?? 0} ms`
+            : `已启动：${middleTruncate(launchStatus.accountName, 34)}`
+    : "";
+  const challengeVersionResult = challengeAudit?.result?.results.find((item) => item.name === "version-consistency");
+  const challengeTurnstileResult = challengeAudit?.result?.results.find((item) => item.name === "cloudflare-turnstile-test");
+  const challengeAuditLabel = challengeAudit?.phase === "running"
+    ? "正在用临时 profile 检查真实引擎与官方 Turnstile 测试密钥…"
+    : challengeAudit?.phase === "passed"
+      ? `兼容通过 · ${challengeAudit.result?.duration_ms ?? 0} ms`
+      : challengeAudit?.phase === "failed"
+        ? "兼容检查失败，可重试"
+        : "";
   const workspaceStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties & {
     "--sidebar-width": string;
   };
@@ -1122,6 +1300,12 @@ export default function App() {
                       {webStoreStatusLabel}
                     </span>
                   ) : null}
+                  {launchStatus && launchStatusLabel ? (
+                    <span className={`launchStatus ${launchStatus.phase === "failed" ? "failed" : launchStatus.phase === "opened" ? "current" : launchStatus.phase === "cancelled" ? "cancelled" : "pending"}`}>
+                      {["checking", "starting", "cancelling"].includes(launchStatus.phase) ? <Loader2 className="spin" size={12} /> : null}
+                      {launchStatusLabel}
+                    </span>
+                  ) : null}
                 </div>
                 {selected.trashed ? (
                   <button className="launchButton" disabled={busy} onClick={() => void restoreAccount(selected)}>
@@ -1133,16 +1317,28 @@ export default function App() {
                     <div className="detailHeaderActions">
                       <button
                         className="secondaryButton"
-                        disabled={busy || planLoading}
+                        disabled={busy || planLoading || (launchStatusIsPending && launchStatus?.target !== "web-store")}
                         title={`用 ${selected.name} 打开 Chrome Web Store`}
-                        onClick={() => void launchWebStore(selected)}
+                        onClick={() => void (
+                          launchStatusIsPending && launchStatus?.target === "web-store"
+                            ? cancelLaunch(selected)
+                            : launchWebStore(selected)
+                        )}
                       >
-                        <Store size={16} />
-                        {webStoreStatus?.phase === "opening" && webStoreStatus.accountName === selected.name ? "打开中" : "商店"}
+                        {launchStatusIsPending && launchStatus?.target === "web-store" ? <X size={16} /> : <Store size={16} />}
+                        {launchStatusIsPending && launchStatus?.target === "web-store" ? "取消" : "商店"}
                       </button>
-                      <button className="launchButton" disabled={busy || planLoading} onClick={() => void launchAccount(selected)}>
-                        <Play size={16} />
-                        启动
+                      <button
+                        className="launchButton"
+                        disabled={busy || planLoading || (launchStatusIsPending && launchStatus?.target !== "chatgpt")}
+                        onClick={() => void (
+                          launchStatusIsPending && launchStatus?.target === "chatgpt"
+                            ? cancelLaunch(selected)
+                            : launchAccount(selected)
+                        )}
+                      >
+                        {launchStatusIsPending && launchStatus?.target === "chatgpt" ? <X size={16} /> : <Play size={16} />}
+                        {launchStatusIsPending && launchStatus?.target === "chatgpt" ? "取消" : "启动"}
                       </button>
                     </div>
                   </div>
@@ -1170,9 +1366,47 @@ export default function App() {
                   <InspectorGroup title="运行">
                     <InfoRow label="真实插件" value={plan ? extensionSummary(plan.extra_extension_paths) : "未解析"} />
                     <InfoRow label="自测插件" value={plan ? extensionSummary(plan.selftest_extension_paths) : "未解析"} />
+                    <InfoRow label="引擎版本" value={plan?.engine_version ? `Chromium ${plan.engine_version}` : "未解析"} mono />
+                    <InfoRow label="出口缓存" value={plan?.geo_cache_hit ? "代理缓存命中（5 分钟内）" : "未使用缓存"} />
                     <InfoRow label="浏览器" value={plan?.browser_binary ?? "未解析"} mono />
                   </InspectorGroup>
                 </section>
+
+                {launchStatus?.phase === "opened" && launchStatus.result?.diagnostics ? (
+                  <div className="diagnosticBox">
+                    <div className="diagnosticTitle"><ShieldCheck size={14} />启动诊断</div>
+                    <div className="diagnosticGrid">
+                      <span>预检</span><strong>{launchStatus.result.diagnostics.preflight_ms} ms</strong>
+                      <span>启动</span><strong>{launchStatus.result.diagnostics.launch_ms} ms</strong>
+                      <span>代理</span><strong>{launchStatus.result.diagnostics.proxy_display}</strong>
+                      <span>出口</span><strong>{launchStatus.result.diagnostics.exit_ip ?? "未取得"}</strong>
+                      <span>地区</span><strong>{launchStatus.result.diagnostics.country ?? "未取得"}</strong>
+                      <span>缓存</span><strong>{launchStatus.result.diagnostics.geo_cache_hit ? "命中（5 分钟内）" : "未命中"}</strong>
+                    </div>
+                    <div className="capabilityList" title="当前实际可用的编排能力，不代表引擎已升级到 Pro 版本">
+                      {launchStatus.result.diagnostics.capabilities.map((capability) => <span key={capability}>{capability}</span>)}
+                    </div>
+                  </div>
+                ) : null}
+
+                {challengeAudit ? (
+                  <div className={`challengeAuditBox ${challengeAudit.phase}`}>
+                    <div className="diagnosticTitle">
+                      {challengeAudit.phase === "running" ? <Loader2 className="spin" size={14} /> : <ShieldCheck size={14} />}
+                      Cloudflare / Turnstile
+                    </div>
+                    <strong>{challengeAuditLabel}</strong>
+                    {challengeAudit.result ? (
+                      <div className="challengeAuditSignals">
+                        <span>版本一致性：{challengeVersionResult?.passed ? "通过" : "失败"}</span>
+                        <span>官方 widget：{challengeTurnstileResult?.details?.widgetCompleted ? "完成" : "未完成"}</span>
+                        <span>Siteverify：{challengeTurnstileResult?.details?.serverValidation?.success ? "通过" : "失败"}</span>
+                        <span>阻断页：{challengeTurnstileResult?.details?.challenge?.blocked ? "检测到" : "未检测到"}</span>
+                      </div>
+                    ) : null}
+                    {challengeAudit.error ? <p>{challengeAudit.error}</p> : null}
+                  </div>
+                ) : null}
 
                 {plan?.privacy_failures.length ? (
                   <div className="warningBox">
@@ -1183,8 +1417,8 @@ export default function App() {
                 ) : null}
 
                 <details className="argv">
-                  <summary>启动参数</summary>
-                  <code>{[plan?.browser_binary, ...(plan?.argv ?? [])].filter(Boolean).join(" ")}</code>
+                  <summary>启动参数（敏感值已遮罩）</summary>
+                  <code>{[plan?.browser_binary, ...(plan?.argv ?? [])].filter((arg): arg is string => Boolean(arg)).map(sanitizeLaunchArg).join(" ")}</code>
                 </details>
               </div>
 
@@ -1197,6 +1431,13 @@ export default function App() {
                     </>
                   ) : (
                     <>
+                      <ActionButton icon={<ShieldCheck size={15} />} label="检查出口" onClick={() => void diagnoseAccount(selected)} />
+                      <ActionButton
+                        icon={challengeAudit?.phase === "running" ? <Loader2 className="spin" size={15} /> : <ShieldCheck size={15} />}
+                        label={challengeAudit?.phase === "running" ? "检查挑战中" : "挑战兼容"}
+                        disabled={challengeAudit?.phase === "running" || launchStatusIsPending}
+                        onClick={() => void auditChallengeCompatibility()}
+                      />
                       <ActionButton icon={<Network size={15} />} label="代理" onClick={(event) => openDialog({ kind: "proxy", account: selected, value: "" }, event.currentTarget)} />
                       <ActionButton icon={<Tag size={15} />} label="区域" onClick={(event) => openDialog({ kind: "region", account: selected, value: selected.region ?? "" }, event.currentTarget)} />
                       <ActionButton icon={<Folder size={15} />} label="分组" onClick={(event) => openDialog({ kind: "group", account: selected, value: selected.group ?? "" }, event.currentTarget)} />
@@ -1828,14 +2069,21 @@ function ActionButton({
   label,
   onClick,
   danger,
+  disabled,
 }: {
   icon: ReactNode;
   label: string;
   onClick: (event: MouseEvent<HTMLButtonElement>) => void;
   danger?: boolean;
+  disabled?: boolean;
 }) {
   return (
-    <button className={`actionButton ${danger ? "dangerText" : ""}`} type="button" onClick={onClick}>
+    <button
+      className={`actionButton ${danger ? "dangerText" : ""}`}
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+    >
       {icon}
       {label}
     </button>
@@ -2066,14 +2314,79 @@ function shouldUseMockTauri() {
 }
 
 async function mockInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  mockCommandCounts.set(command, (mockCommandCounts.get(command) ?? 0) + 1);
+  const requestedName = String(args?.name ?? "");
+  if (command === "cancel_launch") {
+    if (requestedName) mockCancelledLaunches.add(requestedName);
+    return true as T;
+  }
   await new Promise((resolve) => window.setTimeout(resolve, 80));
+  const failures = mockCommandFailures.get(command) ?? 0;
+  if (failures > 0) {
+    mockCommandFailures.set(command, failures - 1);
+    throw new Error(`mock ${command} failed`);
+  }
   const accounts = mockAccounts();
+  if (command === "run_challenge_audit") {
+    return {
+      passed: true,
+      duration_ms: 2480,
+      browser_sha256: "0".repeat(64),
+      error: null,
+      results: [
+        {
+          name: "version-consistency",
+          passed: true,
+          details: { issues: [], challenge: { detected: false, blocked: false, kind: null } },
+        },
+        {
+          name: "cloudflare-turnstile-test",
+          passed: true,
+          details: {
+            apiLoaded: true,
+            widgetCompleted: true,
+            serverValidation: { success: true },
+            challenge: { detected: true, blocked: false, kind: "turnstile-widget" },
+          },
+        },
+      ],
+    } as T;
+  }
   if (command === "list_accounts") return accounts.filter((account) => !account.archived && !account.trashed) as T;
   if (command === "list_trashed_accounts") return accounts.filter((account) => account.trashed || account.archived) as T;
   if (command === "launch_dry_run" || command === "launch_preflight") {
     const name = String(args?.name ?? accounts[0].name);
     const account = accounts.find((item) => item.name === name) ?? accounts[0];
     return mockLaunchPlan(account, command === "launch_preflight") as T;
+  }
+  if (command === "launch_account" || command === "launch_web_store") {
+    const name = String(args?.name ?? accounts[0].name);
+    if (mockCancelledLaunches.delete(name)) {
+      throw new Error("launch cancelled");
+    }
+    const account = accounts.find((item) => item.name === name) ?? accounts[0];
+    const plan = mockLaunchPlan(account, true);
+    return {
+      account: account.name,
+      profile_path: account.profile_path,
+      browser_binary: plan.browser_binary,
+      url: command === "launch_web_store" ? "https://chromewebstore.google.com/" : "https://chatgpt.com/",
+      pid: 54321,
+      launched_at: Date.now() * 1000,
+      diagnostics: {
+        engine_major: plan.engine_major,
+        engine_version: plan.engine_version,
+        proxy_mode: plan.proxy.mode,
+        proxy_display: plan.proxy.display,
+        exit_ip: plan.geo.exit_ip,
+        country: plan.geo.country,
+        timezone: plan.geo.timezone,
+        geo_cache_hit: plan.geo_cache_hit,
+        preflight_ms: 420,
+        launch_ms: 180,
+        capabilities: ["isolated-profile-storage", "stable-seed-fingerprint", "challenge-signal-reporting"],
+      },
+    } as T;
   }
   if (command === "create_account") {
     return {
@@ -2199,16 +2512,18 @@ function mockLaunchPlan(account: Account, full: boolean): LaunchPlan {
       `${account.profile_path}/.cloak-extra-extensions/Cookies.crx`,
     ],
     browser_binary: "/Users/example/.cloakbrowser/current/Chromium.app/Contents/MacOS/Chromium",
+    engine_major: "145",
+    engine_version: "145.0.7632.109",
     proxy: {
       mode: account.has_proxy ? "relay" : "none",
       display: account.proxy_display,
       browser_arg: account.has_proxy ? "socks5://127.0.0.1:<relay-port>" : null,
       relay_needed: account.has_proxy,
-      raw_url: null,
     },
     geo: full
       ? { exit_ip: "45.92.159.252", country: account.region, timezone: account.region === "JP" ? "Asia/Tokyo" : "America/Los_Angeles" }
       : { exit_ip: null, country: null, timezone: null },
+    geo_cache_hit: false,
     locale: account.locale_enabled ? "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7" : null,
     argv: [
       `--user-data-dir=${account.profile_path}`,
@@ -2268,6 +2583,18 @@ function pathBaseName(path: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
+function sanitizeLaunchArg(arg: string) {
+  if (arg.startsWith("--proxy-server=")) {
+    return arg.replace(/(:\/\/)[^/@]+@/g, "$1•••@");
+  }
+  return arg;
+}
+
+function isLaunchCancelledError(message: string) {
+  return message.toLocaleLowerCase().includes("launch cancelled")
+    || message.includes("启动已取消");
+}
+
 function errorMessage(caught: unknown) {
   const raw = caught instanceof Error ? caught.message : String(caught);
   const alreadyExistsPrefix = "account already exists: ";
@@ -2298,6 +2625,9 @@ function errorMessage(caught: unknown) {
   }
   if (raw.includes("account mark is invalid")) {
     return "标记内容无效：请使用不超过 24 个字符的单行文字。";
+  }
+  if (raw.toLocaleLowerCase().includes("launch cancelled")) {
+    return "启动已取消";
   }
   return raw;
 }

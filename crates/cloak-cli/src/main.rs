@@ -289,7 +289,22 @@ fn handle_launch(args: LaunchArgs, config: &CloakConfig) -> Result<()> {
         return Ok(());
     }
 
-    launch_account(config, &args.name, &options)?;
+    let result = launch_account(config, &args.name, &options)?;
+    if args.json {
+        print_json(&result)?;
+    } else {
+        println!("launched: {} (pid {})", result.account, result.pid);
+        println!("engine  : Chromium {}", result.diagnostics.engine_version);
+        println!(
+            "timing  : preflight {} ms + launch {} ms",
+            result.diagnostics.preflight_ms, result.diagnostics.launch_ms
+        );
+        println!("proxy   : {}", result.diagnostics.proxy_display);
+        println!(
+            "exit ip : {}",
+            result.diagnostics.exit_ip.as_deref().unwrap_or("unknown")
+        );
+    }
     Ok(())
 }
 

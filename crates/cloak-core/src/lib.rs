@@ -15,6 +15,9 @@ use std::io::{Read, Write};
 use std::net::{TcpStream as StdTcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use url::Url;
@@ -28,6 +31,8 @@ const CLOAK_MAC_UA_VERSION: &str = "10_15_7";
 const CLOAK_MAC_PLATFORM_VERSION: &str = "15.5.0";
 const HTTPS_ONLY_MODE_PREF: &str = "https_only_mode_enabled";
 const EXTENSION_MIME_REQUEST_HANDLING_FLAG: &str = "extension-mime-request-handling@2";
+const GEO_CACHE_TTL_SECS: u64 = 300;
+const GEO_REQUEST_TIMEOUT_SECS: u64 = 4;
 
 /// Apple Silicon GPU renderer pool — base chips only, coherent with 8-core hardwareConcurrency.
 /// Pro/Max/Ultra variants excluded to avoid "M4 Max + 8 cores" inconsistency.
@@ -137,6 +142,8 @@ pub enum CloakError {
     ExtensionMissing(PathBuf),
     #[error("privacy gate failed: {0}")]
     PrivacyGate(String),
+    #[error("launch cancelled")]
+    LaunchCancelled,
     #[error("io: {0}")]
     Io(#[from] io::Error),
     #[error("url: {0}")]
@@ -211,6 +218,8 @@ pub struct ProxyPlan {
     pub display: String,
     pub browser_arg: Option<String>,
     pub relay_needed: bool,
+    /// Kept for the local launcher only; never serialize proxy credentials.
+    #[serde(skip_serializing)]
     pub raw_url: Option<String>,
 }
 
@@ -239,8 +248,14 @@ pub struct LaunchPlan {
     pub extra_extension_paths: Vec<PathBuf>,
     pub selftest_extension_paths: Vec<PathBuf>,
     pub browser_binary: PathBuf,
+    #[serde(default)]
+    pub engine_major: String,
+    #[serde(default)]
+    pub engine_version: String,
     pub proxy: ProxyPlan,
     pub geo: GeoPlan,
+    #[serde(default)]
+    pub geo_cache_hit: bool,
     pub locale: Option<String>,
     pub browser_identity: Value,
     pub argv: Vec<String>,
@@ -255,6 +270,25 @@ pub struct LaunchResult {
     pub url: String,
     pub pid: u32,
     pub launched_at: u64,
+    pub diagnostics: LaunchDiagnostics,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaunchDiagnostics {
+    pub engine_major: String,
+    pub engine_version: String,
+    pub proxy_mode: ProxyMode,
+    pub proxy_display: String,
+    pub exit_ip: Option<String>,
+    pub country: Option<String>,
+    pub timezone: Option<String>,
+    pub geo_cache_hit: bool,
+    pub preflight_ms: u64,
+    pub launch_ms: u64,
+    /// Capabilities provided by the wrapper/current binary contract. This is
+    /// deliberately explicit so a 145 engine is never presented as a Pro 148
+    /// engine merely because a UI feature exists.
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -264,6 +298,7 @@ pub struct LaunchOptions {
     pub locale_override: Option<bool>,
     pub allow_privacy_fail: bool,
     pub preflight: PreflightMode,
+    pub cancellation: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -293,7 +328,15 @@ impl LaunchOptions {
             locale_override,
             allow_privacy_fail,
             preflight,
+            cancellation: None,
         }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation
+            .as_deref()
+            .map(|flag| flag.load(Ordering::Acquire))
+            .unwrap_or(false)
     }
 }
 
@@ -305,6 +348,13 @@ struct ProxyConfig {
     browser_arg: Option<String>,
     relay_needed: bool,
     reqwest_proxy_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GeoCacheEntry {
+    cache_key: String,
+    checked_at: u64,
+    geo: GeoPlan,
 }
 
 struct ExtraExtensionPlan {
@@ -679,25 +729,37 @@ fn build_launch_plan_for_url(
         .unwrap_or_else(no_proxy_config);
 
     let mut privacy_failures = Vec::new();
-    let geo = if options.skip_geo {
-        GeoPlan {
-            exit_ip: None,
-            country: None,
-            timezone: env::var("TZ").ok(),
-        }
+    let (geo, geo_cache_hit) = if options.skip_geo {
+        (
+            GeoPlan {
+                exit_ip: None,
+                country: None,
+                timezone: env::var("TZ").ok(),
+            },
+            false,
+        )
     } else {
-        match lookup_geo(&proxy_config) {
-            Ok(geo) => geo,
+        match lookup_geo_cached(
+            &profile_path,
+            &proxy_config,
+            !options.dry_run,
+            options.cancellation.as_deref(),
+        ) {
+            Ok((geo, cache_hit)) => (geo, cache_hit),
+            Err(CloakError::LaunchCancelled) => return Err(CloakError::LaunchCancelled),
             Err(err) => {
                 privacy_failures.push(format!(
                     "无法通过账号出口解析公网 IP/timezone（proxy={}，error={}）。",
                     proxy_config.display, err
                 ));
-                GeoPlan {
-                    exit_ip: None,
-                    country: None,
-                    timezone: env::var("TZ").ok(),
-                }
+                (
+                    GeoPlan {
+                        exit_ip: None,
+                        country: None,
+                        timezone: env::var("TZ").ok(),
+                    },
+                    false,
+                )
             }
         }
     };
@@ -791,6 +853,7 @@ fn build_launch_plan_for_url(
         "--disable-blink-features=AutomationControlled".to_string(),
     ];
     append_native_fingerprint_args(&mut argv, &geo, locale.as_deref(), &engine, &seed);
+    append_window_geometry_args(&mut argv, &profile_path);
     if let Some(proxy_arg) = &proxy_config.browser_arg {
         argv.push(format!("--proxy-server={proxy_arg}"));
     }
@@ -806,6 +869,8 @@ fn build_launch_plan_for_url(
         extra_extension_paths: extension_plan.extra_extension_paths,
         selftest_extension_paths: extension_plan.selftest_extension_paths,
         browser_binary,
+        engine_major: engine.major,
+        engine_version: engine.full,
         proxy: ProxyPlan {
             mode: proxy_config.mode,
             display: proxy_config.display,
@@ -814,6 +879,7 @@ fn build_launch_plan_for_url(
             raw_url: proxy_config.raw_url,
         },
         geo,
+        geo_cache_hit,
         locale,
         browser_identity,
         argv,
@@ -826,8 +892,9 @@ pub fn launch_account(
     name: &str,
     options: &LaunchOptions,
 ) -> Result<LaunchResult> {
+    let preflight_started = Instant::now();
     let plan = build_launch_plan(config, name, options)?;
-    launch_plan(config, plan, options)
+    launch_plan(config, plan, options, preflight_started)
 }
 
 pub fn launch_chrome_web_store(
@@ -835,15 +902,18 @@ pub fn launch_chrome_web_store(
     name: &str,
     options: &LaunchOptions,
 ) -> Result<LaunchResult> {
+    let preflight_started = Instant::now();
     let plan = build_launch_plan_for_url(config, name, options, CHROME_WEB_STORE_URL)?;
-    launch_plan(config, plan, options)
+    launch_plan(config, plan, options, preflight_started)
 }
 
 fn launch_plan(
     config: &CloakConfig,
     plan: LaunchPlan,
     options: &LaunchOptions,
+    preflight_started: Instant,
 ) -> Result<LaunchResult> {
+    ensure_launch_not_cancelled(options.cancellation.as_deref())?;
     if !plan.privacy_failures.is_empty() && !options.allow_privacy_fail {
         return Err(CloakError::PrivacyGate(plan.privacy_failures.join("\n")));
     }
@@ -853,6 +923,7 @@ fn launch_plan(
     enforce_https_only_mode(&plan.profile_path)?;
     enforce_chromium_webstore_install_flag(&plan.profile_path)?;
     prepare_account_extension(config, &plan)?;
+    ensure_launch_not_cancelled(options.cancellation.as_deref())?;
 
     let mut argv = plan.argv.clone();
     if plan.proxy.relay_needed {
@@ -873,8 +944,12 @@ fn launch_plan(
     let url = argv.last().cloned().unwrap_or_default();
     if options.preflight == PreflightMode::Strict {
         run_selftest(config, &plan, &argv, true)?;
+        ensure_launch_not_cancelled(options.cancellation.as_deref())?;
     }
 
+    let launch_started = Instant::now();
+    let preflight_duration = launch_started.saturating_duration_since(preflight_started);
+    ensure_launch_not_cancelled(options.cancellation.as_deref())?;
     let mut command = Command::new(&plan.browser_binary);
     command.args(&argv);
     if let Some(tz) = plan.geo.timezone.as_deref() {
@@ -891,6 +966,19 @@ fn launch_plan(
         url,
         pid: child.id(),
         launched_at: current_created_at(),
+        diagnostics: LaunchDiagnostics {
+            engine_major: plan.engine_major.clone(),
+            engine_version: plan.engine_version.clone(),
+            proxy_mode: plan.proxy.mode.clone(),
+            proxy_display: plan.proxy.display.clone(),
+            exit_ip: plan.geo.exit_ip.clone(),
+            country: plan.geo.country.clone(),
+            timezone: plan.geo.timezone.clone(),
+            geo_cache_hit: plan.geo_cache_hit,
+            preflight_ms: duration_millis(preflight_duration),
+            launch_ms: duration_millis(launch_started.elapsed()),
+            capabilities: launch_capabilities(),
+        },
     };
 
     if options.preflight == PreflightMode::Async {
@@ -1210,6 +1298,17 @@ fn pin_account_created_at(profile_path: &Path) -> Result<u64> {
 
 fn current_created_at() -> u64 {
     system_time_micros(SystemTime::now())
+}
+
+fn current_epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 fn system_time_micros(time: SystemTime) -> u64 {
@@ -1643,8 +1742,59 @@ fn zip_error(err: zip::result::ZipError) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err)
 }
 
-fn lookup_geo(proxy: &ProxyConfig) -> Result<GeoPlan> {
-    let mut builder = Client::builder().timeout(Duration::from_secs(12));
+fn lookup_geo_cached(
+    profile_path: &Path,
+    proxy: &ProxyConfig,
+    allow_cache_write: bool,
+    cancellation: Option<&AtomicBool>,
+) -> Result<(GeoPlan, bool)> {
+    ensure_launch_not_cancelled(cancellation)?;
+    // A direct/VPN exit can change outside this process, so never reuse a
+    // cached answer for it. Explicit per-account proxies have a stable key and
+    // can safely reuse a short-lived answer to avoid a second network stall.
+    let Some(_) = proxy.raw_url.as_deref() else {
+        return lookup_geo(proxy, cancellation).map(|geo| (geo, false));
+    };
+    let cache_key = geo_cache_revision(profile_path);
+    let cache_path = profile_path.join(".cloak-geo-cache.json");
+    if let (Some(cache_key), Ok(body)) = (cache_key.as_deref(), fs::read_to_string(&cache_path)) {
+        if let Ok(entry) = serde_json::from_str::<GeoCacheEntry>(&body) {
+            let now = current_epoch_secs();
+            let fresh = entry.cache_key == cache_key
+                && entry.checked_at <= now
+                && now.saturating_sub(entry.checked_at) <= GEO_CACHE_TTL_SECS
+                && entry.geo.exit_ip.is_some()
+                && entry.geo.timezone.as_deref().map(valid_tz).unwrap_or(false);
+            if fresh {
+                ensure_launch_not_cancelled(cancellation)?;
+                return Ok((entry.geo, true));
+            }
+        }
+    }
+
+    let geo = lookup_geo(proxy, cancellation)?;
+    if allow_cache_write {
+        let Some(cache_key) = geo_cache_revision(profile_path) else {
+            return Ok((geo, false));
+        };
+        let entry = GeoCacheEntry {
+            cache_key,
+            checked_at: current_epoch_secs(),
+            geo: geo.clone(),
+        };
+        // A cache write is best-effort: a read-only or locked profile must not
+        // turn a successful launch into a failure. The profile remains private
+        // because write_secret_atomic applies 0700/0600 permissions.
+        if let Ok(encoded) = serde_json::to_string(&entry) {
+            let _ = write_secret_atomic(&cache_path, &encoded);
+        }
+    }
+    Ok((geo, false))
+}
+
+fn lookup_geo(proxy: &ProxyConfig, cancellation: Option<&AtomicBool>) -> Result<GeoPlan> {
+    ensure_launch_not_cancelled(cancellation)?;
+    let mut builder = Client::builder().timeout(Duration::from_secs(GEO_REQUEST_TIMEOUT_SECS));
     if let Some(proxy_url) = &proxy.reqwest_proxy_url {
         builder = builder.proxy(reqwest::Proxy::all(proxy_url)?);
     }
@@ -1653,25 +1803,84 @@ fn lookup_geo(proxy: &ProxyConfig) -> Result<GeoPlan> {
         ("https://ipwho.is/", "ipwho"),
         ("https://ipinfo.io/json", "ipinfo"),
     ];
+    // Resolve independent providers concurrently. The old sequential path
+    // could wait for 2×12s before reaching the IP-only fallback and freeze the
+    // picker; each provider is now bounded to four seconds and raced.
+    let (sender, receiver) = mpsc::channel();
+    let source_count = sources.len();
     for (url, source) in sources {
-        if let Ok(response) = client.get(url).send() {
-            if let Ok(text) = response.error_for_status().and_then(|r| r.text()) {
-                if let Some(geo) = parse_geo_json(source, &text) {
-                    return Ok(geo);
-                }
-            }
+        let client = client.clone();
+        let sender = sender.clone();
+        thread::spawn(move || {
+            let result = client
+                .get(url)
+                .send()
+                .ok()
+                .and_then(|response| response.error_for_status().ok())
+                .and_then(|response| response.text().ok())
+                .and_then(|text| parse_geo_json(source, &text));
+            let _ = sender.send(result);
+        });
+    }
+    drop(sender);
+    if let Some(geo) = receive_first_geo(
+        &receiver,
+        source_count,
+        Duration::from_secs(GEO_REQUEST_TIMEOUT_SECS),
+        cancellation,
+    )? {
+        return Ok(geo);
+    }
+    Err(CloakError::Io(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "GeoIP providers did not return a complete IP/timezone result within 4 seconds",
+    )))
+}
+
+fn receive_first_geo(
+    receiver: &mpsc::Receiver<Option<GeoPlan>>,
+    source_count: usize,
+    timeout: Duration,
+    cancellation: Option<&AtomicBool>,
+) -> Result<Option<GeoPlan>> {
+    let deadline = Instant::now() + timeout;
+    let mut completed = 0;
+    while completed < source_count {
+        ensure_launch_not_cancelled(cancellation)?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        let wait = remaining.min(Duration::from_millis(100));
+        match receiver.recv_timeout(wait) {
+            Ok(Some(geo)) => return Ok(Some(geo)),
+            Ok(None) => completed += 1,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(None),
         }
     }
-    let ip = client
-        .get("https://api.ipify.org")
-        .send()?
-        .error_for_status()?
-        .text()?;
-    Ok(GeoPlan {
-        exit_ip: Some(ip.trim().to_string()).filter(|s| !s.is_empty()),
-        country: None,
-        timezone: env::var("TZ").ok(),
-    })
+    Ok(None)
+}
+
+fn ensure_launch_not_cancelled(cancellation: Option<&AtomicBool>) -> Result<()> {
+    if cancellation
+        .map(|flag| flag.load(Ordering::Acquire))
+        .unwrap_or(false)
+    {
+        return Err(CloakError::LaunchCancelled);
+    }
+    Ok(())
+}
+
+fn geo_cache_revision(profile_path: &Path) -> Option<String> {
+    // Bind cache validity to the private proxy config file's revision without
+    // persisting any raw credential or credential-derived digest. Atomic proxy
+    // edits change this metadata, including password-only rotations.
+    let metadata = fs::metadata(profile_path.join(".cloak-proxy")).ok()?;
+    let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    let revision = format!("geo-cache:v2:{}:{}", metadata.len(), modified.as_nanos());
+    let digest = Sha256::digest(revision.as_bytes());
+    Some(hex_digest(&digest))
 }
 
 fn parse_geo_json(source: &str, body: &str) -> Option<GeoPlan> {
@@ -1930,6 +2139,69 @@ fn append_native_fingerprint_args(
         "--fingerprint-gpu-renderer={renderer}",
         renderer = gpu_renderer_for_seed(seed)
     ));
+}
+
+fn append_window_geometry_args(argv: &mut Vec<String>, profile_path: &Path) {
+    if argv.iter().any(|arg| arg.starts_with("--window-position="))
+        || argv.iter().any(|arg| arg.starts_with("--window-size="))
+    {
+        return;
+    }
+    let geometry = env::var("CLOAK_WINDOW_GEOMETRY")
+        .ok()
+        .and_then(|value| parse_window_geometry(&value))
+        .or_else(|| read_window_geometry(profile_path));
+    let Some((left, top, width, height)) = geometry else {
+        return;
+    };
+    argv.push(format!("--window-position={left},{top}"));
+    argv.push(format!("--window-size={width},{height}"));
+}
+
+fn launch_capabilities() -> Vec<String> {
+    vec![
+        "isolated-profile-storage".to_string(),
+        "stable-seed-fingerprint".to_string(),
+        "ua-client-hints-consistency".to_string(),
+        "webrtc-exit-ip-binding".to_string(),
+        "authenticated-proxy-relay-tcp".to_string(),
+        "window-geometry-restore".to_string(),
+        "https-only-profile".to_string(),
+        "challenge-signal-reporting".to_string(),
+        "engine-pin-rollback".to_string(),
+    ]
+}
+
+fn parse_window_geometry(value: &str) -> Option<(i64, i64, u32, u32)> {
+    let mut parts = value.split(',').map(str::trim);
+    let left = parts.next()?.parse::<i64>().ok()?;
+    let top = parts.next()?.parse::<i64>().ok()?;
+    let width = parts.next()?.parse::<u32>().ok()?;
+    let height = parts.next()?.parse::<u32>().ok()?;
+    if parts.next().is_some()
+        || !(-10_000..=10_000).contains(&left)
+        || !(-10_000..=10_000).contains(&top)
+        || !(320..=7_680).contains(&width)
+        || !(240..=4_320).contains(&height)
+    {
+        return None;
+    }
+    Some((left, top, width, height))
+}
+
+fn read_window_geometry(profile_path: &Path) -> Option<(i64, i64, u32, u32)> {
+    let body = fs::read_to_string(profile_path.join("Local State")).ok()?;
+    let root = serde_json::from_str::<Value>(&body).ok()?;
+    let placement = root
+        .pointer("/browser/window_placement")
+        .or_else(|| root.pointer("/window_placement"))?;
+    let left = placement.get("left")?.as_i64()?;
+    let top = placement.get("top")?.as_i64()?;
+    let right = placement.get("right")?.as_i64()?;
+    let bottom = placement.get("bottom")?.as_i64()?;
+    let width = u32::try_from(right.checked_sub(left)?).ok()?;
+    let height = u32::try_from(bottom.checked_sub(top)?).ok()?;
+    parse_window_geometry(&format!("{left},{top},{width},{height}"))
 }
 
 fn valid_tz(tz: &str) -> bool {
@@ -2422,6 +2694,108 @@ mod tests {
         let http = proxy_config("http://example.net:8080").unwrap();
         assert_eq!(http.mode, ProxyMode::Direct);
         assert_eq!(http.display, "http://example.net:8080");
+    }
+
+    #[test]
+    fn proxy_credentials_never_cross_the_json_boundary() {
+        let proxy = proxy_config("socks5://private-user:private-pass@example.net:1080").unwrap();
+        let encoded = serde_json::to_string(&ProxyPlan {
+            mode: proxy.mode,
+            display: proxy.display,
+            browser_arg: proxy.browser_arg,
+            relay_needed: proxy.relay_needed,
+            raw_url: proxy.raw_url,
+        })
+        .unwrap();
+        assert!(!encoded.contains("private-user"));
+        assert!(!encoded.contains("private-pass"));
+        assert!(!encoded.contains("socks5://private-user"));
+    }
+
+    #[test]
+    fn proxy_geo_cache_hit_is_short_lived_and_keyed_without_raw_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        fs::create_dir_all(&profile).unwrap();
+        let proxy_raw = "socks5://private-user:private-pass@example.net:1080";
+        let proxy = proxy_config(proxy_raw).unwrap();
+        write_secret_atomic(&profile.join(".cloak-proxy"), proxy_raw).unwrap();
+        let first_revision = geo_cache_revision(&profile).unwrap();
+        let cache = GeoCacheEntry {
+            cache_key: first_revision.clone(),
+            checked_at: current_epoch_secs(),
+            geo: GeoPlan {
+                exit_ip: Some("203.0.113.10".to_string()),
+                country: Some("JP".to_string()),
+                timezone: Some("Asia/Tokyo".to_string()),
+            },
+        };
+        let cache_path = profile.join(".cloak-geo-cache.json");
+        write_secret_atomic(&cache_path, &serde_json::to_string(&cache).unwrap()).unwrap();
+
+        let (geo, hit) = lookup_geo_cached(&profile, &proxy, false, None).unwrap();
+        assert!(hit);
+        assert_eq!(geo.exit_ip.as_deref(), Some("203.0.113.10"));
+        let body = fs::read_to_string(cache_path).unwrap();
+        assert!(!body.contains("private-pass"));
+        assert!(!body.contains("private-user"));
+        thread::sleep(Duration::from_millis(10));
+        write_secret_atomic(
+            &profile.join(".cloak-proxy"),
+            "socks5://private-user:rotated-secret@example.net:1080",
+        )
+        .unwrap();
+        assert_ne!(first_revision, geo_cache_revision(&profile).unwrap());
+    }
+
+    #[test]
+    fn geo_wait_has_a_bounded_timeout() {
+        let (_sender, receiver) = mpsc::channel();
+        let started = Instant::now();
+        let result = receive_first_geo(&receiver, 1, Duration::from_millis(40), None).unwrap();
+        assert!(result.is_none());
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn geo_wait_can_be_cancelled_before_browser_spawn() {
+        let (_sender, receiver) = mpsc::channel();
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let cancellation_for_thread = Arc::clone(&cancellation);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(25));
+            cancellation_for_thread.store(true, Ordering::Release);
+        });
+
+        let started = Instant::now();
+        let result = receive_first_geo(
+            &receiver,
+            1,
+            Duration::from_secs(4),
+            Some(cancellation.as_ref()),
+        );
+        assert!(matches!(result, Err(CloakError::LaunchCancelled)));
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn window_geometry_is_validated_and_restored_from_local_state() {
+        assert_eq!(
+            parse_window_geometry("10,20,1280,900"),
+            Some((10, 20, 1280, 900))
+        );
+        assert!(parse_window_geometry("10,20,10,900").is_none());
+        assert!(parse_window_geometry("10,20,1280,900,extra").is_none());
+
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(
+            profile.join("Local State"),
+            r#"{"browser":{"window_placement":{"left":12,"top":24,"right":1292,"bottom":924}}}"#,
+        )
+        .unwrap();
+        assert_eq!(read_window_geometry(&profile), Some((12, 24, 1280, 900)));
     }
 
     #[test]
@@ -3050,6 +3424,8 @@ mod tests {
             extra_extension_paths: Vec::new(),
             selftest_extension_paths: Vec::new(),
             browser_binary: dir.path().join("browser/Chromium"),
+            engine_major: "145".to_string(),
+            engine_version: "145.0.0.0".to_string(),
             proxy: ProxyPlan {
                 mode: ProxyMode::None,
                 display: "off".to_string(),
@@ -3062,6 +3438,7 @@ mod tests {
                 country: None,
                 timezone: None,
             },
+            geo_cache_hit: false,
             locale: None,
             browser_identity: browser_identity_plan(&EngineVersion::fallback()),
             argv: Vec::new(),

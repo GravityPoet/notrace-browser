@@ -40,7 +40,6 @@ LSREG="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/L
 mkdir -p "$CB"
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG" >&2; }
 die() { log "ERROR: $*"; exit 1; }
-command -v jq >/dev/null 2>&1 || die "jq not found (brew install jq)"
 
 marker_hash() {
   if [[ -f "$1" ]]; then
@@ -67,18 +66,29 @@ if [[ -z "$installed" ]]; then
 fi
 [[ -n "$installed" ]] || die "no installed Chromium found under $CB"
 
-# 2) latest macOS version = newest release whose assets include the darwin tarball
-api="https://api.github.com/repos/$REPO/releases?per_page=50"
-if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-  json="$(curl -fsSL --max-time 30 -H "Authorization: Bearer $GITHUB_TOKEN" "$api" 2>>"$LOG" || true)"
+# 2) latest macOS version = newest release whose assets include the darwin tarball.
+# CLOAK_BROWSER_PIN is an explicit local ceiling: it avoids network access and
+# prevents an unattended updater from moving beyond a user-validated build.
+if [[ -n "${CLOAK_BROWSER_PIN:-}" ]]; then
+  latest="${CLOAK_BROWSER_PIN#chromium-v}"
+  [[ "$latest" =~ ^[0-9]+([.][0-9]+){0,4}$ ]] || die "CLOAK_BROWSER_PIN 无效：$latest"
+  [[ -x "$CB/chromium-$latest/Chromium.app/Contents/MacOS/Chromium" ]] \
+    || die "CLOAK_BROWSER_PIN 未安装：$CB/chromium-$latest"
+  log "pin enabled: using installed target $latest (network lookup skipped)"
 else
-  json="$(curl -fsSL --max-time 30 "$api" 2>>"$LOG" || true)"
+  command -v jq >/dev/null 2>&1 || die "jq not found (brew install jq)"
+  api="https://api.github.com/repos/$REPO/releases?per_page=50"
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    json="$(curl -fsSL --max-time 30 -H "Authorization: Bearer $GITHUB_TOKEN" "$api" 2>>"$LOG" || true)"
+  else
+    json="$(curl -fsSL --max-time 30 "$api" 2>>"$LOG" || true)"
+  fi
+  [[ -n "$json" ]] || { log "GitHub API unreachable; skip this run"; exit 0; }
+  latest_tag="$(printf '%s' "$json" | jq -r --arg a "$ASSET" \
+    'map(select([.assets[].name] | index($a))) | sort_by(.tag_name) | reverse | .[0].tag_name // ""')"
+  [[ -n "$latest_tag" ]] || { log "no macOS (darwin-arm64) release found; skip"; exit 0; }
+  latest="${latest_tag#chromium-v}"
 fi
-[[ -n "$json" ]] || { log "GitHub API unreachable; skip this run"; exit 0; }
-latest_tag="$(printf '%s' "$json" | jq -r --arg a "$ASSET" \
-  'map(select([.assets[].name] | index($a))) | sort_by(.tag_name) | reverse | .[0].tag_name // ""')"
-[[ -n "$latest_tag" ]] || { log "no macOS (darwin-arm64) release found; skip"; exit 0; }
-latest="${latest_tag#chromium-v}"
 
 log "installed=$installed latest=$latest"
 
@@ -179,6 +189,8 @@ elif [[ "${CLOAK_UPDATE_LIVE_GATE:-}" == "1" ]]; then
   CLOAK_BROWSER_EXPECTED_SHA256="$candidate_sha" \
     node "$ROOT/selftest/run-live-challenge-audit.mjs" \
       --headed \
+      --site version-consistency \
+      --site cloudflare-turnstile-test \
       --site browserscan \
       --site sannysoft \
       --site browserleaks-webrtc \
@@ -198,7 +210,14 @@ else
 fi
 
 # 9) promote only after all gates pass.
-ln -sfn "$dest" "$CB/current"; log "current -> $dest"
+candidate_link="$CB/.current.promote.$$"
+rm -f "$candidate_link"
+ln -s "$dest" "$candidate_link"
+if ! /bin/mv -f -h "$candidate_link" "$CB/current"; then
+  rm -f "$candidate_link"
+  die "atomic current promotion failed; stable build unchanged"
+fi
+log "current -> $dest"
 write_hash_file "$RUNTIME_SHA_FILE" "$candidate_sha" "$CB/current/Chromium.app/Contents/MacOS/Chromium"
 [[ -x "$LSREG" ]] && { "$LSREG" -f "$app" >>"$LOG" 2>&1 || log "warn: lsregister failed"; }
 "$ROOT/packaging/set-pwa-icon.sh" >>"$LOG" 2>&1 || log "warn: set-pwa-icon failed"
