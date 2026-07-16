@@ -97,6 +97,11 @@ Every account workspace in NoTrace Browser can be fully automated using the comp
 | **Toggle Locale** | `cloak account toggle-locale <name>` | Toggles IP-matched Accept-Language / lang header synchronization. |
 | **Show Detail** | `cloak account show <name> [--json]` | Prints all metadata configuration of the account workspace. |
 | **Launch Account** | `cloak launch <name> [--dry-run] [--skip-geo]`| Launches the engine instance. Use `--dry-run` to output flags. |
+
+The compatibility launcher also accepts an optional HTTPS destination:
+`./packaging/launch-account.sh <name> [https-url]`. Omitting the URL keeps the
+existing `https://chatgpt.com/` default. Arguments are passed directly to
+Chromium without shell interpolation.
 | **Self Check** | `cloak self-check [--json]` | Verifies local engine integrity and unpacked extensions path. |
 
 ---

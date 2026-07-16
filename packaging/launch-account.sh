@@ -11,8 +11,8 @@ set -euo pipefail
 #   - privacy check := throwaway-profile browser probe runs in the background
 #
 # Usage:
-#   launch-account.sh <account-name>
-#   DRY_RUN=1 launch-account.sh <name>              # print argv, do not launch
+#   launch-account.sh <account-name> [https-url]
+#   DRY_RUN=1 launch-account.sh <name> [https-url]  # print argv, do not launch
 #   CLOAK_ALLOW_PRIVACY_FAIL=1 launch-account.sh x  # explicit override gate failures
 #   CLOAK_PREFLIGHT=strict launch-account.sh x      # block launch until browser probe passes
 #   CLOAK_PREFLIGHT=0 launch-account.sh x           # skip browser probe only
@@ -20,13 +20,31 @@ set -euo pipefail
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
 
 name="${1:-}"
-[[ -n "$name" ]] || { printf 'usage: %s <account-name>\n' "$(basename "$0")" >&2; exit 1; }
+launch_url="${2:-https://chatgpt.com/}"
+[[ -n "$name" && $# -le 2 ]] || {
+  printf 'usage: %s <account-name> [https-url]\n' "$(basename "$0")" >&2
+  exit 1
+}
 [[ "$name" == "main" ]] && { printf "refuse: 'main' is reserved for the daily PWA profile\n" >&2; exit 1; }
 case "$name" in
   */*|*\\*|*..*|.*|*.|*[!A-Za-z0-9._@+-]*)
     printf 'bad account name: %s (use letters, digits, ., @, +, - or _)\n' "$name" >&2
     exit 1;;
 esac
+case "$launch_url" in
+  https://*) ;;
+  *)
+    printf 'bad launch URL: only https:// URLs are supported\n' >&2
+    exit 1;;
+esac
+if [[ ${#launch_url} -gt 4096
+      || "$launch_url" == *$'\r'*
+      || "$launch_url" == *$'\n'*
+      || "$launch_url" == *$'\t'*
+      || "$launch_url" == *" "* ]]; then
+  printf 'bad launch URL: whitespace, control characters, or excessive length\n' >&2
+  exit 1
+fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXT_SRC="$ROOT/extension/cloak-companion"
@@ -779,7 +797,7 @@ fi
 
 args+=(
   "--new-window"
-  "https://chatgpt.com/"
+  "$launch_url"
 )
 
 printf 'account : %s\n' "$name"
