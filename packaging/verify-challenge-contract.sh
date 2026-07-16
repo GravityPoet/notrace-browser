@@ -75,6 +75,8 @@ assert(argv.some((arg) => arg.startsWith("--user-agent=Mozilla/5.0 (Macintosh; I
 assert(argv.some((arg) => arg.startsWith("--load-extension=")), "missing --load-extension");
 assert(argv.some((arg) => arg.startsWith("--disable-extensions-except=")), "missing --disable-extensions-except");
 assert(argv.includes("--ignore-gpu-blocklist"), "missing --ignore-gpu-blocklist");
+assert(argv.includes("--test-type"), "missing bad-flags infobar suppression");
+assert(!argv.includes("--enable-automation"), "must not enable Chromium automation mode");
 assert(argv.includes("--disable-blink-features=AutomationControlled"), "missing AutomationControlled blink feature guard");
 assert(argv.some((arg) => arg.startsWith("--fingerprint-timezone=")), "missing --fingerprint-timezone");
 assert(argv.some((arg) => arg.startsWith("--lang=")), "missing --lang");
@@ -105,6 +107,10 @@ LC_ALL=C grep -aq -- "--disable-extensions-except=" "$tmpdir/bash-dry-run.txt" |
 LC_ALL=C grep -aq -- "--user-agent=Mozilla/5.0" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --user-agent"
 LC_ALL=C grep -aq -- "10_15_7" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing coherent macOS UA version"
 LC_ALL=C grep -aq -- "--ignore-gpu-blocklist" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --ignore-gpu-blocklist"
+LC_ALL=C grep -aq -- "--test-type" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing bad-flags infobar suppression"
+if LC_ALL=C grep -aq -- "--enable-automation" "$tmpdir/bash-dry-run.txt"; then
+  fail "Bash dry-run enabled Chromium automation mode"
+fi
 LC_ALL=C grep -aq -- "--disable-blink-features=AutomationControlled" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing AutomationControlled blink feature guard"
 LC_ALL=C grep -aq -- "--fingerprint-timezone=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --fingerprint-timezone"
 LC_ALL=C grep -aq -- "--fingerprint-webrtc-ip=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --fingerprint-webrtc-ip"

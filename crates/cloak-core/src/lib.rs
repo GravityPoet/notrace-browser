@@ -786,6 +786,8 @@ fn build_launch_plan_for_url(
         "--no-first-run".to_string(),
         "--no-default-browser-check".to_string(),
         "--ignore-gpu-blocklist".to_string(),
+        // Suppress Chromium's bad-flags infobar without enabling automation mode.
+        "--test-type".to_string(),
         "--disable-blink-features=AutomationControlled".to_string(),
     ];
     append_native_fingerprint_args(&mut argv, &geo, locale.as_deref(), &engine, &seed);
@@ -2795,6 +2797,8 @@ mod tests {
             .iter()
             .any(|arg| arg.starts_with("--disable-extensions-except=")));
         assert!(plan.argv.iter().any(|arg| arg == "--ignore-gpu-blocklist"));
+        assert!(plan.argv.iter().any(|arg| arg == "--test-type"));
+        assert!(!plan.argv.iter().any(|arg| arg == "--enable-automation"));
         assert!(!plan
             .argv
             .iter()

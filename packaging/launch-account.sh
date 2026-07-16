@@ -755,6 +755,8 @@ args=(
   "--no-first-run"
   "--no-default-browser-check"
   "--ignore-gpu-blocklist"
+  # Suppress Chromium's bad-flags infobar without enabling automation mode.
+  "--test-type"
   "--disable-blink-features=AutomationControlled"
   "--fingerprint-brand-version=$CLOAK_CHROME_FULL"
   "--fingerprint-platform-version=$CLOAK_MAC_PLATFORM_VERSION"
