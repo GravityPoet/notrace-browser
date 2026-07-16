@@ -270,6 +270,7 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
     "--fingerprint-platform=macos",
     `--user-agent=${BROWSER_IDENTITY.userAgent}`,
     "--ignore-gpu-blocklist",
+    "--test-type",
     "--disable-blink-features=AutomationControlled",
     `--fingerprint-timezone=${opts.tz}`,
     "--no-first-run",
