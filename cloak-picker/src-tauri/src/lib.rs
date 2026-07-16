@@ -441,6 +441,10 @@ fn run_challenge_audit_blocking() -> Result<serde_json::Value, String> {
                 .and_then(serde_json::Value::as_array)
                 .cloned()
                 .unwrap_or_default();
+            let cancelled = report
+                .get("cancelled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
             let passed = output.status.success()
                 && !results.is_empty()
                 && results.iter().all(|item| {
@@ -448,6 +452,7 @@ fn run_challenge_audit_blocking() -> Result<serde_json::Value, String> {
                 });
             Ok(serde_json::json!({
                 "passed": passed,
+                "cancelled": cancelled,
                 "duration_ms": started
                     .elapsed()
                     .as_millis()
@@ -456,6 +461,8 @@ fn run_challenge_audit_blocking() -> Result<serde_json::Value, String> {
                 "results": results,
                 "error": if passed {
                     serde_json::Value::Null
+                } else if cancelled {
+                    serde_json::Value::String("审计浏览器已关闭，检查已结束".to_string())
                 } else {
                     serde_json::Value::String(
                         String::from_utf8_lossy(&output.stderr)

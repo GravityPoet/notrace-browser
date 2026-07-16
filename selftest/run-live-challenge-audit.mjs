@@ -799,10 +799,28 @@ function siteEvaluateExpression(site, plan) {
   })()`;
 }
 
-async function waitForDevTools(profilePath, timeoutMs) {
+function browserProcessClosed(child) {
+  return Boolean(child && (child.exitCode !== null || child.signalCode !== null));
+}
+
+function browserClosedError() {
+  const error = new Error("审计浏览器已关闭");
+  error.code = "BROWSER_CLOSED";
+  return error;
+}
+
+function isBrowserClosedFailure(error, child) {
+  const message = String(error?.message || error).toLowerCase();
+  return browserProcessClosed(child)
+    || error?.code === "BROWSER_CLOSED"
+    || message === "cdp websocket closed";
+}
+
+async function waitForDevTools(profilePath, timeoutMs, child) {
   const portFile = join(profilePath, "DevToolsActivePort");
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
+    if (browserProcessClosed(child)) throw browserClosedError();
     if (existsSync(portFile)) {
       const [port] = readFileSync(portFile, "utf8").trim().split(/\r?\n/);
       const list = await fetch(`http://127.0.0.1:${port}/json/list`)
@@ -815,6 +833,7 @@ async function waitForDevTools(profilePath, timeoutMs) {
     }
     await sleep(100);
   }
+  if (browserProcessClosed(child)) throw browserClosedError();
   throw new Error("page DevTools target never appeared");
 }
 
@@ -907,6 +926,7 @@ async function run() {
     extra_extensions: env.CLOAK_EXTRA_EXTENSIONS,
     browser_identity_override: browserIdentityOverride,
     results: [],
+    cancelled: false,
   };
 
   try {
@@ -918,10 +938,11 @@ async function run() {
         try { await client.close(); } catch {}
         client = null;
       }
-      const devtools = await waitForDevTools(plan.profile_path, opts.timeoutMs);
+      const devtools = await waitForDevTools(plan.profile_path, opts.timeoutMs, child);
       client = await cdp(devtools.wsUrl);
     };
 
+    let browserClosed = false;
     for (const siteName of opts.sites) {
       const site = SITE_DEFS[siteName];
       const siteUrl = siteName === "version-consistency"
@@ -968,16 +989,25 @@ async function run() {
           }
         }
       } catch (error) {
-        item.error = String(error?.message || error);
+        if (isBrowserClosedFailure(error, child)) {
+          browserClosed = true;
+          report.cancelled = true;
+          item.cancelled = true;
+          item.error = "审计浏览器已关闭";
+        } else {
+          item.error = String(error?.message || error);
+        }
       } finally {
         challengeResponses?.off();
       }
       report.results.push(item);
       console.log(`${item.passed ? "PASS" : "CHECK"} ${siteName}: ${JSON.stringify(item.details || item.error || {})}`);
+      if (browserClosed) break;
     }
 
     let manualIndex = 0;
     for (const url of opts.manualUrls) {
+      if (browserClosed) break;
       manualIndex += 1;
       const name = `manual-${manualIndex}`;
       const item = { name, url, passed: null, manual: true };
@@ -997,7 +1027,14 @@ async function run() {
           }
         }
       } catch (error) {
-        item.error = String(error?.message || error);
+        if (isBrowserClosedFailure(error, child)) {
+          browserClosed = true;
+          report.cancelled = true;
+          item.cancelled = true;
+          item.error = "审计浏览器已关闭";
+        } else {
+          item.error = String(error?.message || error);
+        }
       } finally {
         challengeResponses?.off();
       }

@@ -1030,6 +1030,11 @@ h2 {
   background: #fff7f6;
 }
 
+.challengeAuditBox.cancelled {
+  border-color: rgba(176, 112, 0, 0.24);
+  background: #fffaf0;
+}
+
 .challengeAuditBox > strong {
   font-weight: 650;
 }
