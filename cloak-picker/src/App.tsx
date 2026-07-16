@@ -111,6 +111,7 @@ type LaunchStatus = {
 
 type ChallengeAuditResult = {
   passed: boolean;
+  cancelled?: boolean;
   duration_ms: number;
   browser_sha256: string;
   error: string | null;
@@ -133,7 +134,7 @@ type ChallengeAuditResult = {
 };
 
 type ChallengeAuditStatus = {
-  phase: "running" | "passed" | "failed";
+  phase: "running" | "passed" | "failed" | "cancelled";
   result?: ChallengeAuditResult;
   error?: string;
 };
@@ -180,11 +181,13 @@ const mockMarkOverrides = new Map<string, { marked: boolean; note: string | null
 const mockCommandCounts = new Map<string, number>();
 const mockCommandFailures = new Map<string, number>();
 const mockCancelledLaunches = new Set<string>();
+let mockChallengeAuditCancelled = false;
 
 export function resetMockCommandsForTest() {
   mockCommandCounts.clear();
   mockCommandFailures.clear();
   mockCancelledLaunches.clear();
+  mockChallengeAuditCancelled = false;
 }
 
 export function mockCommandCountForTest(command: string) {
@@ -193,6 +196,10 @@ export function mockCommandCountForTest(command: string) {
 
 export function failNextMockCommandForTest(command: string) {
   mockCommandFailures.set(command, (mockCommandFailures.get(command) ?? 0) + 1);
+}
+
+export function cancelNextMockChallengeAuditForTest() {
+  mockChallengeAuditCancelled = true;
 }
 
 type AccountView = "active" | "trash";
@@ -836,7 +843,7 @@ export default function App() {
     try {
       const result = await call<ChallengeAuditResult>("run_challenge_audit");
       setChallengeAudit({
-        phase: result.passed ? "passed" : "failed",
+        phase: result.cancelled ? "cancelled" : result.passed ? "passed" : "failed",
         result,
         error: result.error ?? undefined,
       });
@@ -1069,7 +1076,9 @@ export default function App() {
       ? `兼容通过 · ${challengeAudit.result?.duration_ms ?? 0} ms`
       : challengeAudit?.phase === "failed"
         ? "兼容检查失败，可重试"
-        : "";
+        : challengeAudit?.phase === "cancelled"
+          ? "浏览器已关闭，检查已结束，可重试"
+          : "";
   const workspaceStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties & {
     "--sidebar-width": string;
   };
@@ -2328,11 +2337,14 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
   }
   const accounts = mockAccounts();
   if (command === "run_challenge_audit") {
+    const cancelled = mockChallengeAuditCancelled;
+    mockChallengeAuditCancelled = false;
     return {
-      passed: true,
+      passed: !cancelled,
+      cancelled,
       duration_ms: 2480,
       browser_sha256: "0".repeat(64),
-      error: null,
+      error: cancelled ? "审计浏览器已关闭，检查已结束" : null,
       results: [
         {
           name: "version-consistency",
@@ -2341,11 +2353,11 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
         },
         {
           name: "cloudflare-turnstile-test",
-          passed: true,
+          passed: !cancelled,
           details: {
             apiLoaded: true,
-            widgetCompleted: true,
-            serverValidation: { success: true },
+            widgetCompleted: !cancelled,
+            serverValidation: { success: !cancelled },
             challenge: { detected: true, blocked: false, kind: "turnstile-widget" },
           },
         },

@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App, {
+  cancelNextMockChallengeAuditForTest,
   failNextMockCommandForTest,
   mockCommandCountForTest,
   resetMockCommandsForTest,
@@ -245,5 +246,16 @@ describe("Cloak Picker dialog regressions", () => {
     expect(audit?.textContent ?? "").toContain("阻断页：未检测到");
     expect(buttonWithText("挑战兼容").disabled).toBe(false);
     expect(mockCommandCountForTest("run_challenge_audit")).toBe(2);
+  });
+
+  it("explains when the audit browser is closed and keeps retry available", async () => {
+    cancelNextMockChallengeAuditForTest();
+    await click(buttonWithText("挑战兼容"));
+    await settle(140);
+
+    const audit = document.querySelector<HTMLElement>(".challengeAuditBox.cancelled");
+    expect(audit?.textContent ?? "").toContain("浏览器已关闭，检查已结束，可重试");
+    expect(audit?.textContent ?? "").toContain("审计浏览器已关闭，检查已结束");
+    expect(buttonWithText("挑战兼容").disabled).toBe(false);
   });
 });
