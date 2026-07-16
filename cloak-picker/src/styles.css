@@ -824,6 +824,35 @@ h1 {
   color: #a15c00;
 }
 
+.launchStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.launchStatus.pending {
+  color: #a15c00;
+}
+
+.launchStatus.current {
+  color: var(--accent);
+}
+
+.launchStatus.failed {
+  color: #b42318;
+}
+
+.launchStatus.cancelled {
+  color: var(--muted);
+}
+
 h2 {
   font-size: 12px;
   line-height: 1.35;
@@ -929,6 +958,101 @@ h2 {
 
 .warningBox p:last-child {
   margin-bottom: 0;
+}
+
+.diagnosticBox {
+  margin: 14px 18px 0;
+  border: 1px solid rgba(0, 113, 227, 0.16);
+  border-radius: 14px;
+  background: #f5f9ff;
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.diagnosticTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.diagnosticGrid {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 6px 10px;
+  margin-top: 8px;
+}
+
+.diagnosticGrid span {
+  color: var(--muted);
+}
+
+.diagnosticGrid strong {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capabilityList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.capabilityList span {
+  border: 1px solid rgba(0, 113, 227, 0.14);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 18px;
+  padding: 0 7px;
+}
+
+.challengeAuditBox {
+  display: grid;
+  gap: 8px;
+  margin: 10px 18px 0;
+  border: 1px solid rgba(0, 113, 227, 0.16);
+  border-radius: 14px;
+  background: #f5f9ff;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.challengeAuditBox.failed {
+  border-color: rgba(180, 35, 24, 0.2);
+  background: #fff7f6;
+}
+
+.challengeAuditBox > strong {
+  font-weight: 650;
+}
+
+.challengeAuditBox > p {
+  margin: 0;
+  color: #b42318;
+  line-height: 1.45;
+}
+
+.challengeAuditSignals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.challengeAuditSignals span {
+  border-radius: 999px;
+  background: rgba(0, 113, 227, 0.08);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 20px;
+  padding: 0 8px;
 }
 
 .actionBar {

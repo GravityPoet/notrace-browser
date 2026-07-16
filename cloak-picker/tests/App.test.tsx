@@ -2,7 +2,11 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import App from "../src/App";
+import App, {
+  failNextMockCommandForTest,
+  mockCommandCountForTest,
+  resetMockCommandsForTest,
+} from "../src/App";
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean;
@@ -87,6 +91,7 @@ beforeEach(async () => {
   });
   await settle(240);
   expect(buttonWithText("代理")).toBeTruthy();
+  resetMockCommandsForTest();
 });
 
 afterEach(async () => {
@@ -170,5 +175,75 @@ describe("Cloak Picker dialog regressions", () => {
     expect(Array.from(document.querySelectorAll("button")).some((button) => button.textContent?.trim() === "启动")).toBe(
       false,
     );
+  });
+
+  it("shows actual launch diagnostics after the single launch request completes", async () => {
+    await settle(180);
+    const launchButton = buttonWithText("启动");
+    expect(launchButton.disabled).toBe(false);
+    await click(launchButton);
+    expect(buttonWithText("取消")).toBeTruthy();
+    expect(document.querySelector(".launchStatus")?.textContent).toContain("正在启动");
+    await settle(260);
+
+    const diagnostics = document.querySelector<HTMLElement>(".diagnosticBox");
+    expect(diagnostics).not.toBeNull();
+    expect(diagnostics?.textContent ?? "").toContain("启动诊断");
+    expect(diagnostics?.textContent ?? "").toContain("420 ms");
+    expect(diagnostics?.textContent ?? "").toContain("180 ms");
+    expect(diagnostics?.textContent ?? "").toContain("isolated-profile-storage");
+    expect(document.querySelector(".detail")?.textContent).toContain("Chromium 145.0.7632.109");
+    expect(document.querySelector(".launchStatus")?.textContent).toContain("已启动");
+    expect(mockCommandCountForTest("launch_account")).toBe(1);
+    expect(mockCommandCountForTest("launch_preflight")).toBe(0);
+  });
+
+  it("cancels an in-flight preflight without opening the browser", async () => {
+    await settle(180);
+    await click(buttonWithText("启动"));
+    await click(buttonWithText("取消"));
+    await settle(140);
+
+    expect(document.querySelector(".launchStatus")?.textContent).toContain("已取消");
+    expect(document.querySelector(".diagnosticBox")).toBeNull();
+    expect(mockCommandCountForTest("launch_account")).toBe(1);
+    expect(mockCommandCountForTest("cancel_launch")).toBe(1);
+  });
+
+  it("keeps a failed launch recoverable and retries with one request", async () => {
+    await settle(180);
+    failNextMockCommandForTest("launch_account");
+    await click(buttonWithText("启动"));
+    await settle(140);
+
+    expect(document.querySelector(".launchStatus")?.textContent).toContain("启动失败，可重试");
+    expect(buttonWithText("启动")).toBeTruthy();
+
+    await click(buttonWithText("启动"));
+    await settle(180);
+    expect(document.querySelector(".launchStatus")?.textContent).toContain("已启动");
+    expect(mockCommandCountForTest("launch_account")).toBe(2);
+    expect(mockCommandCountForTest("launch_preflight")).toBe(0);
+  });
+
+  it("surfaces the official Turnstile compatibility result and keeps it retryable", async () => {
+    failNextMockCommandForTest("run_challenge_audit");
+    await click(buttonWithText("挑战兼容"));
+    await settle(140);
+    expect(document.querySelector(".challengeAuditBox.failed")?.textContent).toContain("兼容检查失败，可重试");
+    expect(buttonWithText("挑战兼容").disabled).toBe(false);
+
+    await click(buttonWithText("挑战兼容"));
+    expect(buttonWithText("检查挑战中").disabled).toBe(true);
+    await settle(140);
+
+    const audit = document.querySelector<HTMLElement>(".challengeAuditBox");
+    expect(audit?.textContent ?? "").toContain("兼容通过");
+    expect(audit?.textContent ?? "").toContain("版本一致性：通过");
+    expect(audit?.textContent ?? "").toContain("官方 widget：完成");
+    expect(audit?.textContent ?? "").toContain("Siteverify：通过");
+    expect(audit?.textContent ?? "").toContain("阻断页：未检测到");
+    expect(buttonWithText("挑战兼容").disabled).toBe(false);
+    expect(mockCommandCountForTest("run_challenge_audit")).toBe(2);
   });
 });

@@ -70,7 +70,10 @@ jobs:
           for file in extension/cloak-companion/*.js selftest/*.mjs; do
             node --check "$file"
           done
+          node --test selftest/challenge-signals.test.mjs
           ./packaging/test-patch-chromium.sh
+          ./packaging/test-update-pin.sh
+          ./packaging/test-rollback-chromium.sh
 
       - name: Build and install the canonical app shape
         shell: bash
