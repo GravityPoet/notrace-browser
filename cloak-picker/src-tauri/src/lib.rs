@@ -335,6 +335,22 @@ async fn run_challenge_audit() -> Result<serde_json::Value, String> {
     run_blocking(run_challenge_audit_blocking).await
 }
 
+fn resolve_node_binary(candidates: &[PathBuf]) -> PathBuf {
+    candidates
+        .iter()
+        .find(|candidate| candidate.is_file())
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from("node"))
+}
+
+fn node_binary() -> PathBuf {
+    resolve_node_binary(&[
+        PathBuf::from("/opt/homebrew/bin/node"),
+        PathBuf::from("/usr/local/bin/node"),
+        PathBuf::from("/usr/bin/node"),
+    ])
+}
+
 fn run_challenge_audit_blocking() -> Result<serde_json::Value, String> {
     let config = config()?;
     let script = config
@@ -389,7 +405,8 @@ fn run_challenge_audit_blocking() -> Result<serde_json::Value, String> {
     }
 
     let started = std::time::Instant::now();
-    let output = Command::new("node")
+    let node = node_binary();
+    let output = Command::new(&node)
         .arg(&script)
         .args([
             "--headed",
@@ -410,7 +427,8 @@ fn run_challenge_audit_blocking() -> Result<serde_json::Value, String> {
         .env("CLOAK_EXTRA_EXTENSIONS", "0")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output();
+        .output()
+        .map_err(|err| format!("无法启动挑战审计（{}）：{err}", node.display()));
     let report_path = result_dir.join("report.json");
     let result = match output {
         Ok(output) if report_path.is_file() => (|| {
@@ -453,7 +471,7 @@ fn run_challenge_audit_blocking() -> Result<serde_json::Value, String> {
             "挑战审计未生成报告：{}",
             String::from_utf8_lossy(&output.stderr).trim()
         )),
-        Err(err) => Err(format!("无法启动挑战审计：{err}")),
+        Err(err) => Err(err),
     };
     let _ = fs::remove_dir_all(&result_dir);
     result
@@ -605,5 +623,55 @@ mod tests {
         assert!(second.load(Ordering::Acquire));
         registry.finish("work", &second);
         assert!(!registry.cancel("work").unwrap());
+    }
+
+    #[test]
+    fn account_command_acl_covers_registered_commands() {
+        let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
+        let handler_block = source
+            .split_once("tauri::generate_handler![")
+            .expect("invoke handler list should exist")
+            .1
+            .split_once("])")
+            .expect("invoke handler list should be closed")
+            .0;
+        let acl = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/permissions/account-commands.toml"
+        ));
+        let allowed_commands = acl
+            .lines()
+            .filter_map(|line| {
+                line.trim()
+                    .trim_end_matches(',')
+                    .strip_prefix('"')?
+                    .strip_suffix('"')
+            })
+            .collect::<Vec<_>>();
+
+        for command in handler_block
+            .split(',')
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+        {
+            assert!(
+                allowed_commands.contains(&command),
+                "registered Tauri command {command} is missing from account-commands ACL"
+            );
+        }
+    }
+
+    #[test]
+    fn node_binary_resolution_prefers_an_existing_absolute_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing-node");
+        let installed = dir.path().join("node");
+        fs::write(&installed, "test node").unwrap();
+
+        assert_eq!(
+            resolve_node_binary(&[missing, installed.clone()]),
+            installed
+        );
+        assert_eq!(resolve_node_binary(&[]), PathBuf::from("node"));
     }
 }
