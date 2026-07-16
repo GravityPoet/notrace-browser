@@ -18,5 +18,7 @@ commands.allow = [
   "launch_preflight",
   "launch_account",
   "launch_web_store",
+  "cancel_launch",
   "account_is_running",
+  "run_challenge_audit",
 ]
