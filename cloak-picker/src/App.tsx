@@ -227,7 +227,8 @@ type GroupFilter = GroupOption & {
 };
 
 export default function App() {
-  const [accounts, setAccounts] = useState<Account[]>(emptyAccounts);
+  const [activeAccounts, setActiveAccounts] = useState<Account[]>(emptyAccounts);
+  const [trashedAccounts, setTrashedAccounts] = useState<Account[]>(emptyAccounts);
   const [accountView, setAccountView] = useState<AccountView>("active");
   const [selectedName, setSelectedName] = useState<string>("");
   const [selectedGroup, setSelectedGroup] = useState<string>(allGroupsValue);
@@ -272,40 +273,65 @@ export default function App() {
   const resizingPaneRef = useRef(false);
   const dialogTriggerRef = useRef<HTMLElement | null>(null);
 
+  const accounts = accountView === "trash" ? trashedAccounts : activeAccounts;
+  const allAccounts = useMemo(
+    () => [...activeAccounts, ...trashedAccounts].sort(compareAccountsByCreatedAt),
+    [activeAccounts, trashedAccounts],
+  );
   const orderedAccounts = useMemo(() => orderAccounts(accounts, accountOrder), [accounts, accountOrder]);
-  const normalizedAccountSearch = accountSearch.trim().toLocaleLowerCase();
+  const allOrderedAccounts = useMemo(() => orderAccounts(allAccounts, accountOrder), [allAccounts, accountOrder]);
+  const normalizedAccountSearch = normalizeAccountSearch(accountSearch);
+  const hasAccountSearch = normalizedAccountSearch.length > 0;
   const groupFilters = useMemo(
     () => buildGroupFilters(accounts, groupOrder, hiddenGroups),
     [accounts, groupOrder, hiddenGroups],
   );
-  const visibleAccounts = useMemo(() => {
-    const scopedAccounts =
+  const browsedAccounts = useMemo(
+    () =>
       selectedGroup === allGroupsValue
         ? orderedAccounts
-        : orderedAccounts.filter((account) => accountGroupLabel(account) === selectedGroup);
-    if (!normalizedAccountSearch) return scopedAccounts;
-    return scopedAccounts.filter((account) =>
-      [account.name, account.group ?? "", account.mark_note ?? ""].some((value) =>
-        value.toLocaleLowerCase().includes(normalizedAccountSearch),
-      ),
-    );
-  }, [normalizedAccountSearch, orderedAccounts, selectedGroup]);
+        : orderedAccounts.filter((account) => accountGroupLabel(account) === selectedGroup),
+    [orderedAccounts, selectedGroup],
+  );
+  const visibleAccounts = useMemo(
+    () =>
+      hasAccountSearch
+        ? searchAccounts(allOrderedAccounts, normalizedAccountSearch)
+        : browsedAccounts,
+    [allOrderedAccounts, browsedAccounts, hasAccountSearch, normalizedAccountSearch],
+  );
   const selected = useMemo(
     () => visibleAccounts.find((account) => account.name === selectedName) ?? visibleAccounts[0] ?? null,
     [visibleAccounts, selectedName],
   );
-  const groupedAccounts = useMemo(() => orderAccountGroups(groupAccounts(visibleAccounts), groupOrder), [visibleAccounts, groupOrder]);
-  const groupOptions = useMemo(() => buildGroupOptions(accounts, hiddenGroups), [accounts, hiddenGroups]);
+  const groupedAccounts = useMemo(
+    () =>
+      hasAccountSearch
+        ? [{ label: "搜索结果", accounts: visibleAccounts }]
+        : orderAccountGroups(groupAccounts(visibleAccounts), groupOrder),
+    [groupOrder, hasAccountSearch, visibleAccounts],
+  );
+  const groupOptions = useMemo(
+    () => buildGroupOptions(hasAccountSearch ? allAccounts : accounts, hiddenGroups),
+    [accounts, allAccounts, hasAccountSearch, hiddenGroups],
+  );
 
   async function refresh(preferredName?: string, view: AccountView = accountView) {
     setError("");
-    const command = view === "trash" ? "list_trashed_accounts" : "list_accounts";
-    const next = await call<Account[]>(command);
-    const orderedNext = orderAccounts(next, accountOrder);
-    setAccounts(next);
+    const [nextActiveAccounts, nextTrashedAccounts] = await Promise.all([
+      call<Account[]>("list_accounts"),
+      call<Account[]>("list_trashed_accounts"),
+    ]);
+    setActiveAccounts(nextActiveAccounts);
+    setTrashedAccounts(nextTrashedAccounts);
+    const nextViewAccounts = view === "trash" ? nextTrashedAccounts : nextActiveAccounts;
+    const selectionPool = hasAccountSearch
+      ? [...nextActiveAccounts, ...nextTrashedAccounts]
+      : nextViewAccounts;
+    const orderedNext = orderAccounts(selectionPool, accountOrder);
     setSelectedName((current) => {
-      if (preferredName && next.some((account) => account.name === preferredName)) return preferredName;
-      if (current && next.some((account) => account.name === current)) return current;
+      if (preferredName && selectionPool.some((account) => account.name === preferredName)) return preferredName;
+      if (current && selectionPool.some((account) => account.name === current)) return current;
       return orderedNext[0]?.name ?? "";
     });
   }
@@ -327,8 +353,8 @@ export default function App() {
   }
 
   useEffect(() => {
-    void run(() => refresh(undefined, accountView));
-  }, [accountView]);
+    void run(() => refresh(undefined, "active"));
+  }, []);
 
   useEffect(() => {
     if (selectedGroup === allGroupsValue) return;
@@ -1024,13 +1050,20 @@ export default function App() {
   }
 
   const selectedGroupLabel = selectedGroup === allGroupsValue ? "" : `${selectedGroup} 分组 · `;
+  const activeSearchCount = hasAccountSearch
+    ? visibleAccounts.filter((account) => !account.trashed).length
+    : 0;
+  const trashedSearchCount = hasAccountSearch
+    ? visibleAccounts.filter((account) => account.trashed).length
+    : 0;
   const accountCountLabel =
-    accountView === "trash"
-      ? `${selectedGroupLabel}${visibleAccounts.length} 个回收站账号`
-      : `${selectedGroupLabel}${visibleAccounts.length} 个活跃账号`;
-  const hasAccountSearch = normalizedAccountSearch.length > 0;
+    hasAccountSearch
+      ? `${visibleAccounts.length} 个全局匹配`
+      : accountView === "trash"
+        ? `${selectedGroupLabel}${visibleAccounts.length} 个回收站账号`
+        : `${selectedGroupLabel}${visibleAccounts.length} 个活跃账号`;
   const emptyTitle = hasAccountSearch
-    ? "未找到匹配账号"
+    ? "所有位置均无匹配账号"
     : accountView === "trash"
       ? "回收站为空"
       : "暂无活跃账号";
@@ -1098,7 +1131,7 @@ export default function App() {
             <input
               aria-label="搜索账号"
               autoComplete="off"
-              placeholder="搜索账号、分组或标记"
+              placeholder="搜索所有账号、分组或标记"
               spellCheck={false}
               type="search"
               value={accountSearch}
@@ -1134,91 +1167,102 @@ export default function App() {
             <span>账号</span>
             {busy ? <Loader2 className="spin" size={14} /> : null}
           </div>
-          <div className="viewSwitch" role="tablist" aria-label="账号视图">
-            <button
-              className={accountView === "active" ? "active" : ""}
-              type="button"
-              role="tab"
-              aria-selected={accountView === "active"}
-              onClick={() => setAccountView("active")}
-            >
-              活跃
-            </button>
-            <button
-              className={accountView === "trash" ? "active" : ""}
-              type="button"
-              role="tab"
-              aria-selected={accountView === "trash"}
-              onClick={() => setAccountView("trash")}
-            >
-              回收站
-            </button>
-          </div>
-
-          <div className="groupFilter" aria-label="分组筛选">
-            {groupFilters.map((group) => {
-              const isAll = group.value === allGroupsValue;
-              const isActive = selectedGroup === group.value;
-              const canDeleteGroup = !isAll && group.label !== ungroupedLabel;
-              return (
-                <div
-                  className={`groupFilterButton ${isActive ? "active" : ""} ${draggingGroupLabel === group.label ? "dragging" : ""} ${dropTargetGroup === group.label ? "dropTarget" : ""}`}
-                  data-group-label={isAll ? undefined : group.label}
-                  key={group.value}
-                  title={isAll ? "再次点击可折叠或展开全部分组" : "按住拖动可调整分组顺序"}
-                  onDragLeave={() => setDropTargetGroup((current) => (current === group.label ? "" : current))}
-                  onDragOver={(event) => {
-                    if (!isAll) {
-                      allowGroupDrop(event, group.label);
-                    }
-                  }}
-                  onDrop={(event) => {
-                    if (!isAll) {
-                      void dropAccountOnGroup(event, group.label);
-                    }
-                  }}
-                  onPointerCancel={endGroupPointerDrag}
-                  onPointerDown={(event) => startGroupPointerDrag(event, group)}
-                  onPointerMove={moveGroupPointerDrag}
-                  onPointerUp={endGroupPointerDrag}
-                  onContextMenu={(event) => {
-                    if (!canDeleteGroup) return;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    const menuPosition = placeContextMenu(event.clientX, event.clientY, contextMenuWidth, contextMenuHeight);
-                    setAccountContextMenu(null);
-                    setGroupContextMenu({
-                      groupLabel: group.label,
-                      count: group.count,
-                      returnFocusElement: event.currentTarget.querySelector<HTMLElement>(".groupFilterSelect"),
-                      x: menuPosition.x,
-                      y: menuPosition.y,
-                    });
-                  }}
+          {hasAccountSearch ? (
+            <div className="searchScopeSummary" role="status" aria-live="polite">
+              <Search aria-hidden="true" size={14} />
+              <strong>全部位置</strong>
+              <span>{visibleAccounts.length} 个匹配</span>
+              <small>{activeSearchCount} 活跃 · {trashedSearchCount} 回收站</small>
+            </div>
+          ) : (
+            <>
+              <div className="viewSwitch" role="tablist" aria-label="账号视图">
+                <button
+                  className={accountView === "active" ? "active" : ""}
+                  type="button"
+                  role="tab"
+                  aria-selected={accountView === "active"}
+                  onClick={() => setAccountView("active")}
                 >
-                  <button
-                    className="groupFilterSelect"
-                    type="button"
-                    aria-pressed={isActive}
-                    title={isAll ? "再次点击可折叠或展开全部分组" : "点击查看该分组；按住拖动调整顺序"}
-                    onClick={() => handleGroupFilterClick(group)}
-                  >
-                    {isAll ? null : (
-                      <span
-                        className="groupDragHandle"
-                        title="拖动调整分组顺序"
+                  活跃
+                </button>
+                <button
+                  className={accountView === "trash" ? "active" : ""}
+                  type="button"
+                  role="tab"
+                  aria-selected={accountView === "trash"}
+                  onClick={() => setAccountView("trash")}
+                >
+                  回收站
+                </button>
+              </div>
+
+              <div className="groupFilter" aria-label="分组筛选">
+                {groupFilters.map((group) => {
+                  const isAll = group.value === allGroupsValue;
+                  const isActive = selectedGroup === group.value;
+                  const canDeleteGroup = !isAll && group.label !== ungroupedLabel;
+                  return (
+                    <div
+                      className={`groupFilterButton ${isActive ? "active" : ""} ${draggingGroupLabel === group.label ? "dragging" : ""} ${dropTargetGroup === group.label ? "dropTarget" : ""}`}
+                      data-group-label={isAll ? undefined : group.label}
+                      key={group.value}
+                      title={isAll ? "再次点击可折叠或展开全部分组" : "按住拖动可调整分组顺序"}
+                      onDragLeave={() => setDropTargetGroup((current) => (current === group.label ? "" : current))}
+                      onDragOver={(event) => {
+                        if (!isAll) {
+                          allowGroupDrop(event, group.label);
+                        }
+                      }}
+                      onDrop={(event) => {
+                        if (!isAll) {
+                          void dropAccountOnGroup(event, group.label);
+                        }
+                      }}
+                      onPointerCancel={endGroupPointerDrag}
+                      onPointerDown={(event) => startGroupPointerDrag(event, group)}
+                      onPointerMove={moveGroupPointerDrag}
+                      onPointerUp={endGroupPointerDrag}
+                      onContextMenu={(event) => {
+                        if (!canDeleteGroup) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const menuPosition = placeContextMenu(event.clientX, event.clientY, contextMenuWidth, contextMenuHeight);
+                        setAccountContextMenu(null);
+                        setGroupContextMenu({
+                          groupLabel: group.label,
+                          count: group.count,
+                          returnFocusElement: event.currentTarget.querySelector<HTMLElement>(".groupFilterSelect"),
+                          x: menuPosition.x,
+                          y: menuPosition.y,
+                        });
+                      }}
+                    >
+                      <button
+                        className="groupFilterSelect"
+                        type="button"
+                        aria-pressed={isActive}
+                        title={isAll ? "再次点击可折叠或展开全部分组" : "点击查看该分组；按住拖动调整顺序"}
+                        onClick={() => handleGroupFilterClick(group)}
                       >
-                        <GripVertical size={12} />
-                      </span>
-                    )}
-                    {isAll ? null : <Folder className="groupIcon" size={12} />}
-                    <span className="groupFilterLabel">{group.label}</span>
-                    <small>{group.count}</small>
-                  </button>
-                </div>
-              );
-            })}
-          </div>
+                        {isAll ? null : (
+                          <span
+                            className="groupDragHandle"
+                            title="拖动调整分组顺序"
+                          >
+                            <GripVertical size={12} />
+                          </span>
+                        )}
+                        {isAll ? null : <Folder className="groupIcon" size={12} />}
+                        <span className="groupFilterLabel">{group.label}</span>
+                        <small>{group.count}</small>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
 
           <div className="accountList">
             {visibleAccounts.length === 0 ? (
@@ -1249,9 +1293,9 @@ export default function App() {
               groupedAccounts.map((group) => (
                 <AccountGroupSection
                   accountDropTarget={accountDropTarget}
-                  collapsed={selectedGroup === allGroupsValue && collapsedGroups.includes(group.label)}
-                  canCollapse={selectedGroup === allGroupsValue}
-                  dropTarget={dropTargetGroup === group.label}
+                  collapsed={!hasAccountSearch && selectedGroup === allGroupsValue && collapsedGroups.includes(group.label)}
+                  canCollapse={!hasAccountSearch && selectedGroup === allGroupsValue}
+                  dropTarget={!hasAccountSearch && dropTargetGroup === group.label}
                   group={group}
                   key={group.label}
                   onAllowDrop={allowGroupDrop}
@@ -1265,6 +1309,7 @@ export default function App() {
                   onSelectAccount={setSelectedName}
                   onStartAccountDrag={startAccountDrag}
                   onToggleCollapse={toggleGroupCollapse}
+                  searching={hasAccountSearch}
                   selectedName={selected?.name ?? ""}
                   setDraggingAccountName={setDraggingAccountName}
                   setAccountDropTarget={setAccountDropTarget}
@@ -1617,6 +1662,7 @@ function AccountGroupSection({
   collapsed,
   dropTarget,
   group,
+  searching,
   selectedName,
   onAllowAccountDrop,
   onAllowDrop,
@@ -1638,6 +1684,7 @@ function AccountGroupSection({
   collapsed: boolean;
   dropTarget: boolean;
   group: AccountGroup;
+  searching: boolean;
   selectedName: string;
   onAllowAccountDrop: (event: DragEvent<HTMLButtonElement>, account: Account) => void;
   onAllowDrop: (event: DragEvent<HTMLElement>, groupLabel: string) => void;
@@ -1656,41 +1703,43 @@ function AccountGroupSection({
 }) {
   return (
     <section
-      className={`accountGroup ${dropTarget ? "dropTarget" : ""} ${collapsed ? "collapsed" : ""}`}
-      onDragLeave={() => setDropTargetGroup("")}
-      onDragOver={(event) => onAllowDrop(event, group.label)}
-      onDrop={(event) => void onDropAccount(event, group.label)}
+      className={`accountGroup ${searching ? "searching" : ""} ${dropTarget ? "dropTarget" : ""} ${collapsed ? "collapsed" : ""}`}
+      onDragLeave={searching ? undefined : () => setDropTargetGroup("")}
+      onDragOver={searching ? undefined : (event) => onAllowDrop(event, group.label)}
+      onDrop={searching ? undefined : (event) => void onDropAccount(event, group.label)}
     >
-      <div className="accountGroupHeader">
-        <button
-          className="accountGroupName"
-          type="button"
-          title={canCollapse ? "点击折叠或展开该分组" : group.label}
-          onClick={() => {
-            if (canCollapse) onToggleCollapse(group.label);
-          }}
-        >
-          {canCollapse ? (
-            collapsed ? (
-              <ChevronRight className="collapseIcon" size={13} />
+      {searching ? null : (
+        <div className="accountGroupHeader">
+          <button
+            className="accountGroupName"
+            type="button"
+            title={canCollapse ? "点击折叠或展开该分组" : group.label}
+            onClick={() => {
+              if (canCollapse) onToggleCollapse(group.label);
+            }}
+          >
+            {canCollapse ? (
+              collapsed ? (
+                <ChevronRight className="collapseIcon" size={13} />
+              ) : (
+                <ChevronDown className="collapseIcon" size={13} />
+              )
             ) : (
-              <ChevronDown className="collapseIcon" size={13} />
-            )
-          ) : (
-            <Folder size={13} />
-          )}
-          <strong>{middleTruncate(group.label, 28)}</strong>
-        </button>
-        <span className="accountGroupCount">{group.accounts.length}</span>
-      </div>
+              <Folder size={13} />
+            )}
+            <strong>{middleTruncate(group.label, 28)}</strong>
+          </button>
+          <span className="accountGroupCount">{group.accounts.length}</span>
+        </div>
+      )}
       {collapsed
         ? null
         : group.accounts.map((account) => (
             <button
-              className={`accountRow ${account.name === selectedName ? "selected" : ""} ${accountDropTarget?.name === account.name ? (accountDropTarget.edge === "before" ? "dropBefore" : "dropAfter") : ""}`}
-              draggable={!account.trashed}
+              className={`accountRow ${searching ? "searchResult" : ""} ${account.name === selectedName ? "selected" : ""} ${!searching && accountDropTarget?.name === account.name ? (accountDropTarget.edge === "before" ? "dropBefore" : "dropAfter") : ""}`}
+              draggable={!searching && !account.trashed}
               key={account.name}
-              title={`${account.name}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${account.trashed ? "" : "｜拖动可调整顺序或移动分组"}`}
+              title={`${account.name}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${searching || account.trashed ? "" : "｜拖动可调整顺序或移动分组"}`}
               onClick={() => onSelectAccount(account.name)}
               onContextMenu={(event) => onOpenAccountContextMenu(event, account)}
               onDoubleClick={() => {
@@ -1700,21 +1749,29 @@ function AccountGroupSection({
                   void onLaunchAccount(account);
                 }
               }}
-              onDragEnd={() => {
+              onDragEnd={searching ? undefined : () => {
                 setDraggingAccountName("");
                 setAccountDropTarget(null);
                 setDropTargetGroup("");
               }}
-              onDragLeave={(event) => onLeaveAccountDrop(event, account.name)}
-              onDragOver={(event) => onAllowAccountDrop(event, account)}
-              onDragStart={(event) => onStartAccountDrag(event, account)}
-              onDrop={(event) => onDropAccountOnAccount(event, account)}
+              onDragLeave={searching ? undefined : (event) => onLeaveAccountDrop(event, account.name)}
+              onDragOver={searching ? undefined : (event) => onAllowAccountDrop(event, account)}
+              onDragStart={searching ? undefined : (event) => onStartAccountDrag(event, account)}
+              onDrop={searching ? undefined : (event) => onDropAccountOnAccount(event, account)}
             >
               <span className="accountRail" />
               <span className="accountMain">
                 <span className="accountTitle">
-                  <GripVertical className="dragHandle" size={14} />
+                  {searching ? null : <GripVertical className="dragHandle" size={14} />}
                   <strong title={account.name}>{middleTruncate(account.name, 34)}</strong>
+                  {searching ? (
+                    <span
+                      className={`accountLocationTag ${account.trashed ? "trashed" : "active"}`}
+                      title={`${account.trashed ? "回收站" : "活跃"} · ${accountGroupLabel(account)}`}
+                    >
+                      {account.trashed ? "回收站" : "活跃"} · {accountGroupLabel(account)}
+                    </span>
+                  ) : null}
                   {account.marked ? (
                     <span
                       className={`accountMark ${account.mark_note ? "withNote" : ""}`}
@@ -2134,6 +2191,35 @@ type AccountGroup = {
   accounts: Account[];
 };
 
+function compareAccountsByCreatedAt(left: Account, right: Account) {
+  if (left.created_at !== right.created_at) return left.created_at < right.created_at ? 1 : -1;
+  return left.name.localeCompare(right.name);
+}
+
+function normalizeAccountSearch(value: string) {
+  return value.normalize("NFKC").trim().toLocaleLowerCase();
+}
+
+function accountSearchRank(account: Account, normalizedSearch: string): number | null {
+  const name = normalizeAccountSearch(account.name);
+  const metadata = [account.group ?? "", account.mark_note ?? ""].map(normalizeAccountSearch);
+  if (name === normalizedSearch) return 0;
+  if (metadata.some((value) => value === normalizedSearch)) return 1;
+  if (name.startsWith(normalizedSearch)) return 2;
+  if (metadata.some((value) => value.startsWith(normalizedSearch))) return 3;
+  if (name.includes(normalizedSearch)) return 4;
+  if (metadata.some((value) => value.includes(normalizedSearch))) return 5;
+  return null;
+}
+
+function searchAccounts(accounts: Account[], normalizedSearch: string): Account[] {
+  return accounts
+    .map((account, index) => ({ account, index, rank: accountSearchRank(account, normalizedSearch) }))
+    .filter((result): result is { account: Account; index: number; rank: number } => result.rank !== null)
+    .sort((left, right) => left.rank - right.rank || left.index - right.index)
+    .map((result) => result.account);
+}
+
 function orderAccounts(accounts: Account[], accountOrder: string[]): Account[] {
   const accountsByName = new Map(accounts.map((account) => [account.name, account]));
   return orderedAccountNames(accounts, accountOrder)
@@ -2477,6 +2563,21 @@ function mockAccounts(): Account[] {
       locale_enabled: false,
       proxy_display: "socks5://proxy.example.net:1080（经本机 SOCKS5 中继）",
       has_proxy: true,
+    },
+    {
+      name: "demo-gamma-copy",
+      profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-gamma-copy",
+      created_at: 1_700_000_003_500_000,
+      archived: false,
+      trashed: false,
+      seed: "40127",
+      group: "antigravity",
+      marked: false,
+      mark_note: null,
+      region: null,
+      locale_enabled: false,
+      proxy_display: "关",
+      has_proxy: false,
     },
     {
       name: "old-lab",

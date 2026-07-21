@@ -63,6 +63,14 @@ async function click(element: HTMLElement) {
   });
 }
 
+async function inputText(element: HTMLInputElement, value: string) {
+  await act(async () => {
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    valueSetter?.call(element, value);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
 async function openContextMenu(element: HTMLElement) {
   await act(async () => {
     element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, button: 2 }));
@@ -157,7 +165,7 @@ describe("Cloak Picker dialog regressions", () => {
 
   it("keeps legacy archived accounts in the trash workflow", async () => {
     const accountSearch = document.querySelector<HTMLInputElement>('input[type="search"]');
-    expect(accountSearch?.placeholder).toBe("搜索账号、分组或标记");
+    expect(accountSearch?.placeholder).toBe("搜索所有账号、分组或标记");
     expect(accountSearch?.closest(".topbar")).not.toBeNull();
     expect(document.querySelector('.sidebar input[type="search"]')).toBeNull();
 
@@ -176,6 +184,50 @@ describe("Cloak Picker dialog regressions", () => {
     expect(Array.from(document.querySelectorAll("button")).some((button) => button.textContent?.trim() === "启动")).toBe(
       false,
     );
+  });
+
+  it("searches every group and the trash without switching scope", async () => {
+    const codexGroup = document.querySelector<HTMLButtonElement>('[data-group-label="codex"] .groupFilterSelect');
+    expect(codexGroup).not.toBeNull();
+    await click(codexGroup as HTMLButtonElement);
+
+    const accountSearch = document.querySelector<HTMLInputElement>('input[type="search"]');
+    expect(accountSearch).not.toBeNull();
+    await inputText(accountSearch as HTMLInputElement, "old-lab");
+    await settle(30);
+
+    expect(document.querySelector(".viewSwitch")).toBeNull();
+    expect(document.querySelector(".groupFilter")).toBeNull();
+    expect(document.querySelector(".accountGroupHeader")).toBeNull();
+    expect(document.querySelector(".searchScopeSummary")?.textContent).toContain("全部位置");
+    expect(document.querySelector(".searchScopeSummary")?.textContent).toContain("1 个匹配");
+    expect(document.querySelector(".searchScopeSummary")?.textContent).toContain("0 活跃 · 1 回收站");
+
+    const resultRows = Array.from(document.querySelectorAll<HTMLButtonElement>(".accountRow"));
+    expect(resultRows).toHaveLength(1);
+    expect(resultRows[0].textContent).toContain("old-lab");
+    expect(resultRows[0].querySelector(".accountLocationTag")?.textContent).toContain("回收站");
+    await click(resultRows[0]);
+
+    expect(document.querySelector(".detail")?.textContent).toContain("已移入回收站");
+    expect(buttonWithText("恢复账号")).toBeTruthy();
+  });
+
+  it("ranks an exact account name before broader matches across locations", async () => {
+    const claudeGroup = document.querySelector<HTMLButtonElement>('[data-group-label="claude"] .groupFilterSelect');
+    expect(claudeGroup).not.toBeNull();
+    await click(claudeGroup as HTMLButtonElement);
+
+    const accountSearch = document.querySelector<HTMLInputElement>('input[type="search"]');
+    await inputText(accountSearch as HTMLInputElement, "demo-gamma");
+    await settle(30);
+
+    const resultRows = Array.from(document.querySelectorAll<HTMLButtonElement>(".accountRow"));
+    expect(resultRows).toHaveLength(2);
+    expect(resultRows[0].querySelector(".accountTitle strong")?.textContent).toBe("demo-gamma");
+    expect(resultRows[0].querySelector(".accountLocationTag")?.textContent).toContain("回收站");
+    expect(resultRows[1].querySelector(".accountTitle strong")?.textContent).toBe("demo-gamma-copy");
+    expect(resultRows[1].querySelector(".accountLocationTag")?.textContent).toContain("活跃");
   });
 
   it("shows actual launch diagnostics after the single launch request completes", async () => {
