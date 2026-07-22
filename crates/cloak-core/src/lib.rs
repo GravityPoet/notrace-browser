@@ -303,10 +303,18 @@ pub struct LaunchOptions {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PreflightMode {
+    #[default]
     Off,
     Strict,
-    #[default]
     Async,
+}
+
+fn preflight_mode_from(value: Option<&str>) -> PreflightMode {
+    match value {
+        Some("strict") => PreflightMode::Strict,
+        Some("async") => PreflightMode::Async,
+        _ => PreflightMode::Off,
+    }
 }
 
 impl LaunchOptions {
@@ -314,14 +322,8 @@ impl LaunchOptions {
         let allow_privacy_fail = truthy_env("CLOAK_ALLOW_PRIVACY_FAIL");
         let skip_geo = truthy_env("CLOAK_SKIP_GEO");
         let locale_override = env::var("LOCALE").ok().map(|v| truthy(&v));
-        let preflight = match env::var("CLOAK_PREFLIGHT")
-            .unwrap_or_else(|_| "async".to_string())
-            .as_str()
-        {
-            "0" | "off" | "false" => PreflightMode::Off,
-            "strict" => PreflightMode::Strict,
-            _ => PreflightMode::Async,
-        };
+        let preflight_env = env::var("CLOAK_PREFLIGHT").ok();
+        let preflight = preflight_mode_from(preflight_env.as_deref());
         Self {
             dry_run,
             skip_geo,
@@ -2660,6 +2662,18 @@ fn companion_page_spoof_enabled_from(primary: Option<&str>, legacy: Option<&str>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_selftest_is_opt_in_for_normal_launches() {
+        assert_eq!(PreflightMode::default(), PreflightMode::Off);
+        assert_eq!(preflight_mode_from(None), PreflightMode::Off);
+        assert_eq!(preflight_mode_from(Some("0")), PreflightMode::Off);
+        assert_eq!(preflight_mode_from(Some("off")), PreflightMode::Off);
+        assert_eq!(preflight_mode_from(Some("false")), PreflightMode::Off);
+        assert_eq!(preflight_mode_from(Some("unexpected")), PreflightMode::Off);
+        assert_eq!(preflight_mode_from(Some("async")), PreflightMode::Async);
+        assert_eq!(preflight_mode_from(Some("strict")), PreflightMode::Strict);
+    }
 
     #[test]
     fn legacy_seed_matches_bash_contract() {
