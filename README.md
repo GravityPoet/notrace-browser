@@ -169,6 +169,8 @@ To inspect your current fingerprint stealth under headed mode:
 node selftest/run-live-challenge-audit.mjs --headed --site browserscan --site fingerprintjs
 ```
 
+Normal account launches keep the GeoIP, proxy, and privacy gates but do not run the two-profile headless browser self-test. Run checks explicitly from Cloak Picker (`检查出口` / `挑战兼容`), or opt in for CLI and legacy-script launches with `CLOAK_PREFLIGHT=async` or `CLOAK_PREFLIGHT=strict`.
+
 ### Verification Pipeline
 Validate CLI arguments, contract hooks, and headless privacy engines:
 ```bash

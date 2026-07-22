@@ -8,14 +8,14 @@ set -euo pipefail
 #   - storage/login := own --user-data-dir under Accounts/<name>
 #   - network       := per-account proxy when configured, else current system VPN
 #   - timezone/lang := resolved from the SAME exit path the browser will use
-#   - privacy check := throwaway-profile browser probe runs in the background
+#   - privacy check := GeoIP/proxy/privacy gates always run; browser probe is opt-in
 #
 # Usage:
 #   launch-account.sh <account-name> [https-url]
 #   DRY_RUN=1 launch-account.sh <name> [https-url]  # print argv, do not launch
 #   CLOAK_ALLOW_PRIVACY_FAIL=1 launch-account.sh x  # explicit override gate failures
+#   CLOAK_PREFLIGHT=async launch-account.sh x       # run browser probe in the background
 #   CLOAK_PREFLIGHT=strict launch-account.sh x      # block launch until browser probe passes
-#   CLOAK_PREFLIGHT=0 launch-account.sh x           # skip browser probe only
 
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
 
@@ -877,8 +877,8 @@ if [[ -z "${DRY_RUN:-}" ]]; then
 fi
 
 run_browser_selftest() {
-  local mode="${CLOAK_PREFLIGHT:-async}"
-  [[ "$mode" == "0" ]] && return 0
+  local mode="${CLOAK_PREFLIGHT:-off}"
+  [[ "$mode" == "async" || "$mode" == "strict" ]] || return 0
 
   if ! command -v node >/dev/null 2>&1; then
     if [[ "$mode" == "strict" ]]; then
@@ -918,7 +918,7 @@ run_browser_selftest() {
   ) &
 }
 
-if [[ "${CLOAK_PREFLIGHT:-async}" == "strict" ]]; then
+if [[ "${CLOAK_PREFLIGHT:-off}" == "strict" ]]; then
   run_browser_selftest
 fi
 
@@ -927,7 +927,7 @@ abort_on_privacy_failures
 "$BIN" "${args[@]}" &
 browser_pid=$!
 
-if [[ "${CLOAK_PREFLIGHT:-async}" != "strict" ]]; then
+if [[ "${CLOAK_PREFLIGHT:-off}" == "async" ]]; then
   run_browser_selftest
 fi
 
