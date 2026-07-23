@@ -70,7 +70,7 @@ jobs:
           for file in extension/cloak-companion/*.js selftest/*.mjs; do
             node --check "$file"
           done
-          node --test selftest/challenge-signals.test.mjs
+          node --test selftest/challenge-signals.test.mjs selftest/startup-recovery.test.mjs
           ./packaging/test-patch-chromium.sh
           ./packaging/test-update-pin.sh
           ./packaging/test-rollback-chromium.sh

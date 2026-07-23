@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "NoTrace Browser Companion",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Match the browser timezone to your IP/proxy, removing the timezone-vs-IP mismatch fingerprint signal. Pick a zone or auto-match the current IP.",
   "permissions": ["storage", "scripting", "webNavigation", "tabs", "declarativeNetRequestWithHostAccess"],
   "host_permissions": ["<all_urls>"],
@@ -16,6 +16,12 @@
   },
   "background": { "service_worker": "background.js" },
   "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "js": ["startup-recovery.js"]
+    },
     {
       "matches": ["http://*/*", "https://*/*"],
       "all_frames": true,
