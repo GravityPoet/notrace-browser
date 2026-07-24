@@ -30,7 +30,9 @@ const CLOAK_CHROME_MAJOR_FALLBACK: &str = "145";
 const CLOAK_MAC_UA_VERSION: &str = "10_15_7";
 const CLOAK_MAC_PLATFORM_VERSION: &str = "15.5.0";
 const HTTPS_ONLY_MODE_PREF: &str = "https_only_mode_enabled";
-const LOCAL_NETWORK_CONTENT_SETTING: &str = "local_network";
+const LOCAL_NETWORK_CONTENT_SETTINGS: &[&str] =
+    &["local_network_access", "local_network", "loopback_network"];
+const LOCAL_NETWORK_MIGRATION_PREF: &str = "has_migrated_local_network_access";
 const CONTENT_SETTING_ALLOW: i64 = 1;
 const CONTENT_SETTING_BLOCK: i64 = 2;
 const EXTENSION_MIME_REQUEST_HANDLING_FLAG: &str = "extension-mime-request-handling@2";
@@ -2464,13 +2466,16 @@ fn enforce_profile_preferences(profile_path: &Path) -> Result<()> {
     if !defaults.is_object() {
         *defaults = Value::Object(serde_json::Map::new());
     }
-    defaults
+    let defaults = defaults
         .as_object_mut()
-        .expect("content setting defaults object checked")
-        .insert(
-            LOCAL_NETWORK_CONTENT_SETTING.to_string(),
+        .expect("content setting defaults object checked");
+    defaults.insert(LOCAL_NETWORK_MIGRATION_PREF.to_string(), Value::Bool(true));
+    for content_setting in LOCAL_NETWORK_CONTENT_SETTINGS {
+        defaults.insert(
+            (*content_setting).to_string(),
             Value::from(CONTENT_SETTING_BLOCK),
         );
+    }
 
     let content_settings = profile
         .entry("content_settings".to_string())
@@ -2490,18 +2495,21 @@ fn enforce_profile_preferences(profile_path: &Path) -> Result<()> {
     let exceptions = exceptions
         .as_object_mut()
         .expect("content setting exceptions object checked");
-    let local_network = exceptions
-        .entry(LOCAL_NETWORK_CONTENT_SETTING.to_string())
-        .or_insert_with(|| Value::Object(serde_json::Map::new()));
-    if !local_network.is_object() {
-        *local_network = Value::Object(serde_json::Map::new());
+    exceptions.insert(LOCAL_NETWORK_MIGRATION_PREF.to_string(), Value::Bool(true));
+    for content_setting in LOCAL_NETWORK_CONTENT_SETTINGS {
+        let local_network = exceptions
+            .entry((*content_setting).to_string())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if !local_network.is_object() {
+            *local_network = Value::Object(serde_json::Map::new());
+        }
+        local_network
+            .as_object_mut()
+            .expect("local network exceptions object checked")
+            .retain(|_, exception| {
+                exception.get("setting").and_then(Value::as_i64) != Some(CONTENT_SETTING_ALLOW)
+            });
     }
-    local_network
-        .as_object_mut()
-        .expect("local network exceptions object checked")
-        .retain(|_, exception| {
-            exception.get("setting").and_then(Value::as_i64) != Some(CONTENT_SETTING_ALLOW)
-        });
 
     let encoded = format!("{}\n", serde_json::to_string_pretty(&root)?);
     write_secret_atomic(&prefs_path, &encoded)?;
@@ -3338,7 +3346,15 @@ mod tests {
                     "default_content_setting_values": {"images": 1},
                     "content_settings": {
                         "exceptions": {
+                            "local_network_access": {
+                                "https://allowed.example:443,*": {"setting": 1},
+                                "https://blocked.example:443,*": {"setting": 2}
+                            },
                             "local_network": {
+                                "https://allowed.example:443,*": {"setting": 1},
+                                "https://blocked.example:443,*": {"setting": 2}
+                            },
+                            "loopback_network": {
                                 "https://allowed.example:443,*": {"setting": 1},
                                 "https://blocked.example:443,*": {"setting": 2}
                             }
@@ -3372,22 +3388,36 @@ mod tests {
             Some(1)
         );
         assert_eq!(
-            root.pointer("/profile/default_content_setting_values/local_network")
-                .and_then(Value::as_i64),
-            Some(CONTENT_SETTING_BLOCK)
-        );
-        assert!(root
-            .pointer(
-                "/profile/content_settings/exceptions/local_network/https:~1~1allowed.example:443,*"
-            )
-            .is_none());
-        assert_eq!(
             root.pointer(
-                "/profile/content_settings/exceptions/local_network/https:~1~1blocked.example:443,*/setting"
-            )
-            .and_then(Value::as_i64),
-            Some(CONTENT_SETTING_BLOCK)
+                "/profile/default_content_setting_values/has_migrated_local_network_access"
+            ),
+            Some(&Value::Bool(true))
         );
+        assert_eq!(
+            root.pointer("/profile/content_settings/exceptions/has_migrated_local_network_access"),
+            Some(&Value::Bool(true))
+        );
+        for content_setting in LOCAL_NETWORK_CONTENT_SETTINGS {
+            assert_eq!(
+                root.pointer(&format!(
+                    "/profile/default_content_setting_values/{content_setting}"
+                ))
+                .and_then(Value::as_i64),
+                Some(CONTENT_SETTING_BLOCK)
+            );
+            assert!(root
+                .pointer(&format!(
+                    "/profile/content_settings/exceptions/{content_setting}/https:~1~1allowed.example:443,*"
+                ))
+                .is_none());
+            assert_eq!(
+                root.pointer(&format!(
+                    "/profile/content_settings/exceptions/{content_setting}/https:~1~1blocked.example:443,*/setting"
+                ))
+                .and_then(Value::as_i64),
+                Some(CONTENT_SETTING_BLOCK)
+            );
+        }
     }
 
     #[test]

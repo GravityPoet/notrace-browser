@@ -210,7 +210,14 @@ defaults = profile.get("default_content_setting_values")
 if not isinstance(defaults, dict):
     defaults = {}
     profile["default_content_setting_values"] = defaults
-defaults["local_network"] = 2
+defaults["has_migrated_local_network_access"] = True
+local_network_content_settings = (
+    "local_network_access",
+    "local_network",
+    "loopback_network",
+)
+for content_setting in local_network_content_settings:
+    defaults[content_setting] = 2
 
 content_settings = profile.get("content_settings")
 if not isinstance(content_settings, dict):
@@ -220,14 +227,16 @@ exceptions = content_settings.get("exceptions")
 if not isinstance(exceptions, dict):
     exceptions = {}
     content_settings["exceptions"] = exceptions
-local_network = exceptions.get("local_network")
-if not isinstance(local_network, dict):
-    local_network = {}
-exceptions["local_network"] = {
-    pattern: value
-    for pattern, value in local_network.items()
-    if not isinstance(value, dict) or value.get("setting") != 1
-}
+exceptions["has_migrated_local_network_access"] = True
+for content_setting in local_network_content_settings:
+    local_network = exceptions.get(content_setting)
+    if not isinstance(local_network, dict):
+        local_network = {}
+    exceptions[content_setting] = {
+        pattern: value
+        for pattern, value in local_network.items()
+        if not isinstance(value, dict) or value.get("setting") != 1
+    }
 
 tmp_path = prefs_path.with_name(f"{prefs_path.name}.tmp.{os.getpid()}")
 with tmp_path.open("w", encoding="utf-8") as fh:
