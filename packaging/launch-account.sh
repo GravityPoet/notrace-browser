@@ -178,10 +178,10 @@ os.chmod(state_path, 0o600)
 PY
 }
 
-enforce_https_only_mode() {
+enforce_profile_preferences() {
   local profile_dir="$1"
   command -v python3 >/dev/null 2>&1 || {
-    printf 'error: python3 required to update Chromium HTTPS-Only preference\n' >&2
+    printf 'error: python3 required to update Chromium profile preferences\n' >&2
     exit 1
   }
   python3 - "$profile_dir" <<'PY'
@@ -200,6 +200,35 @@ if prefs_path.exists():
     if isinstance(loaded, dict):
         root = loaded
 root["https_only_mode_enabled"] = True
+
+profile = root.get("profile")
+if not isinstance(profile, dict):
+    profile = {}
+    root["profile"] = profile
+
+defaults = profile.get("default_content_setting_values")
+if not isinstance(defaults, dict):
+    defaults = {}
+    profile["default_content_setting_values"] = defaults
+defaults["local_network"] = 2
+
+content_settings = profile.get("content_settings")
+if not isinstance(content_settings, dict):
+    content_settings = {}
+    profile["content_settings"] = content_settings
+exceptions = content_settings.get("exceptions")
+if not isinstance(exceptions, dict):
+    exceptions = {}
+    content_settings["exceptions"] = exceptions
+local_network = exceptions.get("local_network")
+if not isinstance(local_network, dict):
+    local_network = {}
+exceptions["local_network"] = {
+    pattern: value
+    for pattern, value in local_network.items()
+    if not isinstance(value, dict) or value.get("setting") != 1
+}
+
 tmp_path = prefs_path.with_name(f"{prefs_path.name}.tmp.{os.getpid()}")
 with tmp_path.open("w", encoding="utf-8") as fh:
     json.dump(root, fh, ensure_ascii=False, sort_keys=True)
@@ -872,7 +901,7 @@ if [[ -n "$proxy_server_arg" ]]; then
 fi
 
 if [[ -z "${DRY_RUN:-}" ]]; then
-  enforce_https_only_mode "$UDD"
+  enforce_profile_preferences "$UDD"
   ensure_chromium_webstore_install_flag "$UDD"
 fi
 

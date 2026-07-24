@@ -255,8 +255,8 @@ struct CloakLauncher {
         }
     }
 
-    // Make launches deterministic and safer: disable session restore, clear the crash flag, and
-    // keep HTTPS-Only enabled for this profile before Chromium starts.
+    // Make launches deterministic and safer: disable session restore, clear the crash flag,
+    // keep HTTPS-Only enabled, and block website access to local-network devices.
     private func normalizeProfilePreferences() {
         let prefsURL = profileDirectoryURL
             .appendingPathComponent("Default", isDirectory: true)
@@ -285,6 +285,23 @@ struct CloakLauncher {
 
         var profile = root["profile"] as? [String: Any] ?? [:]
         profile["exit_type"] = "Normal"  // suppress the "Chromium didn't shut down correctly" restore
+
+        var defaults = profile["default_content_setting_values"] as? [String: Any] ?? [:]
+        defaults["local_network"] = 2  // 2 = block
+        profile["default_content_setting_values"] = defaults
+
+        var contentSettings = profile["content_settings"] as? [String: Any] ?? [:]
+        var exceptions = contentSettings["exceptions"] as? [String: Any] ?? [:]
+        let localNetwork = exceptions["local_network"] as? [String: Any] ?? [:]
+        exceptions["local_network"] = localNetwork.filter { _, value in
+            guard let exception = value as? [String: Any],
+                  let setting = exception["setting"] as? NSNumber else {
+                return true
+            }
+            return setting.intValue != 1
+        }
+        contentSettings["exceptions"] = exceptions
+        profile["content_settings"] = contentSettings
         root["profile"] = profile
 
         if let output = try? JSONSerialization.data(withJSONObject: root) {

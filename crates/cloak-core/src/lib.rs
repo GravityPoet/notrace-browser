@@ -30,6 +30,9 @@ const CLOAK_CHROME_MAJOR_FALLBACK: &str = "145";
 const CLOAK_MAC_UA_VERSION: &str = "10_15_7";
 const CLOAK_MAC_PLATFORM_VERSION: &str = "15.5.0";
 const HTTPS_ONLY_MODE_PREF: &str = "https_only_mode_enabled";
+const LOCAL_NETWORK_CONTENT_SETTING: &str = "local_network";
+const CONTENT_SETTING_ALLOW: i64 = 1;
+const CONTENT_SETTING_BLOCK: i64 = 2;
 const EXTENSION_MIME_REQUEST_HANDLING_FLAG: &str = "extension-mime-request-handling@2";
 const GEO_CACHE_TTL_SECS: u64 = 300;
 const GEO_REQUEST_TIMEOUT_SECS: u64 = 4;
@@ -922,7 +925,7 @@ fn launch_plan(
 
     secure_account_dir(&plan.profile_path)?;
     ensure_legacy_rename_compat(config)?;
-    enforce_https_only_mode(&plan.profile_path)?;
+    enforce_profile_preferences(&plan.profile_path)?;
     enforce_chromium_webstore_install_flag(&plan.profile_path)?;
     prepare_account_extension(config, &plan)?;
     ensure_launch_not_cancelled(options.cancellation.as_deref())?;
@@ -2433,7 +2436,7 @@ fn read_first_line(path: &Path) -> Result<Option<String>> {
         .filter(|s| !s.is_empty()))
 }
 
-fn enforce_https_only_mode(profile_path: &Path) -> Result<()> {
+fn enforce_profile_preferences(profile_path: &Path) -> Result<()> {
     let prefs_path = profile_path.join("Default").join("Preferences");
     let mut root = if prefs_path.exists() {
         let body = fs::read_to_string(&prefs_path)?;
@@ -2444,9 +2447,62 @@ fn enforce_https_only_mode(profile_path: &Path) -> Result<()> {
     if !root.is_object() {
         root = Value::Object(serde_json::Map::new());
     }
-    root.as_object_mut()
-        .expect("root object checked")
-        .insert(HTTPS_ONLY_MODE_PREF.to_string(), Value::Bool(true));
+    let root = root.as_object_mut().expect("root object checked");
+    root.insert(HTTPS_ONLY_MODE_PREF.to_string(), Value::Bool(true));
+
+    let profile = root
+        .entry("profile".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !profile.is_object() {
+        *profile = Value::Object(serde_json::Map::new());
+    }
+    let profile = profile.as_object_mut().expect("profile object checked");
+
+    let defaults = profile
+        .entry("default_content_setting_values".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !defaults.is_object() {
+        *defaults = Value::Object(serde_json::Map::new());
+    }
+    defaults
+        .as_object_mut()
+        .expect("content setting defaults object checked")
+        .insert(
+            LOCAL_NETWORK_CONTENT_SETTING.to_string(),
+            Value::from(CONTENT_SETTING_BLOCK),
+        );
+
+    let content_settings = profile
+        .entry("content_settings".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !content_settings.is_object() {
+        *content_settings = Value::Object(serde_json::Map::new());
+    }
+    let content_settings = content_settings
+        .as_object_mut()
+        .expect("content settings object checked");
+    let exceptions = content_settings
+        .entry("exceptions".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !exceptions.is_object() {
+        *exceptions = Value::Object(serde_json::Map::new());
+    }
+    let exceptions = exceptions
+        .as_object_mut()
+        .expect("content setting exceptions object checked");
+    let local_network = exceptions
+        .entry(LOCAL_NETWORK_CONTENT_SETTING.to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !local_network.is_object() {
+        *local_network = Value::Object(serde_json::Map::new());
+    }
+    local_network
+        .as_object_mut()
+        .expect("local network exceptions object checked")
+        .retain(|_, exception| {
+            exception.get("setting").and_then(Value::as_i64) != Some(CONTENT_SETTING_ALLOW)
+        });
+
     let encoded = format!("{}\n", serde_json::to_string_pretty(&root)?);
     write_secret_atomic(&prefs_path, &encoded)?;
     Ok(())
@@ -3270,17 +3326,31 @@ mod tests {
     }
 
     #[test]
-    fn enforce_https_only_mode_preserves_existing_preferences() {
+    fn enforce_profile_preferences_blocks_local_network_and_preserves_other_values() {
         let dir = tempfile::tempdir().unwrap();
         let profile = dir.path().join("account");
         let prefs = profile.join("Default").join("Preferences");
         write_secret_atomic(
             &prefs,
-            r#"{"profile":{"exit_type":"Normal"},"session":{"restore_on_startup":5}}"#,
+            r#"{
+                "profile": {
+                    "exit_type": "Normal",
+                    "default_content_setting_values": {"images": 1},
+                    "content_settings": {
+                        "exceptions": {
+                            "local_network": {
+                                "https://allowed.example:443,*": {"setting": 1},
+                                "https://blocked.example:443,*": {"setting": 2}
+                            }
+                        }
+                    }
+                },
+                "session": {"restore_on_startup": 5}
+            }"#,
         )
         .unwrap();
 
-        enforce_https_only_mode(&profile).unwrap();
+        enforce_profile_preferences(&profile).unwrap();
 
         let root: Value = serde_json::from_str(&fs::read_to_string(&prefs).unwrap()).unwrap();
         assert_eq!(
@@ -3295,6 +3365,28 @@ mod tests {
             root.pointer("/session/restore_on_startup")
                 .and_then(Value::as_i64),
             Some(5)
+        );
+        assert_eq!(
+            root.pointer("/profile/default_content_setting_values/images")
+                .and_then(Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            root.pointer("/profile/default_content_setting_values/local_network")
+                .and_then(Value::as_i64),
+            Some(CONTENT_SETTING_BLOCK)
+        );
+        assert!(root
+            .pointer(
+                "/profile/content_settings/exceptions/local_network/https:~1~1allowed.example:443,*"
+            )
+            .is_none());
+        assert_eq!(
+            root.pointer(
+                "/profile/content_settings/exceptions/local_network/https:~1~1blocked.example:443,*/setting"
+            )
+            .and_then(Value::as_i64),
+            Some(CONTENT_SETTING_BLOCK)
         );
     }
 
