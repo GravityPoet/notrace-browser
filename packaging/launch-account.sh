@@ -816,6 +816,9 @@ args=(
   # Suppress Chromium's bad-flags infobar without enabling automation mode.
   "--test-type"
   "--disable-blink-features=AutomationControlled"
+  # Names the brand that --fingerprint-brand-version applies to; without it the
+  # engine emits Full-Version-List entries with no version at all.
+  "--fingerprint-brand=Google Chrome"
   "--fingerprint-brand-version=$CLOAK_CHROME_FULL"
   "--fingerprint-platform-version=$CLOAK_MAC_PLATFORM_VERSION"
   "--fingerprint-gpu-vendor=Google Inc. (Apple)"

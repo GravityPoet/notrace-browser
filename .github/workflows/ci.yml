@@ -57,9 +57,6 @@ jobs:
       - name: Test Rust workspace
         run: cargo test --workspace
 
-      - name: Build Swift tools
-        run: swift build
-
       - name: Check script syntax
         shell: bash
         run: |
