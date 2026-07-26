@@ -496,15 +496,28 @@ function prepareCompanion(plan) {
   rmSync(dest, { recursive: true, force: true });
   cpSync(EXT_SOURCE, dest, { recursive: true });
   const identity = plan.browser_identity || null;
-  writeFileSync(join(dest, "browser-identity-main.js"), `window.__cloakBrowserIdentity = ${JSON.stringify(identity)};\n`);
+  // Non-enumerable, matching what cloak-core generates. See run-selftest.mjs.
+  writeFileSync(
+    join(dest, "browser-identity-main.js"),
+    `Object.defineProperty(window, "__cloakBrowserIdentity", { value: ${JSON.stringify(identity)}, configurable: true, enumerable: false, writable: true });\n`
+  );
   writeFileSync(join(dest, "browser-identity-worker.js"), `self.__cloakBrowserIdentity = ${JSON.stringify(identity)};\n`);
   writeBrowserIdentityHeaderRules(dest, identity);
-  if (companionPageSpoofEnabled()) {
-    writeFileSync(join(dest, "account-seed-main.js"), `window.__cloakAccountSeed = ${JSON.stringify(String(plan.seed))};\n`);
-  } else {
-    writeFileSync(join(dest, "account-seed-main.js"), "window.__cloakAccountSeed = \"\";\n");
-    stripCompanionPageScripts(join(dest, "manifest.json"));
-  }
+  // Non-enumerable handoff, matching cloak-core's seed_handoff_script(). The old
+  // `window.__cloakAccountSeed = ...` was a name apply.js stopped reading, so the
+  // audit ran against a browser with the page spoof silently absent.
+  writeFileSync(
+    join(dest, "account-seed-main.js"),
+    `${seedHandoffScript(companionPageSpoofEnabled() ? String(plan.seed) : "")}\n`
+  );
+  if (!companionPageSpoofEnabled()) stripCompanionPageScripts(join(dest, "manifest.json"));
+}
+
+/// Mirror of cloak-core's seed_handoff_script(): the seed travels on a
+/// non-enumerable property that apply.js deletes inside the same document_start
+/// batch, so no page script ever sees the per-account super-cookie.
+function seedHandoffScript(seed) {
+  return `Object.defineProperty(window, "__cloakSeedHandoff", { value: ${JSON.stringify(seed)}, configurable: true, enumerable: false, writable: true });`;
 }
 
 function applyBrowserIdentityOverride(plan) {

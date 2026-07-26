@@ -14,8 +14,14 @@
     // site could pin the seed to a value it chose and make the canvas and audio
     // noise predictable.
     var fpSeed = window.__cloakSeedHandoff;
-    if ((tz || fpSeed) && window.__cloakSpoof) window.__cloakSpoof(tz, fpSeed);
-  } catch (_) { /* restricted origin or no storage: ignore */ }
+    if (!tz && !fpSeed) return;
+    // spoof.js publishes nothing on window — a global there is a one-expression
+    // tell that names the product, and the bare engine has none. Its entry point
+    // comes back from the toString handshake instead; the native toString ignores
+    // extra arguments, so this call is simply inert if spoof.js did not load.
+    var shared = Function.prototype.toString.call(null, "cloak.shared-state.v1");
+    if (shared && typeof shared === "object" && shared.spoof) shared.spoof(tz, fpSeed);
+  } catch (_) { /* restricted origin, no storage, or spoof.js absent: ignore */ }
   finally {
     try { delete window.__cloakSeedHandoff; } catch (_) {}
   }

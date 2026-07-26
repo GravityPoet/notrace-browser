@@ -58,10 +58,20 @@ window.__runProbe = function () {
     };
   } catch (e) { out.fonts = { error: String(e) }; }
   out.plugins = Array.from(nav.plugins || []).map((p) => p.name);
+  // The bare engine answers [] to both lists. Every name here is one a page can
+  // read to identify the product and link the accounts sharing it, so the
+  // selftest asserts they stay empty. Installation is confirmed through the
+  // handshake instead, which costs window nothing.
   out.cloak = {
-    accountSeed: window.__cloakAccountSeed || "",
-    fingerprintInstalled: window.__cloakFingerprintInstalled === true,
-    spoofType: typeof window.__cloakSpoof
+    globals: Object.getOwnPropertyNames(window).filter((n) => /^__cloak/.test(n)),
+    enumerable: Object.keys(window).filter((n) => /^__cloak/.test(n)),
+    fingerprintInstalled: (() => {
+      try {
+        const shared = Function.prototype.toString.call(null, "cloak.shared-state.v1");
+        return !!(shared && typeof shared === "object" && shared.installed
+          && shared.installed.fingerprint === true);
+      } catch (e) { return false; }
+    })()
   };
 
   // Browser-visible public IP. When --proxy-server is active, this must match

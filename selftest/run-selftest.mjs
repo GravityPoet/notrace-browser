@@ -251,15 +251,25 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
   const dir = mkdtempSync(join(tmpdir(), "cloak-selftest-"));
   const extDir = join(dir, "cloak-companion");
   cpSync(EXT_SOURCE, extDir, { recursive: true });
-  writeFileSync(join(extDir, "browser-identity-main.js"), `window.__cloakBrowserIdentity = ${JSON.stringify(BROWSER_IDENTITY)};\n`);
+  // Non-enumerable, matching what cloak-core generates: spoof.js deletes it on
+  // read, but a plain assignment would leave the forged identity in
+  // Object.keys(window) for any page that cares to diff it against navigator.
+  writeFileSync(
+    join(extDir, "browser-identity-main.js"),
+    `Object.defineProperty(window, "__cloakBrowserIdentity", { value: ${JSON.stringify(BROWSER_IDENTITY)}, configurable: true, enumerable: false, writable: true });\n`
+  );
   writeFileSync(join(extDir, "browser-identity-worker.js"), `self.__cloakBrowserIdentity = ${JSON.stringify(BROWSER_IDENTITY)};\n`);
   writeBrowserIdentityHeaderRules(extDir, BROWSER_IDENTITY);
-  if (companionPageSpoofEnabled()) {
-    writeFileSync(extDir + "/account-seed-main.js", `window.__cloakAccountSeed = ${JSON.stringify(String(seed))};\n`);
-  } else {
-    writeFileSync(extDir + "/account-seed-main.js", "window.__cloakAccountSeed = \"\";\n");
-    stripCompanionPageScripts(join(extDir, "manifest.json"));
-  }
+  // Byte-for-byte the handoff cloak-core's seed_handoff_script() writes. This
+  // harness used to write `window.__cloakAccountSeed = ...`, a name apply.js
+  // stopped reading when the seed moved to a non-enumerable handoff — so the
+  // page-spoof half silently never installed and every run measured a browser
+  // that had none of it, while reporting on a build that did.
+  writeFileSync(
+    extDir + "/account-seed-main.js",
+    `${seedHandoffScript(companionPageSpoofEnabled() ? String(seed) : "")}\n`
+  );
+  if (!companionPageSpoofEnabled()) stripCompanionPageScripts(join(extDir, "manifest.json"));
   const loadExtensionDirs = [extDir, ...opts.extraExtensions];
   const args = [
     `--user-data-dir=${dir}`,
@@ -332,17 +342,17 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
     }
     if (!ready) throw new Error("probe script did not load");
     if (companionPageSpoofEnabled()) {
-      const expectedSeed = JSON.stringify(String(seed));
+      // Through the handshake, not a window global — spoof.js publishes none, and
+      // the seed is deleted before any page script runs, so there is nothing left
+      // to compare it against. Waiting on the install flag is the whole point of
+      // this loop anyway; the seed equality was never what made the probe ready.
+      let installed = false;
       for (let i = 0; i < 60; i += 1) {
-        const installed = await evaluate(
-          client.send,
-          `window.__cloakFingerprintInstalled === true && String(window.__cloakAccountSeed || "") === ${expectedSeed}`,
-          false,
-          5000
-        );
-        if (installed === true) break;
+        installed = await evaluate(client.send, COMPANION_INSTALLED_EXPRESSION, false, 5000) === true;
+        if (installed) break;
         await sleep(100);
       }
+      if (!installed) throw new Error("companion page spoof never installed");
     }
     await evaluate(client.send, "window.__runProbe()", false, 5000);
     let probe = null;
@@ -366,6 +376,24 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
       try { rmSync(dir, { recursive: true, force: true }); } catch (_) {}
     }
   }
+}
+
+/// Same handshake probe.html uses. spoof.js keeps its state in a closure and
+/// hands it back through the patched Function.prototype.toString, so this is the
+/// only way to ask whether the page spoof installed.
+const COMPANION_INSTALLED_EXPRESSION = `(() => {
+  try {
+    const shared = Function.prototype.toString.call(null, "cloak.shared-state.v1");
+    return !!(shared && typeof shared === "object" && shared.installed
+      && shared.installed.fingerprint === true);
+  } catch (e) { return false; }
+})()`;
+
+/// Mirror of cloak-core's seed_handoff_script(): the seed travels on a
+/// non-enumerable property that apply.js deletes inside the same document_start
+/// batch, so no page script ever sees the per-account super-cookie.
+function seedHandoffScript(seed) {
+  return `Object.defineProperty(window, "__cloakSeedHandoff", { value: ${JSON.stringify(seed)}, configurable: true, enumerable: false, writable: true });`;
 }
 
 function writeBrowserIdentityHeaderRules(extDir, identity) {
@@ -452,6 +480,13 @@ function addProbeChecks(checks, label, probe, opts) {
   } else {
     hard("companion page spoof is disabled", probe.cloak?.fingerprintInstalled !== true, JSON.stringify(probe.cloak || {}));
   }
+  // The bare engine leaves window empty of these. One name is enough to identify
+  // the product and link every account that shares it.
+  hard(
+    "companion leaves no globals on window",
+    (probe.cloak?.globals?.length ?? 0) === 0 && (probe.cloak?.enumerable?.length ?? 0) === 0,
+    JSON.stringify(probe.cloak || {})
+  );
   const macUA = /Mac OS X/.test(probe.userAgent || "");
   const macUAVersion = /Mac OS X 10_15_7/.test(probe.userAgent || "");
   const macPlatform = probe.platform === "MacIntel";
@@ -461,11 +496,16 @@ function addProbeChecks(checks, label, probe, opts) {
     macUA && macUAVersion && macPlatform && macCH,
     `UA mac=${macUA} ua10157=${macUAVersion} platform=${probe.platform} CH=${probe.uaData?.platform ?? "n/a"} ${probe.uaData?.platformVersion ?? "n/a"}`
   );
+  // ContentIndex, navigator.contacts and connection.downlinkMax are Android-only.
+  // Real macOS Chrome 145 reports all three undefined — checked against the
+  // installed browser — so synthesising them announced a macOS UA on something
+  // that is not macOS Chrome, and the synthesised interface objects did not even
+  // hold up as WebIDL: prototype writable, `new X()` not throwing, no real methods.
   hard(
-    "headless-like APIs are present",
-    probe.headless_apis?.contentIndex === true
-      && probe.headless_apis?.contacts === true
-      && probe.headless_apis?.downlinkMax === true,
+    "no Android-only APIs are synthesised onto macOS",
+    probe.headless_apis?.contentIndex === false
+      && probe.headless_apis?.contacts === false
+      && probe.headless_apis?.downlinkMax === false,
     JSON.stringify(probe.headless_apis || {})
   );
 

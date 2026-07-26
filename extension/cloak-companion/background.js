@@ -48,7 +48,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   if (msg && msg.type === "detectTZ") { detectIPTimezone().then(reply); return true; }
 });
 
-// Inject spoof.js (defines window.__cloakSpoof) then invoke it with tz. Two
+// Inject spoof.js, then invoke it with tz through the toString handshake. Two
 // sequential injections so the invoke never races the definition.
 async function injectTab(target, tz) {
   if (!ZONE_RE.test(tz)) return;
@@ -56,7 +56,15 @@ async function injectTab(target, tz) {
     await chrome.scripting.executeScript({ target, world: "MAIN", injectImmediately: true, files: ["spoof.js"] });
     await chrome.scripting.executeScript({
       target, world: "MAIN", injectImmediately: true,
-      func: (t) => { if (window.__cloakSpoof) window.__cloakSpoof(t); }, args: [tz],
+      // spoof.js leaves window untouched; its entry point comes back from the
+      // toString handshake. Keep the token in step with spoof.js and apply.js.
+      func: (t) => {
+        try {
+          const shared = Function.prototype.toString.call(null, "cloak.shared-state.v1");
+          if (shared && typeof shared === "object" && shared.spoof) shared.spoof(t);
+        } catch (_) {}
+      },
+      args: [tz],
     });
   } catch (_) { /* chrome:// and other restricted targets: ignore */ }
 }

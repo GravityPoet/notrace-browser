@@ -60,9 +60,9 @@ NoTrace Browser 将 CloakBrowser 的源代码级内核补丁、伴侣扩展和�
 ### 5. Web Worker 级时区物理同步
 普通插件无法将时区脚本注入到 Web Workers 线程中运行。NoTrace 在启动时同时应用 `--fingerprint-timezone` 参数与 `TZ` 环境变量，使受支持的内核版本能够对齐主页面与 Web Workers 的时区。
 
-### 6. 防检测 API 垫片与反劫持防护
-- 补齐了在自动化/无头浏览器中常常缺失的 API（如 `ContentIndex`、`navigator.contacts` 下的 `ContactsManager`、`navigator.connection` 的 `downlinkMax`）。
-- 将所有劫持逻辑隐藏于 Proxy 之下，并修改 `Function.prototype.toString.toString()` 使其保持原生态格式，防止风控脚本探测到 JavaScript 函数被代理污染。
+### 6. 反劫持防护
+- 将所有劫持逻辑隐藏于 Proxy 之下，并修改 `Function.prototype.toString`，使每一个被 hook 的原生函数仍然返回 `[native code]`。
+- 插件**不会**在 `window` 上留下任何属性。掩码状态保存在闭包里，调用方通过被 patch 的 `toString` 本身取回，因此没有任何页面全局变量可以指认本产品、关联共用它的多个账号，或把掩码关掉。
 
 ---
 

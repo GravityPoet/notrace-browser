@@ -1281,8 +1281,12 @@ fn prepare_companion_extension(
     } else {
         format!("{}\n", seed_handoff_script(""))
     };
+    // Non-enumerable, and spoof.js deletes it the moment it reads it. A plain
+    // assignment left the forged identity standing in Object.keys(window) for the
+    // life of the page — the bare engine lists nothing there, so it both named
+    // the companion and handed any page the forgery to diff against navigator.
     let identity_script = format!(
-        "window.__cloakBrowserIdentity = {};\n",
+        "Object.defineProperty(window, \"__cloakBrowserIdentity\", {{ value: {}, configurable: true, enumerable: false, writable: true }});\n",
         serde_json::to_string(&plan.browser_identity)?
     );
     let worker_identity_script = format!(
@@ -3854,11 +3858,15 @@ mod tests {
             fs::read_to_string(plan.extension_runtime_path.join("account-seed-main.js")).unwrap(),
             format!("{}\n", seed_handoff_script("28041"))
         );
-        assert!(
+        let identity_main =
             fs::read_to_string(plan.extension_runtime_path.join("browser-identity-main.js"))
-                .unwrap()
-                .contains("Chrome/145.0.0.0")
-        );
+                .unwrap();
+        assert!(identity_main.contains("Chrome/145.0.0.0"));
+        // A plain `window.__cloakBrowserIdentity = {...}` left the forged identity
+        // in Object.keys(window) for the life of the page, which both names the
+        // companion and hands any page the forgery to diff against navigator.
+        assert!(identity_main.contains("enumerable: false"));
+        assert!(!identity_main.contains("window.__cloakBrowserIdentity ="));
         let header_rules: Value = serde_json::from_str(
             &fs::read_to_string(
                 plan.extension_runtime_path
