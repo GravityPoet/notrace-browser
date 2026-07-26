@@ -74,6 +74,19 @@ function maskSource(replacement, original) {
   return replacement;
 }
 
+// Swap a method for a stand-in that still looks like the native: same name, same
+// arity, and toString() answering from the original. Shared rather than
+// re-declared per installer — the copy that lived inside the timezone installer
+// was not in reach of the identity one, and the methods it defined by hand
+// printed their own JavaScript source from toString(), which is decisive.
+function replaceMethod(obj, name, make) {
+  var orig = obj[name];
+  var next = make(orig);
+  try { Object.defineProperty(next, "name", { value: (orig && orig.name) || name }); } catch (_) {}
+  try { Object.defineProperty(next, "length", { value: orig ? orig.length : 0 }); } catch (_) {}
+  obj[name] = maskSource(next, orig);
+}
+
 // Re-entrant, and each half installs on its own. Keying "already installed" off
 // a single flag meant a first visit to an origin — seed present, zone not yet
 // mirrored — marked the whole spoof done and left the Date wrappers off for the
@@ -165,16 +178,6 @@ function installTimezoneSpoof() {
     }
 
     {
-      // Each replacement below is registered with maskSource so toString() still
-      // reports the native it stands in for.
-      var replaceMethod = function (obj, name, make) {
-        var orig = obj[name];
-        var next = make(orig);
-        try { Object.defineProperty(next, "name", { value: orig.name || name }); } catch (_) {}
-        try { Object.defineProperty(next, "length", { value: orig.length }); } catch (_) {}
-        obj[name] = maskSource(next, orig);
-      };
-
       // getTimezoneOffset returns minutes BEHIND UTC (positive when west).
       replaceMethod(Date.prototype, "getTimezoneOffset", function () {
         return function () {
@@ -316,36 +319,43 @@ function installBrowserIdentitySpoof() {
       }
     }
 
-    if (identity.uaData && navProto) {
-      var uaData = {
-        get brands() { return clone(identity.uaData.brands || []); },
-        get mobile() { return !!identity.uaData.mobile; },
-        get platform() { return identity.uaData.platform || "macOS"; },
-        getHighEntropyValues: function (hints) {
-          var result = {
-            brands: clone(identity.uaData.brands || []),
-            mobile: !!identity.uaData.mobile,
-            platform: identity.uaData.platform || "macOS",
-          };
+    // Patch the interface the engine's own navigator.userAgentData already uses,
+    // the same way the Navigator attributes above are patched. Handing back a
+    // synthesized stand-in object instead — which is what this did — was two
+    // decisive tells, both measured against the bare engine:
+    // `navigator.userAgentData.constructor.name` answered "Object" where every
+    // real Chrome answers "NavigatorUAData", and toString() on its
+    // getHighEntropyValues printed the wrapper's own JavaScript source.
+    //
+    // Gated on the interface being present. userAgentData is secure-context
+    // only, so defining one on an http:// origin would announce the companion on
+    // exactly the pages where real Chrome exposes nothing.
+    var uaSource = identity.uaData;
+    var uadProto = window.NavigatorUAData && NavigatorUAData.prototype;
+    if (uaSource && uadProto && navigator.userAgentData) {
+      var lowEntropy = function () {
+        return {
+          brands: clone(uaSource.brands || []),
+          mobile: !!uaSource.mobile,
+          platform: uaSource.platform || "macOS",
+        };
+      };
+      defineGetter(uadProto, "brands", function () { return clone(uaSource.brands || []); });
+      defineGetter(uadProto, "mobile", function () { return !!uaSource.mobile; });
+      defineGetter(uadProto, "platform", function () { return uaSource.platform || "macOS"; });
+      replaceMethod(uadProto, "getHighEntropyValues", function () {
+        return function (hints) {
+          var result = lowEntropy();
           var keys = Array.isArray(hints) ? hints : [];
           for (var i = 0; i < keys.length; i++) {
-            var key = keys[i];
-            if (Object.prototype.hasOwnProperty.call(identity.uaData, key)) {
-              result[key] = clone(identity.uaData[key]);
+            if (Object.prototype.hasOwnProperty.call(uaSource, keys[i])) {
+              result[keys[i]] = clone(uaSource[keys[i]]);
             }
           }
           return Promise.resolve(result);
-        },
-        toJSON: function () {
-          return {
-            brands: clone(identity.uaData.brands || []),
-            mobile: !!identity.uaData.mobile,
-            platform: identity.uaData.platform || "macOS",
-          };
-        },
-      };
-      try { Object.defineProperty(uaData.getHighEntropyValues, "name", { value: "getHighEntropyValues" }); } catch (_) {}
-      defineGetter(navProto, "userAgentData", function () { return uaData; });
+        };
+      });
+      replaceMethod(uadProto, "toJSON", function () { return function () { return lowEntropy(); }; });
     }
   } catch (_) {}
 }
@@ -388,8 +398,29 @@ function installFingerprintSpoof(fpSeed) {
       maskSource(wrapped, orig);
       obj[name] = wrapped;
     }
-    var nativeGetImageData = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype.getImageData;
-    var nativePutImageData = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype.putImageData;
+    // Both 2D context interfaces, captured before anything below wraps them.
+    // OffscreenCanvasRenderingContext2D is a separate interface, so the
+    // HTMLCanvas natives throw "Illegal invocation" on an offscreen context.
+    function nativePair(iface) {
+      return iface && iface.prototype
+        ? { get: iface.prototype.getImageData, put: iface.prototype.putImageData }
+        : null;
+    }
+    var native2d = nativePair(window.CanvasRenderingContext2D);
+    var nativeOffscreen2d = nativePair(window.OffscreenCanvasRenderingContext2D);
+    function nativesFor(ctx) {
+      return window.OffscreenCanvasRenderingContext2D && ctx instanceof OffscreenCanvasRenderingContext2D
+        ? nativeOffscreen2d
+        : native2d;
+    }
+
+    // One label for every path that hands out an encoded image. Two encoders of
+    // one canvas cannot disagree in a real browser — the PNG bytes behind
+    // toDataURL and toBlob decode to the same pixels — but a label per method
+    // gave each its own perturbation, so comparing them was a cheap tell. It
+    // stays "toDataURL" rather than something neutral so the value the most
+    // widely recorded path already reports does not move for existing accounts.
+    var ENCODE_LABEL = "toDataURL";
 
     // Deriving the offsets costs ~40 string hashes per call, which dwarfed the
     // handful of byte writes they describe: getImageData measured 1.1µs native
@@ -418,8 +449,10 @@ function installFingerprintSpoof(fpSeed) {
       return points;
     }
     function restoreCanvasNoise(ctx, originals) {
+      var natives = nativesFor(ctx);
+      if (!natives || !natives.put) return;
       for (var i = originals.length - 1; i >= 0; i--) {
-        try { nativePutImageData.call(ctx, originals[i][2], originals[i][0], originals[i][1]); } catch (_) {}
+        try { natives.put.call(ctx, originals[i][2], originals[i][0], originals[i][1]); } catch (_) {}
       }
     }
     function applyCanvasNoise(canvas, label) {
@@ -427,20 +460,21 @@ function installFingerprintSpoof(fpSeed) {
       try {
         if (!canvas || !canvas.width || !canvas.height) return null;
         ctx = canvas.getContext && canvas.getContext("2d");
-        if (!ctx || !nativeGetImageData || !nativePutImageData) return null;
+        var natives = ctx && nativesFor(ctx);
+        if (!ctx || !natives || !natives.get || !natives.put) return null;
         var points = pointPlan(label, canvas.width, canvas.height);
         originals = [];
         for (var i = 0; i < 8; i++) {
           var point = points[i], x = point[0], y = point[1];
-          var original = nativeGetImageData.call(ctx, x, y, 1, 1);
-          var changed = nativeGetImageData.call(ctx, x, y, 1, 1);
+          var original = natives.get.call(ctx, x, y, 1, 1);
+          var changed = natives.get.call(ctx, x, y, 1, 1);
           var data = changed.data;
           data[0] = (data[0] + point[2]) & 255;
           data[1] = (data[1] + point[3]) & 255;
           data[2] = (data[2] + point[4]) & 255;
           data[3] = 255;
           originals.push([x, y, original]);
-          nativePutImageData.call(ctx, changed, x, y);
+          natives.put.call(ctx, changed, x, y);
         }
         return function () { restoreCanvasNoise(ctx, originals); };
       } catch (_) {
@@ -460,13 +494,13 @@ function installFingerprintSpoof(fpSeed) {
     wrap(HTMLCanvasElement.prototype, "toDataURL", function (orig) {
       return function () {
         var self = this, args = arguments;
-        return perturbCanvas(self, "toDataURL", function () { return orig.apply(self, args); });
+        return perturbCanvas(self, ENCODE_LABEL, function () { return orig.apply(self, args); });
       };
     });
     wrap(HTMLCanvasElement.prototype, "toBlob", function (orig) {
       return function () {
         var self = this, args = arguments;
-        var restore = applyCanvasNoise(self, "toBlob");
+        var restore = applyCanvasNoise(self, ENCODE_LABEL);
         if (!restore) return orig.apply(self, args);
         if (typeof args[0] === "function") {
           var cb = args[0];
@@ -492,42 +526,68 @@ function installFingerprintSpoof(fpSeed) {
         }
       };
     });
-    if (window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype) {
-      // Fingerprinters routinely hash a strided sample of the buffer instead of
-      // every byte, so land extra perturbations on the stride as well. These
-      // deltas depend on neither the rect nor the canvas, so derive them once.
-      var sampleDeltas = [];
-      for (var s = 0; s < 8; s++) sampleDeltas.push(1 + noiseFor("getImageData:sample:" + s, 251));
-      wrap(CanvasRenderingContext2D.prototype, "getImageData", function (orig) {
-        return function () {
-          var image = orig.apply(this, arguments);
-          try {
-            var w = Math.max(1, image.width || arguments[2] || 1);
-            var h = Math.max(1, image.height || arguments[3] || 1);
-            var data = image.data, len = data.length;
-            var points = pointPlan("getImageData", w, h);
-            for (var i = 0; i < 8; i++) {
-              var point = points[i], idx = (point[1] * w + point[0]) * 4;
-              if (idx + 3 < len) {
-                data[idx] = (data[idx] + point[2]) & 255;
-                data[idx + 1] = (data[idx + 1] + point[3]) & 255;
-                data[idx + 2] = (data[idx + 2] + point[4]) & 255;
-                data[idx + 3] = 255;
-              }
+    // Fingerprinters routinely hash a strided sample of the buffer instead of
+    // every byte, so land extra perturbations on the stride as well. These
+    // deltas depend on neither the rect nor the canvas, so derive them once.
+    var sampleDeltas = [];
+    for (var s = 0; s < 8; s++) sampleDeltas.push(1 + noiseFor("getImageData:sample:" + s, 251));
+    function noiseGetImageData(orig) {
+      return function () {
+        var image = orig.apply(this, arguments);
+        try {
+          var w = Math.max(1, image.width || arguments[2] || 1);
+          var h = Math.max(1, image.height || arguments[3] || 1);
+          var data = image.data, len = data.length;
+          var points = pointPlan("getImageData", w, h);
+          for (var i = 0; i < 8; i++) {
+            var point = points[i], idx = (point[1] * w + point[0]) * 4;
+            if (idx + 3 < len) {
+              data[idx] = (data[idx] + point[2]) & 255;
+              data[idx + 1] = (data[idx + 1] + point[3]) & 255;
+              data[idx + 2] = (data[idx + 2] + point[4]) & 255;
+              data[idx + 3] = 255;
             }
-            for (var j = 0; j < 8 && len; j++) {
-              var sample = (j * 113) % len;
-              data[sample] = (data[sample] + sampleDeltas[j]) & 255;
-            }
-          } catch (_) {}
-          return image;
-        };
-      });
+          }
+          for (var j = 0; j < 8 && len; j++) {
+            var sample = (j * 113) % len;
+            data[sample] = (data[sample] + sampleDeltas[j]) & 255;
+          }
+        } catch (_) {}
+        return image;
+      };
     }
+    // The same wrapper on both interfaces. With only the HTMLCanvas one wrapped,
+    // the same drawing read back through <canvas> and through OffscreenCanvas
+    // returned different pixels — measured, and something the bare engine never
+    // does, since its own noise reaches both alike.
+    if (native2d) wrap(CanvasRenderingContext2D.prototype, "getImageData", noiseGetImageData);
+    if (nativeOffscreen2d) wrap(OffscreenCanvasRenderingContext2D.prototype, "getImageData", noiseGetImageData);
+
     if (window.OffscreenCanvas && OffscreenCanvas.prototype) {
+      // The engine's canvas noise only reaches getImageData: across two accounts
+      // its toDataURL, toBlob and convertToBlob all hashed identically, so the
+      // encoded paths are the companion's job alone. This wrapper used to call
+      // straight through and add nothing, which left every account on the machine
+      // sharing one OffscreenCanvas image — exactly the link this product exists
+      // to break.
       wrap(OffscreenCanvas.prototype, "convertToBlob", function (orig) {
         return function () {
-          return orig.apply(this, arguments);
+          var self = this, args = arguments;
+          var restore = applyCanvasNoise(self, ENCODE_LABEL);
+          if (!restore) return orig.apply(self, args);
+          var done = false;
+          var undo = function () { if (!done) { done = true; restore(); } };
+          try {
+            // The promise settles once the encoder has read the surface, so
+            // restoring on settlement cannot race the bytes being produced.
+            return orig.apply(self, args).then(
+              function (blob) { undo(); return blob; },
+              function (err) { undo(); throw err; }
+            );
+          } catch (e) {
+            undo();
+            throw e;
+          }
         };
       });
     }

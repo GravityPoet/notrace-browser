@@ -28,31 +28,53 @@ const CANVAS_STUB = `
   function ImageData(data, width, height) {
     this.data = data; this.width = width; this.height = height;
   }
-  function CanvasRenderingContext2D() {}
-  CanvasRenderingContext2D.prototype.getImageData = function (x, y, w, h) {
+  function newSurface(width, height) {
+    var surface = { width: width, height: height, pixels: new Uint8ClampedArray(width * height * 4) };
+    for (var i = 0; i < surface.pixels.length; i++) surface.pixels[i] = (i * 7 + 11) & 255;
+    return surface;
+  }
+  function readback(x, y, w, h) {
     var surface = surfaces.get(this), out = new Uint8ClampedArray(w * h * 4);
     for (var row = 0; row < h; row++) {
       var from = ((y + row) * surface.width + x) * 4, to = row * w * 4;
       for (var col = 0; col < w * 4; col++) out[to + col] = surface.pixels[from + col];
     }
     return new ImageData(out, w, h);
-  };
-  CanvasRenderingContext2D.prototype.putImageData = function (image, x, y) {
+  }
+  function writeback(image, x, y) {
     var surface = surfaces.get(this);
     for (var row = 0; row < image.height; row++) {
       var to = ((y + row) * surface.width + x) * 4, from = row * image.width * 4;
       for (var col = 0; col < image.width * 4; col++) surface.pixels[to + col] = image.data[from + col];
     }
-  };
+  }
+  function encode(surface) {
+    return "data:," + Array.prototype.join.call(surface.pixels, ",");
+  }
+  // Two distinct 2D interfaces, as the browser has them, each brand-checking its
+  // receiver: the engine throws "Illegal invocation" when the HTMLCanvas native
+  // is handed an offscreen context. Sharing one function between the two would
+  // hide exactly the mistake these tests exist to catch.
+  function CanvasRenderingContext2D() {}
+  function OffscreenCanvasRenderingContext2D() {}
+  [CanvasRenderingContext2D, OffscreenCanvasRenderingContext2D].forEach(function (iface) {
+    iface.prototype.getImageData = function (x, y, w, h) {
+      if (!(this instanceof iface)) throw new TypeError("Illegal invocation");
+      return readback.call(this, x, y, w, h);
+    };
+    iface.prototype.putImageData = function (image, x, y) {
+      if (!(this instanceof iface)) throw new TypeError("Illegal invocation");
+      return writeback.call(this, image, x, y);
+    };
+  });
   function HTMLCanvasElement() {}
-  HTMLCanvasElement.prototype.toDataURL = function () {
-    return "data:," + Array.prototype.join.call(this.surface.pixels, ",");
-  };
-  HTMLCanvasElement.prototype.toBlob = function (done) { done(this.toDataURL()); };
+  HTMLCanvasElement.prototype.toDataURL = function () { return encode(this.surface); };
+  // Not routed through toDataURL: the browser's two encoders are independent, and
+  // chaining them here would let one wrapper's noise land on top of the other's.
+  HTMLCanvasElement.prototype.toBlob = function (done) { done(encode(this.surface)); };
   function makeCanvas(width, height) {
     var context = new CanvasRenderingContext2D();
-    var surface = { width: width, height: height, pixels: new Uint8ClampedArray(width * height * 4) };
-    for (var i = 0; i < surface.pixels.length; i++) surface.pixels[i] = (i * 7 + 11) & 255;
+    var surface = newSurface(width, height);
     surfaces.set(context, surface);
     var canvas = new HTMLCanvasElement();
     canvas.width = width;
@@ -61,6 +83,24 @@ const CANVAS_STUB = `
     canvas.getContext = function () { return context; };
     return canvas;
   }
+  // Starts from the same surface as makeCanvas, because in the browser both
+  // realms are reading one drawing and the engine's own per-seed noise reaches
+  // both alike. Any disagreement between them is therefore the companion's.
+  function OffscreenCanvas(width, height) {
+    var context = new OffscreenCanvasRenderingContext2D();
+    var surface = newSurface(width, height);
+    surfaces.set(context, surface);
+    this.width = width;
+    this.height = height;
+    this.surface = surface;
+    this.getContext = function () { return context; };
+  }
+  OffscreenCanvas.prototype.convertToBlob = function () {
+    // The encoder reads the surface as it is called and the promise settles
+    // afterwards — which is what makes restoring on settlement safe.
+    var encoded = encode(this.surface);
+    return Promise.resolve(encoded);
+  };
 `;
 
 function canvasWindow(seed) {
@@ -138,6 +178,56 @@ test("toDataURL hands back the noised image without keeping the noise", () => {
   assert.notEqual(noised, `data:,${before.join(",")}`, "the exported image carries no per-account noise");
   assert.deepEqual(after, before, "the page's own canvas was left corrupted after the export");
   assert.equal(vm.runInContext("canvas.toDataURL()", context), noised, "repeat exports must agree");
+});
+
+test("<canvas> and OffscreenCanvas read one drawing the same way", () => {
+  // Wrapping only CanvasRenderingContext2D left the two realms disagreeing about
+  // the same pixels, which no real browser does and the bare engine does not
+  // either — its own noise reaches both. One expression exposed the companion.
+  const context = canvasWindow("92934");
+  const html = readPixels(context, 'makeCanvas(60, 40).getContext("2d").getImageData(0, 0, 60, 40).data');
+  const offscreen = readPixels(context, 'new OffscreenCanvas(60, 40).getContext("2d").getImageData(0, 0, 60, 40).data');
+  const bare = readPixels(canvasWindow(null), 'new OffscreenCanvas(60, 40).getContext("2d").getImageData(0, 0, 60, 40).data');
+
+  assert.deepEqual(offscreen, html, "the two realms report different pixels for one drawing");
+  assert.notDeepEqual(offscreen, bare, "OffscreenCanvas reads went through unnoised");
+});
+
+test("every encoder of one canvas agrees, as two encoders of one canvas must", async () => {
+  // A page can call both and compare. The PNG bytes behind them decode to the
+  // same pixels in any real browser, so a label per method was a cheap tell.
+  const context = canvasWindow("92934");
+  vm.runInContext("var canvas = makeCanvas(60, 40);", context);
+
+  const dataUrl = vm.runInContext("canvas.toDataURL()", context);
+  const blob = await vm.runInContext("new Promise(function (done) { canvas.toBlob(done); })", context);
+  const offscreen = await vm.runInContext("new OffscreenCanvas(60, 40).convertToBlob()", context);
+
+  assert.equal(blob, dataUrl, "toDataURL and toBlob export different images");
+  assert.equal(offscreen, dataUrl, "the same drawing encodes differently through OffscreenCanvas");
+});
+
+test("convertToBlob carries per-account noise without keeping it", async () => {
+  // This wrapper used to call straight through and add nothing. The engine does
+  // not noise encoded output at all, so every account on the machine shared one
+  // OffscreenCanvas image — exactly the link this product exists to break.
+  const context = canvasWindow("92934");
+  vm.runInContext("var off = new OffscreenCanvas(60, 40);", context);
+  const before = readPixels(context, "off.surface.pixels");
+
+  const encoded = await vm.runInContext("off.convertToBlob()", context);
+  const after = readPixels(context, "off.surface.pixels");
+
+  assert.notEqual(encoded, `data:,${before.join(",")}`, "the exported image carries no per-account noise");
+  assert.deepEqual(after, before, "the page's own canvas was left corrupted after the export");
+  assert.equal(await vm.runInContext("off.convertToBlob()", context), encoded, "repeat exports must agree");
+
+  const other = canvasWindow("41207");
+  assert.notEqual(
+    await vm.runInContext("new OffscreenCanvas(60, 40).convertToBlob()", other),
+    encoded,
+    "two accounts exporting one drawing are linkable by the bytes",
+  );
 });
 
 test("the getImageData hot path stays close to the unwrapped native", () => {

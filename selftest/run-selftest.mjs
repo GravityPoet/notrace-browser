@@ -541,6 +541,33 @@ function addProbeChecks(checks, label, probe, opts) {
   hard("canvas hash present", !isErr(probe.canvas_hash), probe.canvas_hash);
   hard("getImageData hash present", !isErr(probe.image_data_hash), probe.image_data_hash);
   hard("audio hash present", !isErr(probe.audio_hash), probe.audio_hash);
+
+  // navigator.userAgentData has to stay the engine's own NavigatorUAData. A
+  // synthesized stand-in reports constructor.name "Object" and prints its own
+  // JavaScript from toString() — either identifies the companion in one
+  // expression, no matter how right the values it hands back are.
+  const uad = probe.uad_shape || {};
+  hard(
+    "userAgentData keeps its native WebIDL shape",
+    uad.present === true && uad.ctorName === "NavigatorUAData"
+      && uad.nativePrototype === true && (uad.ownProps || ["dirty"]).length === 0
+      && uad.nativeSources === true,
+    JSON.stringify(uad)
+  );
+
+  // The engine's own canvas noise reaches both realms alike, so wrapping one and
+  // not the other is a self-inflicted tell. The blob pair matters for the
+  // opposite reason: the engine does not noise encoded output at all, so two
+  // accounts share one image unless the companion covers both encoders.
+  const realms = probe.canvas_realms || {};
+  hard(
+    "canvas reads agree across <canvas> and OffscreenCanvas",
+    !realms.error && !!realms.html_pixels
+      && realms.html_pixels === realms.offscreen_pixels
+      && realms.html_blob === realms.offscreen_blob
+      && realms.pixels_after_encode === realms.html_pixels,
+    JSON.stringify(realms)
+  );
 }
 
 function printReport(report) {

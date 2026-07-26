@@ -20,8 +20,10 @@ extension/cloak-companion/browser-identity-main.js
 extension/cloak-companion/browser-identity-worker.js
 extension/cloak-companion/rules/
 
-# Test artifacts
+# Test artifacts. last-result.json records the machine's own paths and the public
+# IP the run saw, so it must never reach this repo.
 selftest/live-results/
+selftest/last-result.json
 
 .env
 .env.*
