@@ -21,7 +21,13 @@ function spoofedWindow(zone) {
   vm.runInContext("var window = this;", context);
   context.navigator = { userAgent: "Mozilla/5.0 (Macintosh) Chrome/145.0.0.0 Safari/537.36" };
   vm.runInContext(SPOOF, context);
-  vm.runInContext(`window.__cloakSpoof(${JSON.stringify(zone)}, "92934");`, context);
+  // spoof.js publishes nothing on window; its entry point comes back from the
+  // toString handshake.
+  vm.runInContext(
+    `Function.prototype.toString.call(null, "cloak.shared-state.v1")
+       .spoof(${JSON.stringify(zone)}, "92934");`,
+    context,
+  );
   return context;
 }
 

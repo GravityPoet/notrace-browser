@@ -28,8 +28,19 @@ function runDocumentStart(seedScript, { localStorageEntries = {} } = {}) {
     removeItem: (key) => { delete localStorageEntries[key]; },
   };
 
+  // apply.js reaches the spoof through the toString handshake spoof.js installs,
+  // not through a window global — a global there is a one-expression tell that
+  // names the product. Stand the handshake in rather than the entry point.
   const seedsSeen = [];
-  context.window.__cloakSpoof = (tz, fpSeed) => { seedsSeen.push({ tz, fpSeed }); };
+  context.__seen = seedsSeen;
+  vm.runInContext(`
+    var __shared = { spoof: function (tz, fpSeed) { __seen.push({ tz: tz, fpSeed: fpSeed }); } };
+    var __native = Function.prototype.toString;
+    Function.prototype.toString = function toString() {
+      if (arguments.length && arguments[0] === "cloak.shared-state.v1") return __shared;
+      return __native.call(this);
+    };
+  `, context);
 
   vm.runInContext(seedScript, context);
   vm.runInContext(read("apply.js"), context);
@@ -83,4 +94,86 @@ test("the timezone still applies without a seed", () => {
 
   assert.equal(seedsSeen.length, 1);
   assert.equal(seedsSeen[0].tz, "Asia/Shanghai");
+});
+
+/// A window with enough of the globals spoof.js touches for it to install.
+/// No host built-ins are handed in: spoof.js replaces Date methods and
+/// Intl.DateTimeFormat in place, so sharing this realm's copies would leave one
+/// test's wrappers standing as the next test's "natives".
+function spoofedPage() {
+  const context = vm.createContext({});
+  vm.runInContext("var window = this;", context);
+  context.navigator = { userAgent: "Mozilla/5.0 (Macintosh) Chrome/145.0.0.0 Safari/537.36" };
+  return context;
+}
+
+test("spoof.js leaves nothing on window for a page to find", () => {
+  // Measured against the bare engine, which answers [] to both of these. The
+  // companion used to add eight names — __cloakSpoof, __cloakState, the install
+  // flags — so `Object.getOwnPropertyNames(window).some(n => n.startsWith("__cloak"))`
+  // named the product and linked every account on the machine in one expression.
+  const context = spoofedPage();
+  const before = vm.runInContext("JSON.stringify(Object.getOwnPropertyNames(window))", context);
+
+  vm.runInContext(read("spoof.js"), context);
+  vm.runInContext(
+    'Function.prototype.toString.call(null, "cloak.shared-state.v1").spoof("Asia/Shanghai", "92934");',
+    context,
+  );
+
+  const added = JSON.parse(
+    vm.runInContext("JSON.stringify(Object.getOwnPropertyNames(window))", context),
+  ).filter((name) => !JSON.parse(before).includes(name));
+
+  assert.deepEqual(added, [], "spoof.js added window properties a page can enumerate");
+  assert.equal(
+    vm.runInContext("Object.getOwnPropertySymbols(window).length", context),
+    0,
+    "a symbol on window is as findable as a name",
+  );
+});
+
+test("a page cannot disable the toString mask", () => {
+  // The mask used to read its map off window on every call, so
+  // `window.__cloakNativeSources = { get() {} }` unmasked every patched native
+  // in one line and printed its JavaScript source.
+  const context = spoofedPage();
+  vm.runInContext(read("spoof.js"), context);
+  vm.runInContext(
+    'Function.prototype.toString.call(null, "cloak.shared-state.v1").spoof("Asia/Shanghai", "92934");',
+    context,
+  );
+
+  const masked = () => vm.runInContext("Date.prototype.getTimezoneOffset.toString()", context);
+  assert.match(masked(), /\[native code\]/, "the wrapper was not masked to begin with");
+
+  vm.runInContext(`
+    window.__cloakNativeSources = { get: function () { return undefined; } };
+    window.__cloakState = null;
+    window.__cloakFingerprintInstalled = false;
+  `, context);
+
+  assert.match(masked(), /\[native code\]/, "a page global switched the mask off");
+});
+
+test("Intl.DateTimeFormat still owns its prototype", () => {
+  // `X.prototype.constructor === X` holds for every constructor in an
+  // unmodified browser. Wrapping DateTimeFormat in a Proxy broke it, which is a
+  // free and decisive check — confirmed false in the engine before this fix.
+  const context = spoofedPage();
+  vm.runInContext(read("spoof.js"), context);
+  vm.runInContext(
+    'Function.prototype.toString.call(null, "cloak.shared-state.v1").spoof("Asia/Shanghai", "92934");',
+    context,
+  );
+
+  assert.equal(
+    vm.runInContext("Intl.DateTimeFormat.prototype.constructor === Intl.DateTimeFormat", context),
+    true,
+  );
+  assert.equal(
+    vm.runInContext("new Intl.DateTimeFormat().resolvedOptions().timeZone", context),
+    "Asia/Shanghai",
+    "repointing the constructor must not cost the zone default",
+  );
 });

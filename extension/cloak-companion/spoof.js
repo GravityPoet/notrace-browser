@@ -1,6 +1,11 @@
-// MAIN world. Defines window.__cloakSpoof(tz); does NOT run by itself.
+// MAIN world. Installs nothing by itself and adds nothing to window: callers
+// reach the entry point through the toString handshake below, the same way a
+// second injection of this file finds the first one's state.
+//
+//   Function.prototype.toString.call(null, "cloak.shared-state.v1").spoof(tz, seed)
+//
 // Re-entrant: the page-visible Intl/Date are wrapped exactly once; a later call
-// with a different zone just retargets the shared holder (st.tz), so switching
+// with a different zone just retargets the shared holder (shared.tz), so switching
 // zones never stacks Proxies. Used by both apply.js (content script) and the
 // service worker's executeScript fallback — single source of truth.
 // Wrapped in an IIFE because this runs in the page's global scope: top-level
@@ -8,58 +13,91 @@
 // friends on window, naming the companion to anyone who looks.
 (function () {
 
-// Cross-injection state lives on non-enumerable properties so a page cannot
-// find the companion by walking Object.keys(window). The per-account seed is
-// never stored here at all: it is unique and permanent, so anything holding it
-// on the page's global is a super-cookie. It is consumed as an argument and only
-// its derived hash survives, inside the wrapper closures.
-function hide(name, value) {
+// This file is injected more than once per page — apply.js runs it at
+// document_start, the service worker re-runs it when the zone changes — so the
+// wrappers need somewhere to recognise each other across injections.
+//
+// That somewhere used to be a set of non-enumerable window properties. Two
+// problems, both measured against the bare engine, which answers [] to each:
+// Object.getOwnPropertyNames(window) still listed all eight of them, so one
+// expression named the product and linked every account on the machine; and
+// they were writable, so `window.__cloakNativeSources = {get(){}}` disabled the
+// toString mask in a single line and made every patched native print its
+// JavaScript source.
+//
+// So the shared state lives in this closure instead, reachable only through the
+// toString mask we install anyway. The native Function.prototype.toString
+// ignores its arguments, so calling it with an agreed token is a no-op for the
+// page but returns the state to a later injection — and window keeps exactly
+// the shape the bare engine has, under both getOwnPropertyNames and
+// getOwnPropertySymbols.
+//
+// The token is a constant in an open-source extension, so a script written
+// specifically against NoTrace can read it here and reach the state. What this
+// stops is the generic "is anything patched?" sweep, and the one-line disable.
+// Closing it completely means never injecting twice, which is a change to how
+// the zone is delivered, not to this file.
+var HANDSHAKE = "cloak.shared-state.v1";
+
+// The per-account seed is deliberately absent from the shared state: it is
+// unique and permanent, so anything holding it where the page can reach is a
+// super-cookie. It is consumed as an argument and only its derived hash
+// survives, inside the wrapper closures.
+var shared = null;
+try {
+  var currentToString = Function.prototype.toString;
+  shared = currentToString.call(null, HANDSHAKE);
+} catch (_) { /* not patched yet: calling toString on null throws */ }
+
+if (!shared || typeof shared !== "object") {
+  // Every replaced native would otherwise report its JavaScript source from
+  // toString(), which is a decisive "this function was patched" tell. Map each
+  // replacement back to the native it stands in for and answer toString() from
+  // that map.
+  shared = { sources: new WeakMap(), tz: null, installed: {}, spoof: null };
   try {
-    Object.defineProperty(window, name, {
-      value: value, configurable: true, enumerable: false, writable: true,
-    });
-  } catch (_) { window[name] = value; }
+    var nativeToString = Function.prototype.toString;
+    var sources = shared.sources;
+    var patched = function toString() {
+      if (arguments.length && arguments[0] === HANDSHAKE) return shared;
+      var target = sources.get(this);
+      return nativeToString.call(target || this);
+    };
+    try { Object.defineProperty(patched, "length", { value: nativeToString.length }); } catch (_) {}
+    sources.set(patched, nativeToString);
+    Function.prototype.toString = patched;
+  } catch (_) {}
 }
 
-// Every replaced native would otherwise report its JavaScript source from
-// toString(), which is a decisive "this function was patched" tell. Map each
-// replacement back to the native it stands in for and answer toString() from
-// that. The map lives on a hidden global so a second injection of this file
-// keeps the earlier wrappers masked instead of re-exposing them.
-if (!window.__cloakNativeSources) hide("__cloakNativeSources", new WeakMap());
 function maskSource(replacement, original) {
-  try {
-    window.__cloakNativeSources.set(replacement, original);
-    if (!window.__cloakToStringPatched) {
-      hide("__cloakToStringPatched", true);
-      var nativeToString = Function.prototype.toString;
-      var patched = function toString() {
-        var target = window.__cloakNativeSources.get(this);
-        return nativeToString.call(target || this);
-      };
-      try { Object.defineProperty(patched, "length", { value: nativeToString.length }); } catch (_) {}
-      window.__cloakNativeSources.set(patched, nativeToString);
-      Function.prototype.toString = patched;
-    }
-  } catch (_) {}
+  try { shared.sources.set(replacement, original); } catch (_) {}
   return replacement;
 }
 
-hide("__cloakSpoof", function (tz, fpSeed) {
+// Re-entrant, and each half installs on its own. Keying "already installed" off
+// a single flag meant a first visit to an origin — seed present, zone not yet
+// mirrored — marked the whole spoof done and left the Date wrappers off for the
+// life of the page, so the service worker's zone fallback arrived to find the
+// door already shut. Track the halves separately: whichever arrives first
+// installs, the other installs when its input shows up, and a later call with a
+// different zone just retargets shared.tz so switching zones never stacks Proxies.
+if (!shared.spoof) shared.spoof = function (tz, fpSeed) {
   try {
-    if (!tz && !fpSeed) return;
-    if (window.__cloakState) {
-      if (tz) { window.__cloakState.tz = tz; hide("__cloakTZ", tz); }
-      if (fpSeed) installFingerprintSpoof(fpSeed);
-      return;
+    if (tz) shared.tz = tz;
+    if (!shared.installed.identity) {
+      shared.installed.identity = true;
+      installBrowserIdentitySpoof();
     }
+    if (tz && !shared.installed.timezone) {
+      shared.installed.timezone = true;
+      installTimezoneSpoof();
+    }
+    installFingerprintSpoof(fpSeed);
+  } catch (_) { /* fail open: never break the page */ }
+};
 
-    var st = { tz: tz || null };
-    hide("__cloakState", st);
-    if (tz) hide("__cloakTZ", tz);
-    installBrowserIdentitySpoof();
-    installHeadlessSurfaceSpoof();
-
+function installTimezoneSpoof() {
+  try {
     var RealDTF = Intl.DateTimeFormat;
     var WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     var MO = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -73,14 +111,14 @@ hide("__cloakSpoof", function (tz, fpSeed) {
     // vary, so the formatters are built once per zone and reused.
     var fmtZone = null, fmtParts = null, fmtAbbr = null;
     function formatters() {
-      if (fmtZone !== st.tz) {
+      if (fmtZone !== shared.tz) {
         fmtParts = new RealDTF("en-US", {
-          timeZone: st.tz, hourCycle: "h23",
+          timeZone: shared.tz, hourCycle: "h23",
           year: "numeric", month: "2-digit", day: "2-digit",
           hour: "2-digit", minute: "2-digit", second: "2-digit",
         });
-        fmtAbbr = new RealDTF("en-US", { timeZone: st.tz, timeZoneName: "short" });
-        fmtZone = st.tz;
+        fmtAbbr = new RealDTF("en-US", { timeZone: shared.tz, timeZoneName: "short" });
+        fmtZone = shared.tz;
       }
     }
     function partsIn(date) {
@@ -108,10 +146,10 @@ hide("__cloakSpoof", function (tz, fpSeed) {
       var time = date.getTime();
       if (time < 0) return eastFrom(partsIn(date), date);
       var bucket = Math.floor(time / 3600000);
-      if (bucket !== offsetBucket || offsetZone !== st.tz) {
+      if (bucket !== offsetBucket || offsetZone !== shared.tz) {
         offsetValue = eastFrom(partsIn(date), date);
         offsetBucket = bucket;
-        offsetZone = st.tz;
+        offsetZone = shared.tz;
       }
       return offsetValue;
     }
@@ -126,7 +164,7 @@ hide("__cloakSpoof", function (tz, fpSeed) {
       return "GMT" + s + pad(Math.floor(a / 60)) + pad(a % 60);
     }
 
-    if (tz) {
+    {
       // Each replacement below is registered with maskSource so toString() still
       // reports the native it stands in for.
       var replaceMethod = function (obj, name, make) {
@@ -146,16 +184,28 @@ hide("__cloakSpoof", function (tz, fpSeed) {
 
       // Default Intl.DateTimeFormat to the target zone when the caller omits timeZone.
       var handler = {
-        construct: function (T, a) { var o = a[1] ? Object.assign({}, a[1]) : {}; if (!o.timeZone) o.timeZone = st.tz; return new T(a[0], o); },
-        apply: function (T, _t, a) { var o = a[1] ? Object.assign({}, a[1]) : {}; if (!o.timeZone) o.timeZone = st.tz; return T(a[0], o); },
+        construct: function (T, a) { var o = a[1] ? Object.assign({}, a[1]) : {}; if (!o.timeZone) o.timeZone = shared.tz; return new T(a[0], o); },
+        apply: function (T, _t, a) { var o = a[1] ? Object.assign({}, a[1]) : {}; if (!o.timeZone) o.timeZone = shared.tz; return T(a[0], o); },
       };
-      Intl.DateTimeFormat = new Proxy(RealDTF, handler);
+      var proxied = new Proxy(RealDTF, handler);
+      Intl.DateTimeFormat = proxied;
+      // The Proxy forwards .prototype to the real DateTimeFormat, whose
+      // constructor still points at the real one — so
+      // `Intl.DateTimeFormat.prototype.constructor === Intl.DateTimeFormat`,
+      // true in every unmodified browser, came back false here. Measured in the
+      // engine, not inferred. Repoint it; the native descriptor is writable and
+      // configurable, so the property keeps the shape a checker expects.
+      try {
+        Object.defineProperty(RealDTF.prototype, "constructor", {
+          value: proxied, writable: true, enumerable: false, configurable: true,
+        });
+      } catch (_) {}
 
       // toLocale* default to the target zone too.
       ["toLocaleString", "toLocaleDateString", "toLocaleTimeString"].forEach(function (name) {
         replaceMethod(Date.prototype, name, function (orig) {
           return function (l, o) {
-            o = o ? Object.assign({}, o) : {}; if (!o.timeZone) o.timeZone = st.tz;
+            o = o ? Object.assign({}, o) : {}; if (!o.timeZone) o.timeZone = shared.tz;
             return orig.call(this, l, o);
           };
         });
@@ -186,9 +236,8 @@ hide("__cloakSpoof", function (tz, fpSeed) {
         };
       });
     }
-    installFingerprintSpoof(fpSeed);
   } catch (_) { /* fail open: never break the page */ }
-});
+}
 
 /// Synthesize a full browser identity from navigator.userAgent.
 /// Used when __cloakBrowserIdentity is not injected (PWA main profile path).
@@ -234,10 +283,13 @@ function synthesizeIdentityFromUA() {
 
 function installBrowserIdentitySpoof() {
   try {
-    if (window.__cloakBrowserIdentityInstalled) return;
+    // The generated browser-identity-main.js hands the forged identity over on
+    // window. Take it and delete it: left in place it is a global whose very
+    // value is the forgery, readable by any page that thinks to compare it
+    // against navigator.
     var identity = window.__cloakBrowserIdentity || synthesizeIdentityFromUA();
+    try { delete window.__cloakBrowserIdentity; } catch (_) {}
     if (!identity || !identity.userAgent) return;
-    hide("__cloakBrowserIdentityInstalled", true);
 
     function clone(value) {
       return value == null ? value : JSON.parse(JSON.stringify(value));
@@ -298,95 +350,10 @@ function installBrowserIdentitySpoof() {
   } catch (_) {}
 }
 
-function installHeadlessSurfaceSpoof() {
-  try {
-    if (window.__cloakHeadlessSurfaceInstalled) return;
-    hide("__cloakHeadlessSurfaceInstalled", true);
-
-    function defineGetter(obj, name, getter) {
-      try {
-        var previous = Object.getOwnPropertyDescriptor(obj, name);
-        Object.defineProperty(getter, "name", { value: "get " + name });
-        if (previous && previous.get) maskSource(getter, previous.get);
-        Object.defineProperty(obj, name, {
-          get: getter, configurable: true, enumerable: true,
-        });
-      } catch (_) {}
-    }
-    // Interface objects on window are writable:true, enumerable:false — the
-    // defineProperty default of writable:false would flag every synthesized one.
-    function defineValue(obj, name, value) {
-      try {
-        Object.defineProperty(obj, name, {
-          value: value, configurable: true, writable: true, enumerable: false,
-        });
-      } catch (_) {}
-    }
-
-    if (typeof window.ContentIndex === "undefined") {
-      defineValue(window, "ContentIndex", function ContentIndex() {});
-    }
-
-    var navProto = window.Navigator && Navigator.prototype;
-    if (typeof window.ContactsManager === "undefined") {
-      defineValue(window, "ContactsManager", function ContactsManager() {});
-      try {
-        Object.defineProperty(window.ContactsManager.prototype, Symbol.toStringTag, {
-          value: "ContactsManager",
-          configurable: true,
-        });
-      } catch (_) {}
-    }
-
-    if (navProto && !("contacts" in navigator)) {
-      var contacts = Object.create(window.ContactsManager ? window.ContactsManager.prototype : null);
-      try {
-        Object.defineProperties(contacts, {
-          getProperties: {
-            value: function getProperties() {
-              return Promise.resolve(["name", "email", "tel", "address", "icon"]);
-            },
-            configurable: true,
-          },
-          select: {
-            value: function select() {
-              var ErrorCtor = window.DOMException || Error;
-              return Promise.reject(new ErrorCtor("Permission denied", "NotAllowedError"));
-            },
-            configurable: true,
-          },
-        });
-      } catch (_) {
-        contacts = {
-        getProperties: function () {
-          return Promise.resolve(["name", "email", "tel", "address", "icon"]);
-        },
-        select: function () {
-          var ErrorCtor = window.DOMException || Error;
-          return Promise.reject(new ErrorCtor("Permission denied", "NotAllowedError"));
-        },
-        };
-      }
-      defineGetter(navProto, "contacts", function () { return contacts; });
-    }
-
-    var connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-    if (connection && typeof connection.downlinkMax === "undefined") {
-      // Prototype only. A WebIDL attribute never exists as an own property of an
-      // instance, so defining it on `connection` itself was a stronger bot signal
-      // than the missing attribute it was meant to hide.
-      var connectionProto = Object.getPrototypeOf(connection);
-      if (connectionProto) {
-        defineGetter(connectionProto, "downlinkMax", function () { return 10; });
-      }
-    }
-  } catch (_) {}
-}
-
 function installFingerprintSpoof(fpSeed) {
   try {
-    if (!fpSeed || window.__cloakFingerprintInstalled) return;
-    hide("__cloakFingerprintInstalled", true);
+    if (!fpSeed || shared.installed.fingerprint) return;
+    shared.installed.fingerprint = true;
 
     // Only the hash survives; the account seed itself is not retained anywhere
     // the page can reach.

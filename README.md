@@ -60,9 +60,9 @@ Modifying the User Agent alone creates a version-consistency discrepancy (UA vs.
 ### 5. Worker-Thread Timezone Sync
 Normal extensions cannot inject scripts into Web Workers, allowing fingerprinters to detect timezone mismatches inside Worker threads. NoTrace applies the `--fingerprint-timezone` flag and the `TZ` environment variable at launch so supported builds can align both the main window and Web Workers.
 
-### 6. Anti-Detection API Shims & Anti-Tampering
-- Re-injects native browser APIs commonly missing in automated environments (e.g., `ContentIndex`, `ContactsManager` in `navigator.contacts`, `downlinkMax` in `navigator.connection`).
-- Wraps overridden properties inside clean Proxies and patches `Function.prototype.toString.toString()` to prevent checkers from detecting JS hooks.
+### 6. Anti-Tampering
+- Wraps overridden properties inside clean Proxies and patches `Function.prototype.toString` so every hooked native still reports `[native code]`.
+- The companion adds **nothing** to `window`. The mask's state lives in a closure that callers reach through the patched `toString` itself, so no page global can name the product, link the accounts sharing it, or switch the mask off.
 
 ---
 

@@ -348,8 +348,8 @@ prepare_account_extension() {
   rm -rf "$EXT_RUNTIME"
   /usr/bin/ditto "$EXT_SRC" "$EXT_RUNTIME"
   chmod -R go-rwx "$EXT_RUNTIME" 2>/dev/null || true
-  cat > "$EXT_RUNTIME/browser-identity-main.js" <<EOF
-window.__cloakBrowserIdentity = {
+  CLOAK_IDENTITY_JSON=$(cat <<EOF
+{
   "userAgent": "$CLOAK_USER_AGENT",
   "platform": "MacIntel",
   "uaData": {
@@ -371,9 +371,17 @@ window.__cloakBrowserIdentity = {
     "bitness": "64",
     "model": ""
   }
-};
+}
 EOF
-  sed 's/^window\./self./' "$EXT_RUNTIME/browser-identity-main.js" > "$EXT_RUNTIME/browser-identity-worker.js"
+)
+  # Non-enumerable on the page side, and spoof.js deletes it as soon as it reads
+  # it: a plain assignment left the forged identity in Object.keys(window), which
+  # names the companion and hands any page the forgery to diff against navigator.
+  # The worker global is not reachable from a page, so it stays a plain one.
+  printf 'Object.defineProperty(window, "__cloakBrowserIdentity", { value: %s, configurable: true, enumerable: false, writable: true });\n' \
+    "$CLOAK_IDENTITY_JSON" > "$EXT_RUNTIME/browser-identity-main.js"
+  printf 'self.__cloakBrowserIdentity = %s;\n' \
+    "$CLOAK_IDENTITY_JSON" > "$EXT_RUNTIME/browser-identity-worker.js"
   mkdir -p "$EXT_RUNTIME/rules"
   cat > "$EXT_RUNTIME/rules/browser-identity-headers.json" <<EOF
 [
