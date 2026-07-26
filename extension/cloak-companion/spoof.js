@@ -65,30 +65,64 @@ hide("__cloakSpoof", function (tz, fpSeed) {
     var MO = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     var pad = function (n) { return String(n).padStart(2, "0"); };
 
+    // Intl.DateTimeFormat construction builds an ICU formatter and is orders of
+    // magnitude more expensive than using one. Building a fresh pair on every
+    // call made getTimezoneOffset ~240x and Date→string ~300x slower than
+    // native, which is enough to stall the main thread — and therefore click
+    // handling — on any page that formats dates in a loop. The options never
+    // vary, so the formatters are built once per zone and reused.
+    var fmtZone = null, fmtParts = null, fmtAbbr = null;
+    function formatters() {
+      if (fmtZone !== st.tz) {
+        fmtParts = new RealDTF("en-US", {
+          timeZone: st.tz, hourCycle: "h23",
+          year: "numeric", month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit", second: "2-digit",
+        });
+        fmtAbbr = new RealDTF("en-US", { timeZone: st.tz, timeZoneName: "short" });
+        fmtZone = st.tz;
+      }
+    }
     function partsIn(date) {
-      var dtf = new RealDTF("en-US", {
-        timeZone: st.tz, hourCycle: "h23",
-        year: "numeric", month: "2-digit", day: "2-digit",
-        hour: "2-digit", minute: "2-digit", second: "2-digit",
-      });
+      formatters();
       var o = {};
-      var ps = dtf.formatToParts(date);
+      var ps = fmtParts.formatToParts(date);
       for (var i = 0; i < ps.length; i++) o[ps[i].type] = ps[i].value;
       return o;
     }
     // Minutes east of UTC for `date` in the target zone (DST-correct via real ICU).
-    function eastMinutes(date) {
-      var p = partsIn(date);
+    // Callers that already hold the parts pass them in so a single Date→string
+    // conversion formats once instead of three times.
+    function eastFrom(p, date) {
       var asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
       return Math.round((asUTC - date.getTime()) / 60000);
     }
+    // getTimezoneOffset is the hottest of these — date libraries call it on
+    // essentially every operation. A zone's offset only changes at DST
+    // transitions, and every modern IANA transition lands on a UTC hour
+    // boundary, so one formatToParts per hour bucket is enough. Timestamps
+    // before 1970 skip the cache: historical LMT offsets carry odd minutes and
+    // a rounded answer there would be an inconsistency a checker could probe.
+    var offsetBucket = null, offsetZone = null, offsetValue = 0;
+    function eastMinutes(date) {
+      var time = date.getTime();
+      if (time < 0) return eastFrom(partsIn(date), date);
+      var bucket = Math.floor(time / 3600000);
+      if (bucket !== offsetBucket || offsetZone !== st.tz) {
+        offsetValue = eastFrom(partsIn(date), date);
+        offsetBucket = bucket;
+        offsetZone = st.tz;
+      }
+      return offsetValue;
+    }
     function abbr(date) {
-      var x = new RealDTF("en-US", { timeZone: st.tz, timeZoneName: "short" })
-        .formatToParts(date).find(function (p) { return p.type === "timeZoneName"; });
+      formatters();
+      var x = fmtAbbr.formatToParts(date)
+        .find(function (p) { return p.type === "timeZoneName"; });
       return x ? x.value : "";
     }
-    function gmt(date) {
-      var e = eastMinutes(date), s = e >= 0 ? "+" : "-", a = Math.abs(e);
+    function gmtFrom(east) {
+      var s = east >= 0 ? "+" : "-", a = Math.abs(east);
       return "GMT" + s + pad(Math.floor(a / 60)) + pad(a % 60);
     }
 
@@ -133,14 +167,14 @@ hide("__cloakSpoof", function (tz, fpSeed) {
           if (isNaN(this)) return "Invalid Date";
           var p = partsIn(this);
           var dow = new Date(Date.UTC(+p.year, +p.month - 1, +p.day)).getUTCDay();
-          return WD[dow] + " " + MO[+p.month - 1] + " " + p.day + " " + p.year + " " + p.hour + ":" + p.minute + ":" + p.second + " " + gmt(this) + " (" + abbr(this) + ")";
+          return WD[dow] + " " + MO[+p.month - 1] + " " + p.day + " " + p.year + " " + p.hour + ":" + p.minute + ":" + p.second + " " + gmtFrom(eastFrom(p, this)) + " (" + abbr(this) + ")";
         };
       });
       replaceMethod(Date.prototype, "toTimeString", function () {
         return function () {
           if (isNaN(this)) return "Invalid Date";
           var p = partsIn(this);
-          return p.hour + ":" + p.minute + ":" + p.second + " " + gmt(this) + " (" + abbr(this) + ")";
+          return p.hour + ":" + p.minute + ":" + p.second + " " + gmtFrom(eastFrom(p, this)) + " (" + abbr(this) + ")";
         };
       });
       replaceMethod(Date.prototype, "toDateString", function () {

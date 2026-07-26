@@ -2352,87 +2352,78 @@ fn browser_identity_plan(engine: &EngineVersion) -> Value {
     })
 }
 
+/// Static ruleset id; the companion's service worker mirrors it as a session rule.
+const BROWSER_IDENTITY_RULE_ID: u32 = 91001;
+
 fn browser_identity_header_rules(identity: &Value) -> Value {
     let Some(user_agent) = identity.get("userAgent").and_then(Value::as_str) else {
         return Value::Array(vec![]);
     };
     let ua_data = identity.get("uaData").unwrap_or(&Value::Null);
-    let mut headers = vec![serde_json::json!({
+
+    // Chrome sends only these three hints unprompted. Overriding them on every
+    // request matches what the engine already does, so the request shape is
+    // unchanged.
+    let mut low_entropy = vec![serde_json::json!({
         "header": "User-Agent",
         "operation": "set",
         "value": user_agent,
     })];
     if let Some(brands) = format_header_brands(ua_data.get("brands")) {
-        headers.push(serde_json::json!({
+        low_entropy.push(serde_json::json!({
             "header": "Sec-CH-UA",
             "operation": "set",
             "value": brands,
         }));
     }
-    headers.push(serde_json::json!({
+    low_entropy.push(serde_json::json!({
         "header": "Sec-CH-UA-Mobile",
         "operation": "set",
         "value": if ua_data.get("mobile").and_then(Value::as_bool).unwrap_or(false) { "?1" } else { "?0" },
     }));
     push_header_if_string(
-        &mut headers,
+        &mut low_entropy,
         "Sec-CH-UA-Platform",
         ua_data.get("platform").and_then(Value::as_str),
     );
-    if let Some(full_version_list) = format_header_brands(ua_data.get("fullVersionList")) {
-        headers.push(serde_json::json!({
-            "header": "Sec-CH-UA-Full-Version-List",
-            "operation": "set",
-            "value": full_version_list,
-        }));
-    }
-    push_header_if_string(
-        &mut headers,
-        "Sec-CH-UA-Full-Version",
-        ua_data.get("uaFullVersion").and_then(Value::as_str),
-    );
-    push_header_if_string(
-        &mut headers,
-        "Sec-CH-UA-Platform-Version",
-        ua_data.get("platformVersion").and_then(Value::as_str),
-    );
-    push_header_if_string(
-        &mut headers,
-        "Sec-CH-UA-Arch",
-        ua_data.get("architecture").and_then(Value::as_str),
-    );
-    push_header_if_string(
-        &mut headers,
-        "Sec-CH-UA-Bitness",
-        ua_data.get("bitness").and_then(Value::as_str),
-    );
-    push_header_if_string(
-        &mut headers,
-        "Sec-CH-UA-Model",
-        ua_data.get("model").and_then(Value::as_str),
-    );
-    serde_json::json!([{
-        "id": 91001,
+
+    // The remaining hints are high-entropy: a real Chrome sends them only to an
+    // origin that asked via Accept-CH. Forcing them onto every request — every
+    // stylesheet, image and font included — is a shape no Chrome produces, so
+    // every server sees it, and strict CDNs reject the unexpected header set,
+    // which surfaces as a page whose subresources failed while the document
+    // loaded. declarativeNetRequest cannot scope a rule to "only once the origin
+    // opted in" here: condition.requestHeaders is silently ignored by this
+    // engine, so the rule would still fire on every request.
+    //
+    // They are therefore left to the engine. Note that the engine gets two of
+    // them wrong once an origin does opt in — Sec-CH-UA-Bitness comes through
+    // empty, and Sec-CH-UA-Full-Version-List is built from its own greased brand
+    // list, disagreeing with Sec-CH-UA and dropping the versions entirely
+    // ("Not A(Brand";v="8.0.0.0", "Chromium", "Google Chrome"). That is an engine
+    // bug worth fixing at the source; papering over it here costs a tell that
+    // every origin can read, which is the worse trade.
+
+    let resource_types = serde_json::json!([
+        "main_frame",
+        "sub_frame",
+        "stylesheet",
+        "script",
+        "image",
+        "font",
+        "xmlhttprequest",
+        "media",
+        "other"
+    ]);
+    Value::Array(vec![serde_json::json!({
+        "id": BROWSER_IDENTITY_RULE_ID,
         "priority": 1,
-        "action": {
-            "type": "modifyHeaders",
-            "requestHeaders": headers,
-        },
+        "action": { "type": "modifyHeaders", "requestHeaders": low_entropy },
         "condition": {
             "regexFilter": "^https?://",
-            "resourceTypes": [
-                "main_frame",
-                "sub_frame",
-                "stylesheet",
-                "script",
-                "image",
-                "font",
-                "xmlhttprequest",
-                "media",
-                "other"
-            ],
+            "resourceTypes": resource_types,
         },
-    }])
+    })])
 }
 
 fn push_header_if_string(headers: &mut Vec<Value>, name: &str, value: Option<&str>) {
@@ -2913,6 +2904,63 @@ mod tests {
         for index in 0..25 {
             let account = create_account(&config, &format!("acct{index}")).unwrap();
             assert!(seeds.insert(account.seed.clone()), "duplicate seed issued");
+        }
+    }
+
+    /// Real Chrome sends only the three low-entropy hints unprompted and waits
+    /// for Accept-CH before sending the rest. Forcing the high-entropy set onto
+    /// every request — stylesheets and images included — is a shape no Chrome
+    /// produces, so every origin can spot it, and strict CDNs reject the request,
+    /// which surfaces as a page whose subresources failed while the document
+    /// loaded.
+    #[test]
+    fn header_rules_never_force_high_entropy_client_hints() {
+        let identity = serde_json::json!({
+            "userAgent": "Mozilla/5.0 (Macintosh) Chrome/145.0.0.0 Safari/537.36",
+            "platform": "MacIntel",
+            "uaData": {
+                "brands": [{ "brand": "Google Chrome", "version": "145" }],
+                "fullVersionList": [{ "brand": "Google Chrome", "version": "145.0.7632.109" }],
+                "mobile": false,
+                "platform": "macOS",
+                "uaFullVersion": "145.0.7632.109",
+                "platformVersion": "15.5.0",
+                "architecture": "arm",
+                "bitness": "64",
+                "model": "",
+            },
+        });
+
+        let rules = browser_identity_header_rules(&identity);
+        let sent: Vec<String> = rules
+            .as_array()
+            .expect("rules array")
+            .iter()
+            .flat_map(|rule| rule["action"]["requestHeaders"].as_array().unwrap().clone())
+            .map(|header| header["header"].as_str().unwrap().to_ascii_lowercase())
+            .collect();
+
+        assert_eq!(
+            sent,
+            vec![
+                "user-agent",
+                "sec-ch-ua",
+                "sec-ch-ua-mobile",
+                "sec-ch-ua-platform"
+            ]
+        );
+        for high_entropy in [
+            "sec-ch-ua-full-version-list",
+            "sec-ch-ua-full-version",
+            "sec-ch-ua-platform-version",
+            "sec-ch-ua-arch",
+            "sec-ch-ua-bitness",
+            "sec-ch-ua-model",
+        ] {
+            assert!(
+                !sent.contains(&high_entropy.to_string()),
+                "{high_entropy} forced"
+            );
         }
     }
 

@@ -386,13 +386,7 @@ EOF
         { "header": "User-Agent", "operation": "set", "value": "$CLOAK_USER_AGENT" },
         { "header": "Sec-CH-UA", "operation": "set", "value": "\"Google Chrome\";v=\"$CLOAK_CHROME_MAJOR\", \"Chromium\";v=\"$CLOAK_CHROME_MAJOR\", \"Not)A;Brand\";v=\"24\"" },
         { "header": "Sec-CH-UA-Mobile", "operation": "set", "value": "?0" },
-        { "header": "Sec-CH-UA-Platform", "operation": "set", "value": "\"macOS\"" },
-        { "header": "Sec-CH-UA-Full-Version-List", "operation": "set", "value": "\"Google Chrome\";v=\"$CLOAK_CHROME_FULL\", \"Chromium\";v=\"$CLOAK_CHROME_FULL\", \"Not)A;Brand\";v=\"24.0.0.0\"" },
-        { "header": "Sec-CH-UA-Full-Version", "operation": "set", "value": "\"$CLOAK_CHROME_FULL\"" },
-        { "header": "Sec-CH-UA-Platform-Version", "operation": "set", "value": "\"$CLOAK_MAC_PLATFORM_VERSION\"" },
-        { "header": "Sec-CH-UA-Arch", "operation": "set", "value": "\"arm\"" },
-        { "header": "Sec-CH-UA-Bitness", "operation": "set", "value": "\"64\"" },
-        { "header": "Sec-CH-UA-Model", "operation": "set", "value": "\"\"" }
+        { "header": "Sec-CH-UA-Platform", "operation": "set", "value": "\"macOS\"" }
       ]
     },
     "condition": {

@@ -13,6 +13,9 @@ try { importScripts("browser-identity-worker.js"); } catch (_) {}
 
 const ZONE_RE = /^[A-Za-z]+(?:\/[A-Za-z0-9_+\-]+){1,2}$/;
 const BROWSER_IDENTITY_HEADER_RULE_ID = 91001;
+// No longer added — kept so a session rule left by an older build, which forced
+// high-entropy client hints onto every request, is removed on startup.
+const STALE_HIGH_ENTROPY_RULE_ID = 91002;
 
 chrome.runtime.onInstalled.addListener(init);
 chrome.runtime.onStartup.addListener(init);
@@ -87,32 +90,37 @@ async function installBrowserIdentityHeaderRules() {
     const identity = self.__cloakBrowserIdentity;
     if (!dnr || !identity || !identity.userAgent) return;
 
-    const headers = [
-      { header: "User-Agent", operation: "set", value: identity.userAgent },
-    ];
     const uaData = identity.uaData || {};
     const brands = formatBrands(uaData.brands);
-    const fullVersionList = formatBrands(uaData.fullVersionList);
-    if (brands) headers.push({ header: "Sec-CH-UA", operation: "set", value: brands });
-    headers.push({ header: "Sec-CH-UA-Mobile", operation: "set", value: uaData.mobile ? "?1" : "?0" });
-    if (uaData.platform) headers.push({ header: "Sec-CH-UA-Platform", operation: "set", value: quoteHeader(uaData.platform) });
-    if (fullVersionList) headers.push({ header: "Sec-CH-UA-Full-Version-List", operation: "set", value: fullVersionList });
-    if (uaData.uaFullVersion) headers.push({ header: "Sec-CH-UA-Full-Version", operation: "set", value: quoteHeader(uaData.uaFullVersion) });
-    if (uaData.platformVersion) headers.push({ header: "Sec-CH-UA-Platform-Version", operation: "set", value: quoteHeader(uaData.platformVersion) });
-    if (uaData.architecture) headers.push({ header: "Sec-CH-UA-Arch", operation: "set", value: quoteHeader(uaData.architecture) });
-    if (uaData.bitness) headers.push({ header: "Sec-CH-UA-Bitness", operation: "set", value: quoteHeader(uaData.bitness) });
-    if (typeof uaData.model === "string") headers.push({ header: "Sec-CH-UA-Model", operation: "set", value: quoteHeader(uaData.model) });
 
+    // Chrome sends only these unprompted, so overriding them everywhere leaves
+    // the request shape unchanged.
+    const lowEntropy = [
+      { header: "User-Agent", operation: "set", value: identity.userAgent },
+    ];
+    if (brands) lowEntropy.push({ header: "Sec-CH-UA", operation: "set", value: brands });
+    lowEntropy.push({ header: "Sec-CH-UA-Mobile", operation: "set", value: uaData.mobile ? "?1" : "?0" });
+    if (uaData.platform) lowEntropy.push({ header: "Sec-CH-UA-Platform", operation: "set", value: quoteHeader(uaData.platform) });
+
+    // The remaining high-entropy hints are deliberately not forced. A real
+    // Chrome sends them only to an origin that asked via Accept-CH, so setting
+    // them on every request is a shape every server can spot, and strict CDNs
+    // reject it — which looks like a page whose stylesheets failed while the
+    // document loaded. declarativeNetRequest cannot scope them to opted-in
+    // origins here: condition.requestHeaders is silently ignored by this engine.
+    // The engine supplies them instead, though it currently sends an empty
+    // Sec-CH-UA-Bitness and a Sec-CH-UA-Full-Version-List that disagrees with
+    // Sec-CH-UA — an engine bug to fix at the source rather than trade for a
+    // tell every origin can read.
+
+    const resourceTypes = ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "xmlhttprequest", "media", "other"];
     await dnr.updateSessionRules({
-      removeRuleIds: [BROWSER_IDENTITY_HEADER_RULE_ID],
+      removeRuleIds: [BROWSER_IDENTITY_HEADER_RULE_ID, STALE_HIGH_ENTROPY_RULE_ID],
       addRules: [{
         id: BROWSER_IDENTITY_HEADER_RULE_ID,
         priority: 1,
-        action: { type: "modifyHeaders", requestHeaders: headers },
-        condition: {
-          regexFilter: "^https?://",
-          resourceTypes: ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "xmlhttprequest", "media", "other"],
-        },
+        action: { type: "modifyHeaders", requestHeaders: lowEntropy },
+        condition: { regexFilter: "^https?://", resourceTypes },
       }],
     });
   } catch (_) { /* header rules are best-effort; page spoof still applies */ }
