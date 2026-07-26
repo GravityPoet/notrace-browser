@@ -2251,6 +2251,15 @@ fn append_native_fingerprint_args(
         argv.push(format!("--fingerprint-webrtc-ip={exit_ip}"));
     }
     // New: brand-version, platform-version, GPU vendor/renderer (C2+C3)
+    //
+    // --fingerprint-brand names which brand --fingerprint-brand-version applies
+    // to. Without it the engine emits Sec-CH-UA-Full-Version-List entries with
+    // no version at all ("Not A(Brand";v="8.0.0.0", "Chromium", "Google Chrome"),
+    // which any origin that opts in via Accept-CH can read as inconsistent with
+    // Sec-CH-UA. Naming the brand versions the one that matters. It does not
+    // make the engine's list match Chrome — "Chromium" stays unversioned and the
+    // GREASE brand differs — but it is strictly closer.
+    argv.push("--fingerprint-brand=Google Chrome".to_string());
     argv.push(format!(
         "--fingerprint-brand-version={full}",
         full = engine.full
@@ -3444,6 +3453,7 @@ mod tests {
             "--fingerprint-locale=ja-JP",
             "--accept-lang=ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
             "--fingerprint-webrtc-ip=203.0.113.24",
+            "--fingerprint-brand=Google Chrome",
             "--fingerprint-brand-version=145.0.0.0",
             "--fingerprint-platform-version=15.5.0",
             "--fingerprint-gpu-vendor=Google Inc. (Apple)",

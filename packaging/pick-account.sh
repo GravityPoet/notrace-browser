@@ -4,8 +4,7 @@ set -euo pipefail
 # Clickable account picker for the multi-account ChatGPT identities.
 #
 # Native macOS account picker: prefers the Rust/Tauri day-mode picker, then
-# falls back to the AppKit UI target ChatGPTCloakAccountPicker, then this
-# zero-dependency osascript list if Swift is unavailable. It shows each existing identity with its stable
+# falls back to this zero-dependency osascript list. It shows each existing identity with its stable
 # fingerprint seed, region label, locale state and proxy, then launches the
 # chosen one THROUGH launch-account.sh so seed / timezone / proxy / VPN rules all
 # stay in one place. It also manages identities without touching a terminal:
@@ -75,14 +74,6 @@ if [[ "${CLOAK_PICKER_LEGACY:-0}" != "1" ]]; then
     printf '%s\n' "warning: no Tauri picker app bundle was found; falling back." >&2
   fi
 
-  if [[ -x "$ROOT/.build/release/ChatGPTCloakAccountPicker" ]]; then
-    exec "$ROOT/.build/release/ChatGPTCloakAccountPicker"
-  fi
-
-  if command -v swift >/dev/null 2>&1; then
-    cd "$ROOT"
-    exec swift run -c release ChatGPTCloakAccountPicker
-  fi
 fi
 
 NEW="➕  新建账号…"
