@@ -98,6 +98,28 @@ window.__runProbe = function () {
       : null;
   } catch (e) { out.uaData = { error: String(e) }; }
 
+  // The *shape* of navigator.userAgentData, separately from its values. Handing
+  // back a synthesized stand-in object instead of patching the real
+  // NavigatorUAData answered "Object" to constructor.name and printed the
+  // wrapper's own JavaScript from toString() — either one identifies the
+  // companion in a single expression, whatever the values say.
+  out.uad_shape = (() => {
+    const ud = nav.userAgentData;
+    if (!ud) return { present: false };
+    try {
+      return {
+        present: true,
+        ctorName: ud.constructor ? ud.constructor.name : null,
+        nativePrototype: !!(window.NavigatorUAData
+          && Object.getPrototypeOf(ud) === NavigatorUAData.prototype),
+        ownProps: Object.getOwnPropertyNames(ud),
+        nativeSources: [ud.getHighEntropyValues, ud.toJSON,
+          Object.getOwnPropertyDescriptor(NavigatorUAData.prototype, "brands").get]
+          .every((fn) => /\{\s*\[native code\]\s*\}/.test(Function.prototype.toString.call(fn))),
+      };
+    } catch (e) { return { present: true, error: String(e) }; }
+  })();
+
   // Timezone — main thread.
   out.main_tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   out.main_offset = new Date().getTimezoneOffset();
@@ -136,6 +158,39 @@ window.__runProbe = function () {
     let h = 0; for (let i = 0; i < data.length; i++) h = (h * 31 + data.charCodeAt(i)) >>> 0;
     out.canvas_hash = h.toString(16);
   } catch (e) { out.canvas_hash = "ERR:" + e; }
+
+  // The same drawing through <canvas> and through OffscreenCanvas. Both realms
+  // read the same surface, so a real browser — and the bare engine, whose own
+  // per-seed noise reaches both — returns the same bytes from each. The
+  // companion wrapping only one of them made the pair a one-expression tell.
+  out.canvas_realms = await (async () => {
+    const fnv = (bytes) => {
+      let h = 2166136261 >>> 0;
+      for (let i = 0; i < bytes.length; i++) { h ^= bytes[i]; h = Math.imul(h, 16777619) >>> 0; }
+      return (h >>> 0).toString(16);
+    };
+    const paint = (ctx) => {
+      ctx.textBaseline = "top"; ctx.font = "14px Arial";
+      ctx.fillStyle = "#069"; ctx.fillText("Cloak realms 0123!@#", 2, 2);
+      ctx.fillStyle = "rgba(102,200,0,0.55)"; ctx.fillRect(10, 12, 120, 22);
+    };
+    const result = {};
+    try {
+      const c = document.createElement("canvas"); c.width = 220; c.height = 50;
+      const ctx = c.getContext("2d"); paint(ctx);
+      result.html_pixels = fnv(ctx.getImageData(0, 0, 220, 50).data);
+      result.html_blob = fnv(new Uint8Array(await new Promise(
+        (res, rej) => c.toBlob((b) => (b ? res(b.arrayBuffer()) : rej(new Error("no blob")))))));
+      const o = new OffscreenCanvas(220, 50);
+      const octx = o.getContext("2d"); paint(octx);
+      result.offscreen_pixels = fnv(octx.getImageData(0, 0, 220, 50).data);
+      result.offscreen_blob = fnv(new Uint8Array(await (await o.convertToBlob()).arrayBuffer()));
+      // An encode that forgets to undo its noise leaves the page's own canvas
+      // corrupted, which is a bug for the page and a moving fingerprint for us.
+      result.pixels_after_encode = fnv(ctx.getImageData(0, 0, 220, 50).data);
+    } catch (e) { result.error = String(e); }
+    return result;
+  })();
 
   // Audio hash — catches whether the per-seed audio surface changes too.
   try {
