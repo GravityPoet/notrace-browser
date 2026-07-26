@@ -16,6 +16,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  ShieldAlert,
   ShieldCheck,
   Store,
   Tag,
@@ -262,6 +263,9 @@ export default function App() {
     result: LaunchResult;
   } | null>(null);
   const [dialogError, setDialogError] = useState<string>("");
+  // Kept apart from `error`, which auto-dismisses after five seconds: a failed
+  // list load has to stay on screen because it changes what the list means.
+  const [loadError, setLoadError] = useState<string>("");
   const [plan, setPlan] = useState<LaunchPlan | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [groupContextMenu, setGroupContextMenu] = useState<GroupContextMenuState | null>(null);
@@ -304,6 +308,11 @@ export default function App() {
     () => visibleAccounts.find((account) => account.name === selectedName) ?? visibleAccounts[0] ?? null,
     [visibleAccounts, selectedName],
   );
+  // Async handlers close over a stale `selected`; this ref always holds whoever
+  // is on screen when a slow call finally resolves.
+  const selectedNameRef = useRef<string>("");
+  selectedNameRef.current = selected?.name ?? "";
+  const launchInFlightRef = useRef<Set<string>>(new Set());
   const groupedAccounts = useMemo(
     () =>
       hasAccountSearch
@@ -318,10 +327,20 @@ export default function App() {
 
   async function refresh(preferredName?: string, view: AccountView = accountView) {
     setError("");
-    const [nextActiveAccounts, nextTrashedAccounts] = await Promise.all([
-      call<Account[]>("list_accounts"),
-      call<Account[]>("list_trashed_accounts"),
-    ]);
+    let nextActiveAccounts: Account[];
+    let nextTrashedAccounts: Account[];
+    try {
+      [nextActiveAccounts, nextTrashedAccounts] = await Promise.all([
+        call<Account[]>("list_accounts"),
+        call<Account[]>("list_trashed_accounts"),
+      ]);
+    } catch (caught) {
+      // Callers await refresh() outside run(), so an unhandled rejection here
+      // used to leave a silently stale list with no message at all.
+      setLoadError(errorMessage(caught));
+      return;
+    }
+    setLoadError("");
     setActiveAccounts(nextActiveAccounts);
     setTrashedAccounts(nextTrashedAccounts);
     const nextViewAccounts = view === "trash" ? nextTrashedAccounts : nextActiveAccounts;
@@ -448,6 +467,10 @@ export default function App() {
     }
 
     let cancelled = false;
+    // Clear first: the panel is already titled with the new account, so keeping
+    // the previous plan would show one identity's seed, exit IP and profile path
+    // under another account's name until the call returns.
+    setPlan(null);
     setPlanLoading(true);
     setError("");
     call<LaunchPlan>("launch_dry_run", { name: selected.name })
@@ -495,7 +518,7 @@ export default function App() {
       if (account) {
         setAccountOrder((current) => [
           account.name,
-          ...orderedAccountNames(accounts, current).filter((name) => name !== account.name),
+          ...mergedAccountOrder(current, accounts).filter((name) => name !== account.name),
         ]);
         if (group) {
           setHiddenGroups((current) => current.filter((label) => label !== group));
@@ -579,6 +602,9 @@ export default function App() {
   function openDialog(next: DialogState, trigger?: HTMLElement | null) {
     dialogTriggerRef.current =
       trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    // Any failed action writes dialogError, so without this reset a brand new
+    // dialog opens already showing the previous action's error.
+    setDialogError("");
     setDialog(next);
   }
 
@@ -850,16 +876,22 @@ export default function App() {
     setPlanLoading(true);
     setError("");
     try {
+      // launch_preflight resolves GeoIP over the network and takes seconds, so
+      // the user can switch accounts while it runs. Applying a late result would
+      // pin one account's exit IP onto another's panel — the one thing this
+      // button exists to let people trust.
       const checked = await call<LaunchPlan>("launch_preflight", { name: account.name });
+      if (selectedNameRef.current !== account.name) return;
       setPlan(checked);
       if (checked.privacy_failures.length > 0) {
         setError("出口/隐私契约检查未通过；启动仍会被核心安全闸门拦截。");
       }
     } catch (caught) {
+      if (selectedNameRef.current !== account.name) return;
       setPlan(null);
       setError(errorMessage(caught));
     } finally {
-      setPlanLoading(false);
+      if (selectedNameRef.current === account.name) setPlanLoading(false);
     }
   }
 
@@ -882,6 +914,11 @@ export default function App() {
 
   async function launchAccount(account: Account) {
     if (account.trashed) return;
+    // A row launches on double click, which bypasses the button's disabled
+    // state. Without this guard the second call cancels the first, so the user
+    // is told "启动已取消" while a third launch quietly opens the browser.
+    if (launchInFlightRef.current.has(account.name)) return;
+    launchInFlightRef.current.add(account.name);
     setError("");
     setLaunchStatus({ accountName: account.name, target: "chatgpt", phase: "checking", startedAt: Date.now() });
     // The backend now performs the privacy/GeoIP preflight and launch in one
@@ -891,7 +928,9 @@ export default function App() {
     try {
       const result = await call<LaunchResult>("launch_account", { name: account.name });
       applyLaunchDiagnostics(result);
-      setLaunchStatus({ accountName: result.account, target: "chatgpt", phase: "opened", startedAt: Date.now(), result });
+      setLaunchStatus((current) => current?.accountName === account.name
+        ? { accountName: result.account, target: "chatgpt", phase: "opened", startedAt: current.startedAt, result }
+        : current);
     } catch (caught) {
       const message = errorMessage(caught);
       const cancelled = isLaunchCancelledError(message);
@@ -899,11 +938,15 @@ export default function App() {
         ? { ...current, phase: cancelled ? "cancelled" : "failed" }
         : current);
       setError(cancelled ? "启动已取消，账号和隐私配置未改变。" : message);
+    } finally {
+      launchInFlightRef.current.delete(account.name);
     }
   }
 
   async function launchWebStore(account: Account) {
     if (account.trashed) return;
+    if (launchInFlightRef.current.has(account.name)) return;
+    launchInFlightRef.current.add(account.name);
     setError("");
     setWebStoreStatus({ accountName: account.name, phase: "opening", startedAt: Date.now() });
     setLaunchStatus({ accountName: account.name, target: "web-store", phase: "checking", startedAt: Date.now() });
@@ -912,7 +955,9 @@ export default function App() {
       const result = await call<LaunchResult>("launch_web_store", { name: account.name });
       applyLaunchDiagnostics(result);
       setWebStoreStatus({ accountName: result.account, phase: "opened", result });
-      setLaunchStatus({ accountName: result.account, target: "web-store", phase: "opened", startedAt: Date.now(), result });
+      setLaunchStatus((current) => current?.accountName === account.name
+        ? { accountName: result.account, target: "web-store", phase: "opened", startedAt: current.startedAt, result }
+        : current);
     } catch (caught) {
       const message = errorMessage(caught);
       const cancelled = isLaunchCancelledError(message);
@@ -921,6 +966,8 @@ export default function App() {
         ? { ...current, phase: cancelled ? "cancelled" : "failed" }
         : current);
       setError(cancelled ? "启动已取消，账号和隐私配置未改变。" : message);
+    } finally {
+      launchInFlightRef.current.delete(account.name);
     }
   }
 
@@ -937,7 +984,11 @@ export default function App() {
           : current);
         setWebStoreStatus((current) => current?.accountName === account.name ? null : current);
       } else {
-        setLaunchStatus((current) => current?.accountName === account.name
+        // cancel_launch returns false when the launch already finished. Only
+        // undo our own "cancelling" label — writing "starting" unconditionally
+        // would overwrite the "opened"/"failed" the launch just wrote, leaving a
+        // spinner and a Cancel button that never resolve.
+        setLaunchStatus((current) => current?.accountName === account.name && current.phase === "cancelling"
           ? { ...current, phase: "starting" }
           : current);
       }
@@ -1265,7 +1316,19 @@ export default function App() {
           )}
 
           <div className="accountList">
-            {visibleAccounts.length === 0 ? (
+            {visibleAccounts.length === 0 && loadError ? (
+              // "暂无活跃账号" next to a full disk of accounts is a lie, and the
+              // error toast has already auto-dismissed by the time anyone looks.
+              <div className="emptyState">
+                <ShieldAlert size={24} />
+                <strong>账号列表加载失败</strong>
+                <p className="emptyStateDetail">{loadError}</p>
+                <button className="subtleButton" onClick={() => void refresh()}>
+                  <RefreshCw size={14} />
+                  重试
+                </button>
+              </div>
+            ) : visibleAccounts.length === 0 ? (
               <div className="emptyState">
                 {accountView === "active" ? <ShieldCheck size={24} /> : <Trash2 size={24} />}
                 <strong>{emptyTitle}</strong>
@@ -1426,7 +1489,7 @@ export default function App() {
                   </InspectorGroup>
                 </section>
 
-                {launchStatus?.phase === "opened" && launchStatus.result?.diagnostics ? (
+                {launchStatusIsCurrent && launchStatus?.phase === "opened" && launchStatus.result?.diagnostics ? (
                   <div className="diagnosticBox">
                     <div className="diagnosticTitle"><ShieldCheck size={14} />启动诊断</div>
                     <div className="diagnosticGrid">
@@ -1629,7 +1692,15 @@ export default function App() {
         </div>
       ) : null}
 
-      {error && !dialog ? <div className="toast errorToast">{error}</div> : null}
+      {/* A stale list looks exactly like a current one, so this stays until the
+          next successful refresh rather than auto-dismissing like `error`. */}
+      {loadError && !dialog ? (
+        <div className="toast errorToast" role="alert">
+          账号列表加载失败，显示的是上一次结果：{loadError}
+          <button className="toastAction" onClick={() => void refresh()}>重试</button>
+        </div>
+      ) : null}
+      {error && !dialog ? <div className="toast errorToast" role="alert">{error}</div> : null}
       {dialog ? (
         <EditorDialog
           dialog={dialog}
@@ -2227,6 +2298,28 @@ function orderAccounts(accounts: Account[], accountOrder: string[]): Account[] {
     .filter((account): account is Account => Boolean(account));
 }
 
+/// Order to persist. Unlike orderedAccountNames this keeps entries it does not
+/// recognise: callers only ever hold one view's accounts, so dropping unknown
+/// names would erase the saved position of every account in the other view —
+/// reordering once in the active list wiped the trash's order, and creating an
+/// account while viewing the trash wiped the active list's.
+function mergedAccountOrder(currentOrder: string[], accounts: Account[]): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const name of currentOrder) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    ordered.push(name);
+  }
+  for (const account of accounts) {
+    if (seen.has(account.name)) continue;
+    seen.add(account.name);
+    ordered.push(account.name);
+  }
+  return ordered;
+}
+
+/// Order to render: restricted to the accounts actually on screen.
 function orderedAccountNames(accounts: Account[], accountOrder: string[]): string[] {
   const known = new Set(accounts.map((account) => account.name));
   const seen = new Set<string>();
@@ -2252,7 +2345,7 @@ function reorderAccountNames(
   edge: AccountDropTarget["edge"],
 ): string[] {
   if (!source || source === target) return currentOrder;
-  const names = orderedAccountNames(accounts, currentOrder).filter((name) => name !== source);
+  const names = mergedAccountOrder(currentOrder, accounts).filter((name) => name !== source);
   const targetIndex = names.indexOf(target);
   if (targetIndex < 0) return currentOrder;
   names.splice(targetIndex + (edge === "after" ? 1 : 0), 0, source);

@@ -1,4 +1,8 @@
 :root {
+  /* The palette below is light-only. Declaring it keeps macOS from rendering
+     native controls — the search field's clear button, scrollbars, the caret,
+     selection colour — in dark mode against these light surfaces. */
+  color-scheme: light;
   --bg: #f5f5f7;
   --panel: #ffffff;
   --panel-soft: rgba(255, 255, 255, 0.64);
@@ -1289,6 +1293,43 @@ button:disabled {
   font-weight: 590;
 }
 
+.emptyStateDetail {
+  margin: 0;
+  max-width: 34ch;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.crashState {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 12px;
+  min-height: 100vh;
+  padding: 32px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.crashState strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 590;
+}
+
+.crashState p {
+  margin: 0;
+  max-width: 46ch;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.crashHint {
+  color: var(--soft);
+}
+
 .detailEmpty {
   min-height: 100%;
 }
@@ -1312,6 +1353,21 @@ button:disabled {
   border: 1px solid #f2b8b5;
   background: #fff4f2;
   color: #b42318;
+}
+
+.toastAction {
+  margin-left: 10px;
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.toastAction:hover {
+  background: rgba(180, 35, 24, 0.08);
 }
 
 .contextMenu {
