@@ -406,10 +406,13 @@ EOF
     printf 'error: generated companion header rules are invalid JSON\n' >&2
     return 1
   fi
+  # Non-enumerable handoff: apply.js deletes it during document_start, so the
+  # per-account fingerprint seed never reaches page scripts as a super-cookie.
+  seed_handoff_fmt='Object.defineProperty(window, "__cloakSeedHandoff", { value: "%s", configurable: true, enumerable: false, writable: true });\n'
   if companion_page_spoof_enabled; then
-    printf 'window.__cloakAccountSeed = "%s";\n' "$seed" > "$EXT_RUNTIME/account-seed-main.js"
+    printf "$seed_handoff_fmt" "$seed" > "$EXT_RUNTIME/account-seed-main.js"
   else
-    printf 'window.__cloakAccountSeed = "";\n' > "$EXT_RUNTIME/account-seed-main.js"
+    printf "$seed_handoff_fmt" "" > "$EXT_RUNTIME/account-seed-main.js"
     strip_companion_page_scripts "$EXT_RUNTIME/manifest.json"
   fi
   chmod 600 "$EXT_RUNTIME/account-seed-main.js" "$EXT_RUNTIME/browser-identity-main.js" "$EXT_RUNTIME/browser-identity-worker.js" "$EXT_RUNTIME/rules/browser-identity-headers.json" 2>/dev/null || true
@@ -936,7 +939,9 @@ run_browser_selftest() {
   [[ -n "$exit_ip" ]] && selftest_args+=(--expect-ip "$exit_ip")
   [[ -n "$proxy_server_arg" ]] && selftest_args+=(--proxy-server "$proxy_server_arg")
   [[ -n "$accept_lang" ]] && selftest_args+=(--accept-lang "$accept_lang")
-  for ext_dir in "${selftest_extension_dirs[@]}"; do
+  # bash 3.2 (the macOS system shell) treats "${empty[@]}" as unset under `set -u`,
+  # which would abort the launcher before it ever starts the browser.
+  for ext_dir in ${selftest_extension_dirs[@]+"${selftest_extension_dirs[@]}"}; do
     selftest_args+=(--extra-extension "$ext_dir")
   done
 

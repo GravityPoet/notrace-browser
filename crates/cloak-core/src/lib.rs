@@ -12,7 +12,7 @@ use std::fs;
 use std::io;
 use std::io::Cursor;
 use std::io::{Read, Write};
-use std::net::{TcpStream as StdTcpStream, ToSocketAddrs};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream as StdTcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -458,7 +458,17 @@ fn collect_accounts(
         if name == "main" || name.starts_with('.') {
             continue;
         }
-        let account = read_account(config, &name)?;
+        // A single stray directory (a copy with a space, a non-ASCII name, an
+        // iCloud artefact) used to fail the whole listing, so the picker showed
+        // no accounts at all and named none of them. Skip what cannot be read and
+        // keep every account that can.
+        let account = match read_account(config, &name) {
+            Ok(account) => account,
+            Err(err) => {
+                eprintln!("skipping unreadable account directory {name:?}: {err}");
+                continue;
+            }
+        };
         if keep(&account) {
             accounts.push(account);
         }
@@ -511,6 +521,41 @@ pub fn read_account(config: &CloakConfig, name: &str) -> Result<Account> {
     })
 }
 
+/// Pick a fingerprint seed no existing account already uses.
+///
+/// The wrapper contract pins seeds to 4–5 digits, so there are only 90 000 of
+/// them. Drawing blind, a profile set of ~180 accounts already has a ~17% chance
+/// that two accounts share a seed — and a shared seed means shared derived
+/// fingerprints (GPU renderer, canvas and audio noise), which is exactly the
+/// cross-account link this browser exists to prevent.
+fn allocate_unused_seed(config: &CloakConfig) -> String {
+    const SEED_MIN: u32 = 10_000;
+    const SEED_MAX: u32 = 100_000;
+
+    let mut taken = std::collections::HashSet::new();
+    if let Ok(entries) = fs::read_dir(&config.account_base) {
+        for entry in entries.flatten() {
+            if let Ok(Some(seed)) = pinned_seed(&entry.path()) {
+                taken.insert(seed);
+            }
+        }
+    }
+
+    let mut rng = rand::thread_rng();
+    for _ in 0..64 {
+        let seed = rng.gen_range(SEED_MIN..SEED_MAX).to_string();
+        if !taken.contains(&seed) {
+            return seed;
+        }
+    }
+    // Nearly the whole space is in use; take the first free value rather than
+    // handing back a known duplicate.
+    (SEED_MIN..SEED_MAX)
+        .map(|value| value.to_string())
+        .find(|seed| !taken.contains(seed))
+        .unwrap_or_else(|| rng.gen_range(SEED_MIN..SEED_MAX).to_string())
+}
+
 pub fn create_account(config: &CloakConfig, name: &str) -> Result<Account> {
     create_account_with_group(config, name, None)
 }
@@ -526,7 +571,7 @@ pub fn create_account_with_group(
         return Err(CloakError::AccountExists(name.to_string()));
     }
     secure_account_dir(&profile)?;
-    let seed = rand::thread_rng().gen_range(10_000..100_000).to_string();
+    let seed = allocate_unused_seed(config);
     write_secret_atomic(&profile.join(".cloak-seed"), &seed)?;
     write_secret_atomic(
         &profile.join(".cloak-created-at"),
@@ -1112,13 +1157,12 @@ fn live_supervised_relay_port(state_path: &Path, expected_hash: &str) -> Result<
 }
 
 fn local_socks5_ready(port: u16) -> bool {
-    let Ok(mut addrs) = ("localhost", port).to_socket_addrs() else {
-        return false;
-    };
-    let Some(addr) = addrs.next() else {
-        return false;
-    };
-    let Ok(mut stream) = StdTcpStream::connect_timeout(&addr, Duration::from_millis(250)) else {
+    // Probe the IPv4 loopback address that relay::serve_forever binds. Resolving
+    // "localhost" yields the IPv6 loopback first on macOS, so the probe used to
+    // connect where nothing listens and reported every relay as dead.
+    let loopback = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let Ok(mut stream) = StdTcpStream::connect_timeout(&loopback, Duration::from_millis(250))
+    else {
         return false;
     };
     let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
@@ -1197,6 +1241,17 @@ pub fn prepare_account_extension(config: &CloakConfig, plan: &LaunchPlan) -> Res
     Ok(())
 }
 
+/// Emit the MAIN-world seed handoff. The seed is the value behind
+/// `--fingerprint=<seed>`: unique per account and stable across cookie clears
+/// and proxy changes, so a plain global would be a super-cookie that links every
+/// account this browser exists to keep apart. A non-enumerable property lets
+/// apply.js consume and delete it during document_start, before page scripts run.
+fn seed_handoff_script(seed: &str) -> String {
+    format!(
+        "Object.defineProperty(window, \"__cloakSeedHandoff\", {{ value: \"{seed}\", configurable: true, enumerable: false, writable: true }});"
+    )
+}
+
 fn prepare_companion_extension(
     config: &CloakConfig,
     plan: &LaunchPlan,
@@ -1207,10 +1262,12 @@ fn prepare_companion_extension(
     }
     copy_dir(&config.extension_source, &plan.extension_runtime_path)?;
     secure_dir_recursive(&plan.extension_runtime_path)?;
+    // Non-enumerable handoff: apply.js deletes it during document_start, so the
+    // per-account fingerprint seed never reaches page scripts as a super-cookie.
     let seed_script = if page_spoof_enabled {
-        format!("window.__cloakAccountSeed = \"{}\";\n", plan.seed)
+        format!("{}\n", seed_handoff_script(&plan.seed))
     } else {
-        "window.__cloakAccountSeed = \"\";\n".to_string()
+        format!("{}\n", seed_handoff_script(""))
     };
     let identity_script = format!(
         "window.__cloakBrowserIdentity = {};\n",
@@ -1266,9 +1323,17 @@ pub fn self_check(config: &CloakConfig) -> Result<String> {
     ))
 }
 
+/// Profile directory of an account that must already exist. Every caller is a
+/// mutator (proxy, region, group, mark, locale, archive); without the existence
+/// check a mistyped name silently created a new account and wrote the proxy
+/// credentials into it, and that ghost account had no pinned seed, so it fell
+/// back to a name-derived fingerprint that is reproducible on any machine.
 fn ensure_profile(config: &CloakConfig, name: &str) -> Result<PathBuf> {
     validate_account_name(name)?;
     let profile = config.profile_dir(name);
+    if !profile.is_dir() {
+        return Err(CloakError::AccountMissing(name.to_string()));
+    }
     secure_account_dir(&profile)?;
     Ok(profile)
 }
@@ -1996,17 +2061,27 @@ fn run_selftest(
     Ok(())
 }
 
+/// Launching through the `current` symlink makes the browser process report a
+/// bundle path that its own helpers do not share, and macOS then refuses the
+/// bundle's sandbox extension:
+///   sandbox_extension_issue_file_to_process failed for .../current/Chromium.app: 1
+/// Resolving to the real versioned path first keeps one consistent bundle
+/// identity for the whole process tree.
+fn real_browser_path(path: PathBuf) -> PathBuf {
+    fs::canonicalize(&path).unwrap_or(path)
+}
+
 fn resolve_browser_binary(config: &CloakConfig) -> Result<PathBuf> {
     if let Some(path) = env::var_os("CLOAK_BROWSER_BIN").map(PathBuf::from) {
         if is_executable(&path) {
-            return Ok(path);
+            return Ok(real_browser_path(path));
         }
     }
     let current = config
         .cloakbrowser_root
         .join(current_browser_relative_path());
     if is_executable(&current) {
-        return Ok(current);
+        return Ok(real_browser_path(current));
     }
     let mut candidates = Vec::new();
     if let Ok(entries) = fs::read_dir(&config.cloakbrowser_root) {
@@ -2017,8 +2092,37 @@ fn resolve_browser_binary(config: &CloakConfig) -> Result<PathBuf> {
             }
         }
     }
-    candidates.sort();
-    candidates.pop().ok_or(CloakError::BrowserMissing)
+    // Sort by parsed version, not lexicographically: "chromium-99" sorts above
+    // "chromium-145" as a string, which would silently pick the older engine.
+    candidates.sort_by_key(|path| version_sort_key(path));
+    candidates
+        .pop()
+        .map(real_browser_path)
+        .ok_or(CloakError::BrowserMissing)
+}
+
+/// Numeric components of a `chromium-<version>` directory, for version ordering.
+/// `chromium-145.0.7632.109.2` yields `[145, 0, 7632, 109, 2]`.
+fn version_sort_key(path: &Path) -> Vec<u64> {
+    for ancestor in path.ancestors() {
+        let Some(name) = ancestor.file_name().map(|name| name.to_string_lossy()) else {
+            continue;
+        };
+        let Some(rest) = name
+            .strip_prefix("chromium-")
+            .or_else(|| name.strip_prefix("chromium_"))
+        else {
+            continue;
+        };
+        let parts: Vec<u64> = rest
+            .split('.')
+            .map(|part| part.parse::<u64>().unwrap_or(0))
+            .collect();
+        if !parts.is_empty() {
+            return parts;
+        }
+    }
+    Vec::new()
 }
 
 #[cfg(target_os = "macos")]
@@ -2728,6 +2832,89 @@ fn companion_page_spoof_enabled_from(primary: Option<&str>, legacy: Option<&str>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The readiness probe used to resolve "localhost", which returns ::1 first
+    /// on macOS while the relay binds 127.0.0.1 only. Every relay then looked
+    /// dead, so launching any account with a SOCKS5 or authenticated HTTP proxy
+    /// failed outright and leaked the supervisor it had just started.
+    #[test]
+    fn relay_readiness_probe_finds_a_relay_bound_to_ipv4_loopback() {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let handshake = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut greeting = [0u8; 3];
+            stream.read_exact(&mut greeting).unwrap();
+            assert_eq!(greeting, [0x05, 0x01, 0x00]);
+            stream.write_all(&[0x05, 0x00]).unwrap();
+        });
+
+        assert!(local_socks5_ready(port));
+        handshake.join().unwrap();
+    }
+
+    #[test]
+    fn relay_readiness_probe_reports_a_closed_port_as_dead() {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        assert!(!local_socks5_ready(port));
+    }
+
+    /// "chromium-99" sorts above "chromium-145" as a string, which would fall
+    /// back to an older engine whenever the `current` symlink is missing.
+    #[test]
+    fn browser_candidates_order_by_version_not_lexicographically() {
+        let older = Path::new("/root/chromium-99.0.1.2/Chromium.app/Contents/MacOS/Chromium");
+        let newer =
+            Path::new("/root/chromium-145.0.7632.109.2/Chromium.app/Contents/MacOS/Chromium");
+
+        assert!(version_sort_key(newer) > version_sort_key(older));
+        assert_eq!(version_sort_key(newer), vec![145, 0, 7632, 109, 2]);
+    }
+
+    #[test]
+    fn mutating_a_missing_account_reports_it_instead_of_creating_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = CloakConfig {
+            repo_root: dir.path().to_path_buf(),
+            account_base: dir.path().join("accounts"),
+            extension_source: dir.path().join("extension"),
+            cloakbrowser_root: dir.path().join("browser"),
+        };
+
+        let err =
+            set_proxy(&config, "typo", Some("socks5://user:pass@example.net:1080")).unwrap_err();
+
+        assert!(matches!(err, CloakError::AccountMissing(_)), "got {err:?}");
+        assert!(
+            !config.profile_dir("typo").exists(),
+            "a mistyped name must not create a ghost account holding proxy credentials"
+        );
+    }
+
+    /// Seeds are 4-5 digits, so blind draws collide often enough to matter: at
+    /// ~180 accounts the birthday probability is already about 17%, and a shared
+    /// seed means shared derived fingerprints across two supposedly separate
+    /// identities.
+    #[test]
+    fn new_accounts_never_reuse_an_existing_seed() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = CloakConfig {
+            repo_root: dir.path().to_path_buf(),
+            account_base: dir.path().join("accounts"),
+            extension_source: dir.path().join("extension"),
+            cloakbrowser_root: dir.path().join("browser"),
+        };
+
+        let mut seeds = std::collections::HashSet::new();
+        for index in 0..25 {
+            let account = create_account(&config, &format!("acct{index}")).unwrap();
+            assert!(seeds.insert(account.seed.clone()), "duplicate seed issued");
+        }
+    }
 
     #[test]
     fn browser_selftest_is_opt_in_for_normal_launches() {
@@ -3595,7 +3782,7 @@ mod tests {
 
         assert_eq!(
             fs::read_to_string(plan.extension_runtime_path.join("account-seed-main.js")).unwrap(),
-            "window.__cloakAccountSeed = \"28041\";\n"
+            format!("{}\n", seed_handoff_script("28041"))
         );
         assert!(
             fs::read_to_string(plan.extension_runtime_path.join("browser-identity-main.js"))

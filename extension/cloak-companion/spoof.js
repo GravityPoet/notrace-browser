@@ -3,17 +3,60 @@
 // with a different zone just retargets the shared holder (st.tz), so switching
 // zones never stacks Proxies. Used by both apply.js (content script) and the
 // service worker's executeScript fallback — single source of truth.
-window.__cloakSpoof = function (tz, fpSeed) {
+// Wrapped in an IIFE because this runs in the page's global scope: top-level
+// function declarations would otherwise publish installFingerprintSpoof and
+// friends on window, naming the companion to anyone who looks.
+(function () {
+
+// Cross-injection state lives on non-enumerable properties so a page cannot
+// find the companion by walking Object.keys(window). The per-account seed is
+// never stored here at all: it is unique and permanent, so anything holding it
+// on the page's global is a super-cookie. It is consumed as an argument and only
+// its derived hash survives, inside the wrapper closures.
+function hide(name, value) {
+  try {
+    Object.defineProperty(window, name, {
+      value: value, configurable: true, enumerable: false, writable: true,
+    });
+  } catch (_) { window[name] = value; }
+}
+
+// Every replaced native would otherwise report its JavaScript source from
+// toString(), which is a decisive "this function was patched" tell. Map each
+// replacement back to the native it stands in for and answer toString() from
+// that. The map lives on a hidden global so a second injection of this file
+// keeps the earlier wrappers masked instead of re-exposing them.
+if (!window.__cloakNativeSources) hide("__cloakNativeSources", new WeakMap());
+function maskSource(replacement, original) {
+  try {
+    window.__cloakNativeSources.set(replacement, original);
+    if (!window.__cloakToStringPatched) {
+      hide("__cloakToStringPatched", true);
+      var nativeToString = Function.prototype.toString;
+      var patched = function toString() {
+        var target = window.__cloakNativeSources.get(this);
+        return nativeToString.call(target || this);
+      };
+      try { Object.defineProperty(patched, "length", { value: nativeToString.length }); } catch (_) {}
+      window.__cloakNativeSources.set(patched, nativeToString);
+      Function.prototype.toString = patched;
+    }
+  } catch (_) {}
+  return replacement;
+}
+
+hide("__cloakSpoof", function (tz, fpSeed) {
   try {
     if (!tz && !fpSeed) return;
     if (window.__cloakState) {
-      if (tz) { window.__cloakState.tz = tz; window.__cloakTZ = tz; }
-      if (fpSeed) { window.__cloakState.fpSeed = String(fpSeed); installFingerprintSpoof(window.__cloakState); }
+      if (tz) { window.__cloakState.tz = tz; hide("__cloakTZ", tz); }
+      if (fpSeed) installFingerprintSpoof(fpSeed);
       return;
     }
 
-    var st = (window.__cloakState = { tz: tz || null, fpSeed: fpSeed ? String(fpSeed) : "" });
-    if (tz) window.__cloakTZ = tz;
+    var st = { tz: tz || null };
+    hide("__cloakState", st);
+    if (tz) hide("__cloakTZ", tz);
     installBrowserIdentitySpoof();
     installHeadlessSurfaceSpoof();
 
@@ -50,10 +93,22 @@ window.__cloakSpoof = function (tz, fpSeed) {
     }
 
     if (tz) {
-      // getTimezoneOffset returns minutes BEHIND UTC (positive when west).
-      Date.prototype.getTimezoneOffset = function () {
-        return isNaN(this) ? NaN : -eastMinutes(this);
+      // Each replacement below is registered with maskSource so toString() still
+      // reports the native it stands in for.
+      var replaceMethod = function (obj, name, make) {
+        var orig = obj[name];
+        var next = make(orig);
+        try { Object.defineProperty(next, "name", { value: orig.name || name }); } catch (_) {}
+        try { Object.defineProperty(next, "length", { value: orig.length }); } catch (_) {}
+        obj[name] = maskSource(next, orig);
       };
+
+      // getTimezoneOffset returns minutes BEHIND UTC (positive when west).
+      replaceMethod(Date.prototype, "getTimezoneOffset", function () {
+        return function () {
+          return isNaN(this) ? NaN : -eastMinutes(this);
+        };
+      });
 
       // Default Intl.DateTimeFormat to the target zone when the caller omits timeZone.
       var handler = {
@@ -64,35 +119,42 @@ window.__cloakSpoof = function (tz, fpSeed) {
 
       // toLocale* default to the target zone too.
       ["toLocaleString", "toLocaleDateString", "toLocaleTimeString"].forEach(function (name) {
-        var orig = Date.prototype[name];
-        Date.prototype[name] = function (l, o) {
-          o = o ? Object.assign({}, o) : {}; if (!o.timeZone) o.timeZone = st.tz;
-          return orig.call(this, l, o);
-        };
+        replaceMethod(Date.prototype, name, function (orig) {
+          return function (l, o) {
+            o = o ? Object.assign({}, o) : {}; if (!o.timeZone) o.timeZone = st.tz;
+            return orig.call(this, l, o);
+          };
+        });
       });
 
       // String forms reflect the target zone and offset.
-      Date.prototype.toString = function () {
-        if (isNaN(this)) return "Invalid Date";
-        var p = partsIn(this);
-        var dow = new Date(Date.UTC(+p.year, +p.month - 1, +p.day)).getUTCDay();
-        return WD[dow] + " " + MO[+p.month - 1] + " " + p.day + " " + p.year + " " + p.hour + ":" + p.minute + ":" + p.second + " " + gmt(this) + " (" + abbr(this) + ")";
-      };
-      Date.prototype.toTimeString = function () {
-        if (isNaN(this)) return "Invalid Date";
-        var p = partsIn(this);
-        return p.hour + ":" + p.minute + ":" + p.second + " " + gmt(this) + " (" + abbr(this) + ")";
-      };
-      Date.prototype.toDateString = function () {
-        if (isNaN(this)) return "Invalid Date";
-        var p = partsIn(this);
-        var dow = new Date(Date.UTC(+p.year, +p.month - 1, +p.day)).getUTCDay();
-        return WD[dow] + " " + MO[+p.month - 1] + " " + p.day + " " + p.year;
-      };
+      replaceMethod(Date.prototype, "toString", function () {
+        return function () {
+          if (isNaN(this)) return "Invalid Date";
+          var p = partsIn(this);
+          var dow = new Date(Date.UTC(+p.year, +p.month - 1, +p.day)).getUTCDay();
+          return WD[dow] + " " + MO[+p.month - 1] + " " + p.day + " " + p.year + " " + p.hour + ":" + p.minute + ":" + p.second + " " + gmt(this) + " (" + abbr(this) + ")";
+        };
+      });
+      replaceMethod(Date.prototype, "toTimeString", function () {
+        return function () {
+          if (isNaN(this)) return "Invalid Date";
+          var p = partsIn(this);
+          return p.hour + ":" + p.minute + ":" + p.second + " " + gmt(this) + " (" + abbr(this) + ")";
+        };
+      });
+      replaceMethod(Date.prototype, "toDateString", function () {
+        return function () {
+          if (isNaN(this)) return "Invalid Date";
+          var p = partsIn(this);
+          var dow = new Date(Date.UTC(+p.year, +p.month - 1, +p.day)).getUTCDay();
+          return WD[dow] + " " + MO[+p.month - 1] + " " + p.day + " " + p.year;
+        };
+      });
     }
-    installFingerprintSpoof(st);
+    installFingerprintSpoof(fpSeed);
   } catch (_) { /* fail open: never break the page */ }
-};
+});
 
 /// Synthesize a full browser identity from navigator.userAgent.
 /// Used when __cloakBrowserIdentity is not injected (PWA main profile path).
@@ -141,13 +203,23 @@ function installBrowserIdentitySpoof() {
     if (window.__cloakBrowserIdentityInstalled) return;
     var identity = window.__cloakBrowserIdentity || synthesizeIdentityFromUA();
     if (!identity || !identity.userAgent) return;
-    window.__cloakBrowserIdentityInstalled = true;
+    hide("__cloakBrowserIdentityInstalled", true);
 
     function clone(value) {
       return value == null ? value : JSON.parse(JSON.stringify(value));
     }
+    // WebIDL attributes are enumerable and their getters are named "get <attr>".
+    // Object.defineProperty defaults to enumerable:false and an anonymous getter,
+    // so spelling both out keeps the descriptor indistinguishable from native.
     function defineGetter(obj, name, getter) {
-      try { Object.defineProperty(obj, name, { get: getter, configurable: true }); } catch (_) {}
+      try {
+        var previous = Object.getOwnPropertyDescriptor(obj, name);
+        Object.defineProperty(getter, "name", { value: "get " + name });
+        if (previous && previous.get) maskSource(getter, previous.get);
+        Object.defineProperty(obj, name, {
+          get: getter, configurable: true, enumerable: true,
+        });
+      } catch (_) {}
     }
 
     var navProto = window.Navigator && Navigator.prototype;
@@ -195,13 +267,26 @@ function installBrowserIdentitySpoof() {
 function installHeadlessSurfaceSpoof() {
   try {
     if (window.__cloakHeadlessSurfaceInstalled) return;
-    window.__cloakHeadlessSurfaceInstalled = true;
+    hide("__cloakHeadlessSurfaceInstalled", true);
 
     function defineGetter(obj, name, getter) {
-      try { Object.defineProperty(obj, name, { get: getter, configurable: true }); } catch (_) {}
+      try {
+        var previous = Object.getOwnPropertyDescriptor(obj, name);
+        Object.defineProperty(getter, "name", { value: "get " + name });
+        if (previous && previous.get) maskSource(getter, previous.get);
+        Object.defineProperty(obj, name, {
+          get: getter, configurable: true, enumerable: true,
+        });
+      } catch (_) {}
     }
+    // Interface objects on window are writable:true, enumerable:false — the
+    // defineProperty default of writable:false would flag every synthesized one.
     function defineValue(obj, name, value) {
-      try { Object.defineProperty(obj, name, { value: value, configurable: true, writable: false }); } catch (_) {}
+      try {
+        Object.defineProperty(obj, name, {
+          value: value, configurable: true, writable: true, enumerable: false,
+        });
+      } catch (_) {}
     }
 
     if (typeof window.ContentIndex === "undefined") {
@@ -253,7 +338,9 @@ function installHeadlessSurfaceSpoof() {
 
     var connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
     if (connection && typeof connection.downlinkMax === "undefined") {
-      defineGetter(connection, "downlinkMax", function () { return 10; });
+      // Prototype only. A WebIDL attribute never exists as an own property of an
+      // instance, so defining it on `connection` itself was a stronger bot signal
+      // than the missing attribute it was meant to hide.
       var connectionProto = Object.getPrototypeOf(connection);
       if (connectionProto) {
         defineGetter(connectionProto, "downlinkMax", function () { return 10; });
@@ -262,13 +349,14 @@ function installHeadlessSurfaceSpoof() {
   } catch (_) {}
 }
 
-function installFingerprintSpoof(st) {
+function installFingerprintSpoof(fpSeed) {
   try {
-    if (!st || !st.fpSeed || window.__cloakFingerprintInstalled) return;
-    window.__cloakFingerprintInstalled = true;
+    if (!fpSeed || window.__cloakFingerprintInstalled) return;
+    hide("__cloakFingerprintInstalled", true);
 
-    var seed = hashString(st.fpSeed);
-    var originals = [];
+    // Only the hash survives; the account seed itself is not retained anywhere
+    // the page can reach.
+    var seed = hashString(String(fpSeed));
 
     function hashString(s) {
       var h = 2166136261 >>> 0;
@@ -285,13 +373,18 @@ function installFingerprintSpoof(st) {
       h = Math.imul(h ^ (h >>> 13), 3266489917) >>> 0;
       return ((h ^ (h >>> 16)) >>> 0) % modulo;
     }
+    // Marking wrappers with an own property (the old `__cloakWrapped`) named the
+    // product to anyone calling Object.getOwnPropertyNames on a patched native.
+    // A WeakSet keeps the same idempotency with nothing observable on the value.
+    var wrappedFns = new WeakSet();
     function wrap(obj, name, fn) {
-      if (!obj || !obj[name] || obj[name].__cloakWrapped) return;
+      if (!obj || !obj[name] || wrappedFns.has(obj[name])) return;
       var orig = obj[name];
       var wrapped = fn(orig);
       try { Object.defineProperty(wrapped, "name", { value: orig.name || name }); } catch (_) {}
-      try { Object.defineProperty(wrapped, "__cloakWrapped", { value: true }); } catch (_) {}
-      originals.push([wrapped, orig]);
+      try { Object.defineProperty(wrapped, "length", { value: orig.length }); } catch (_) {}
+      wrappedFns.add(wrapped);
+      maskSource(wrapped, orig);
       obj[name] = wrapped;
     }
     var nativeGetImageData = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype.getImageData;
@@ -432,3 +525,5 @@ function installFingerprintSpoof(st) {
     }
   } catch (_) {}
 }
+
+})();
