@@ -974,9 +974,21 @@ fn launch_plan(
 
     secure_account_dir(&plan.profile_path)?;
     ensure_legacy_rename_compat(config)?;
-    enforce_profile_preferences(&plan.profile_path)?;
-    enforce_chromium_webstore_install_flag(&plan.profile_path)?;
-    prepare_account_extension(config, &plan)?;
+
+    // Launching an account that is already open (a double click, or picking it
+    // again while its window is behind others) must not redo the profile setup.
+    // prepare_account_extension deletes and rebuilds the companion directory
+    // underneath the running browser, and the preference writes are overwritten
+    // from memory when that browser exits — so the local-network and HTTPS-only
+    // gates would silently revert while the UI reported success. Chromium's own
+    // singleton then turns the second process into "open a window in the
+    // existing instance", which is the behaviour we want anyway.
+    let already_running = account_profile_is_running(&plan.profile_path)?;
+    if !already_running {
+        enforce_profile_preferences(&plan.profile_path)?;
+        enforce_chromium_webstore_install_flag(&plan.profile_path)?;
+        prepare_account_extension(config, &plan)?;
+    }
     ensure_launch_not_cancelled(options.cancellation.as_deref())?;
 
     let mut argv = plan.argv.clone();

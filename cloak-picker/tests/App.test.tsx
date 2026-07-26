@@ -311,3 +311,75 @@ describe("Cloak Picker dialog regressions", () => {
     expect(buttonWithText("挑战兼容").disabled).toBe(false);
   });
 });
+
+describe("Cloak Picker cross-account and failure-state regressions", () => {
+  function argvPreview(): string {
+    return document.querySelector("details.argv code")?.textContent ?? "";
+  }
+
+  function accountRow(name: string): HTMLButtonElement {
+    const row = Array.from(document.querySelectorAll<HTMLButtonElement>(".accountRow")).find(
+      (candidate) => candidate.querySelector(".accountTitle strong")?.textContent === name,
+    );
+    if (!row) throw new Error(`account row not found: ${name}`);
+    return row;
+  }
+
+  it("never shows one account's launch plan under another account's name", async () => {
+    await click(accountRow("demo-alpha@example.test"));
+    await settle(200);
+    expect(argvPreview()).toContain("demo-alpha@example.test");
+
+    // Switch, then look before the new dry run can answer. The panel is already
+    // titled demo-beta, so any demo-alpha identity still on screen is a lie the
+    // user could act on.
+    await click(accountRow("demo-beta"));
+    expect(argvPreview()).not.toContain("demo-alpha@example.test");
+
+    await settle(200);
+    expect(argvPreview()).toContain("demo-beta");
+  });
+
+  it("keeps a double-clicked launch to a single request", async () => {
+    const row = accountRow("demo-beta");
+    await click(row);
+    await settle(200);
+
+    await act(async () => {
+      row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    await settle(300);
+
+    expect(mockCommandCountForTest("launch_account")).toBe(1);
+  });
+
+  it("says the list is stale instead of silently showing yesterday's accounts", async () => {
+    failNextMockCommandForTest("list_accounts");
+    await click(document.querySelector<HTMLButtonElement>('button[aria-label="刷新"]')!);
+    await settle(300);
+
+    // The rows on screen are the last good ones, which is right — but saying
+    // nothing would let the user act on a list that no longer matches disk.
+    const toast = document.querySelector('.errorToast[role="alert"]');
+    expect(toast?.textContent).toContain("账号列表加载失败");
+    expect(buttonWithText("重试", toast ?? document)).toBeTruthy();
+  });
+
+  it("distinguishes a failed first load from an genuinely empty account list", async () => {
+    await act(async () => {
+      root?.unmount();
+    });
+    failNextMockCommandForTest("list_accounts");
+    root = createRoot(container!);
+    await act(async () => {
+      root?.render(createElement(App));
+    });
+    await settle(300);
+
+    const empty = document.querySelector(".emptyState");
+    expect(empty?.textContent).toContain("账号列表加载失败");
+    expect(empty?.textContent).not.toContain("暂无活跃账号");
+  });
+});

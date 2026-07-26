@@ -194,65 +194,96 @@ fn focus_existing_picker() {
     }
 }
 
+// Every command below touches the filesystem: listing walks each account
+// directory and reads its dotfiles, and a permanent delete removes a whole
+// Chromium profile — hundreds of megabytes and tens of thousands of files.
+// Running that on Tauri's main thread beachballs the window, so they all go
+// through run_blocking.
+
 #[tauri::command]
-fn list_accounts() -> Result<Vec<Account>, String> {
-    core_list_accounts(&config()?).map_err(|err| err.to_string())
+async fn list_accounts() -> Result<Vec<Account>, String> {
+    run_blocking(|| core_list_accounts(&config()?).map_err(|err| err.to_string())).await
 }
 
 #[tauri::command]
-fn list_trashed_accounts() -> Result<Vec<Account>, String> {
-    core_list_trashed_accounts(&config()?).map_err(|err| err.to_string())
+async fn list_trashed_accounts() -> Result<Vec<Account>, String> {
+    run_blocking(|| core_list_trashed_accounts(&config()?).map_err(|err| err.to_string())).await
 }
 
 #[tauri::command]
-fn create_account(name: String, group: Option<String>) -> Result<Account, String> {
-    core_create_account_with_group(&config()?, &name, group.as_deref())
-        .map_err(|err| err.to_string())
+async fn create_account(name: String, group: Option<String>) -> Result<Account, String> {
+    run_blocking(move || {
+        core_create_account_with_group(&config()?, &name, group.as_deref())
+            .map_err(|err| err.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn rename_account(old_name: String, new_name: String) -> Result<Account, String> {
-    core_rename_account(&config()?, &old_name, &new_name).map_err(|err| err.to_string())
+async fn rename_account(old_name: String, new_name: String) -> Result<Account, String> {
+    run_blocking(move || {
+        core_rename_account(&config()?, &old_name, &new_name).map_err(|err| err.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn delete_account(name: String) -> Result<(), String> {
-    core_delete_account(&config()?, &name).map_err(|err| err.to_string())
+async fn delete_account(name: String) -> Result<(), String> {
+    run_blocking(move || core_delete_account(&config()?, &name).map_err(|err| err.to_string()))
+        .await
 }
 
 #[tauri::command]
-fn permanently_delete_account(name: String) -> Result<(), String> {
-    core_permanently_delete_account(&config()?, &name).map_err(|err| err.to_string())
+async fn permanently_delete_account(name: String) -> Result<(), String> {
+    run_blocking(move || {
+        core_permanently_delete_account(&config()?, &name).map_err(|err| err.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn restore_account(name: String) -> Result<Account, String> {
-    core_set_account_trashed(&config()?, &name, false).map_err(|err| err.to_string())
+async fn restore_account(name: String) -> Result<Account, String> {
+    run_blocking(move || {
+        core_set_account_trashed(&config()?, &name, false).map_err(|err| err.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn set_proxy(name: String, value: Option<String>) -> Result<Account, String> {
-    core_set_proxy(&config()?, &name, value.as_deref()).map_err(|err| err.to_string())
+async fn set_proxy(name: String, value: Option<String>) -> Result<Account, String> {
+    run_blocking(move || {
+        core_set_proxy(&config()?, &name, value.as_deref()).map_err(|err| err.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn set_region(name: String, value: Option<String>) -> Result<Account, String> {
-    core_set_region(&config()?, &name, value.as_deref()).map_err(|err| err.to_string())
+async fn set_region(name: String, value: Option<String>) -> Result<Account, String> {
+    run_blocking(move || {
+        core_set_region(&config()?, &name, value.as_deref()).map_err(|err| err.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn set_group(name: String, value: Option<String>) -> Result<Account, String> {
-    core_set_group(&config()?, &name, value.as_deref()).map_err(|err| err.to_string())
+async fn set_group(name: String, value: Option<String>) -> Result<Account, String> {
+    run_blocking(move || {
+        core_set_group(&config()?, &name, value.as_deref()).map_err(|err| err.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn set_mark(name: String, marked: bool, note: Option<String>) -> Result<Account, String> {
-    core_set_mark(&config()?, &name, marked, note.as_deref()).map_err(|err| err.to_string())
+async fn set_mark(name: String, marked: bool, note: Option<String>) -> Result<Account, String> {
+    run_blocking(move || {
+        core_set_mark(&config()?, &name, marked, note.as_deref()).map_err(|err| err.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn toggle_locale(name: String) -> Result<Account, String> {
-    core_toggle_locale(&config()?, &name).map_err(|err| err.to_string())
+async fn toggle_locale(name: String) -> Result<Account, String> {
+    run_blocking(move || core_toggle_locale(&config()?, &name).map_err(|err| err.to_string())).await
 }
 
 #[tauri::command]
