@@ -811,7 +811,8 @@ args=(
   "--fingerprint-platform=macos"
   "--user-agent=$CLOAK_USER_AGENT"
   "--load-extension=$load_extensions"
-  "--disable-extensions-except=$load_extensions"
+  # Do not add --disable-extensions-except here: Chromium treats it as global
+  # extension disablement and rejects Chrome Web Store CRX installs.
   "--no-first-run"
   "--no-default-browser-check"
   "--ignore-gpu-blocklist"
