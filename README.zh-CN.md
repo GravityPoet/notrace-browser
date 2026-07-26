@@ -22,7 +22,7 @@ graph TD
     A[Cloak Picker 账号选择器 / CLI] -->|携带特定 Seed & 代理启动| B(NoTrace 账号配置文件)
     B -->|C++ 底层指纹补丁| C[伪装的 Canvas, WebGL, Audio 与 Client Hints]
     B -->|内置代理中转| D[独享且带认证的 SOCKS5 出口]
-    B -->|伴侣插件| E[自动匹配的 Intl 时区 / Worker TZ]
+    B -->|TZ 环境变量 + 引擎时区参数| E[主页面与 Worker 一致的 Intl 时区]
     B -->|TCC 权限修复引擎| F[麦克风语音输入 / 蓝牙 Passkey 登录]
     D -->|目标网络| G[目标网站 / AI / Web3 / 社交 / 电商]
 ```

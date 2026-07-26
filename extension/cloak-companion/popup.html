@@ -14,9 +14,11 @@
 </head>
 <body>
   <h1>时区伪装 / Timezone</h1>
-  <div class="row">当前生效:<span id="cur">—</span></div>
+  <div class="row">页面覆盖:<span id="cur">—</span></div>
+  <div class="row">内核时区:<span id="engine">—</span></div>
   <div class="row"><select id="tz"></select></div>
   <button id="auto">自动匹配当前 IP</button>
+  <div class="muted" id="warn"></div>
   <div class="muted" id="status"></div>
   <script src="popup.js"></script>
 </body>

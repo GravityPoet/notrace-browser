@@ -10,7 +10,22 @@ const ZONES = [
 
 const sel = document.getElementById("tz");
 const cur = document.getElementById("cur");
+const engineEl = document.getElementById("engine");
+const warn = document.getElementById("warn");
 const st = document.getElementById("status");
+
+// Content scripts do not run on extension pages, so this popup's own Intl is the
+// engine's zone — the same one a page's Web Worker reports, and the one no
+// content script can reach.
+const engineZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+function render(tz) {
+  cur.textContent = tz || "无(跟随内核)";
+  engineEl.textContent = engineZone;
+  warn.textContent = tz && tz !== engineZone
+    ? "页面与 Worker 时区不一致,读取 Worker 的检测脚本能看出伪装。想彻底一致,请用带该时区的账号重新启动。"
+    : "";
+}
 
 async function load() {
   const { tz } = await chrome.storage.local.get("tz");
@@ -21,12 +36,12 @@ async function load() {
     if (z === tz) opt.selected = true;
     sel.add(opt);
   }
-  cur.textContent = tz || "未设置(系统默认)";
+  render(tz);
 }
 
 async function apply(tz) {
   await chrome.storage.local.set({ tz });
-  cur.textContent = tz;
+  render(tz);
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab) chrome.tabs.reload(tab.id);
 }

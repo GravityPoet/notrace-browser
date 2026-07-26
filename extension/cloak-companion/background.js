@@ -3,11 +3,18 @@
 // The race-free, cold-start-proof path is the declared content scripts
 // (seed.js + spoof.js/apply.js, document_start) driven by a localStorage seed.
 // This worker only:
-//   - auto-detects the IP timezone on first install (when none is chosen),
 //   - re-injects already-open tabs immediately when the zone changes,
 //   - provides a first-load fallback before the localStorage seed exists,
 //   - answers the popup's "detect my IP zone" request.
 // The page-visible spoof itself lives in spoof.js (single source of truth).
+//
+// It no longer applies an IP-detected zone on its own. A content script cannot
+// reach Web Workers, so a page-world zone that disagrees with the engine's makes
+// Intl in the page say one thing and Intl in a Worker say another — measured in
+// the engine at Asia/Shanghai against Asia/Tokyo. No real browser does that,
+// while the IP-vs-timezone mismatch the detection was correcting is what every
+// VPN user looks like. Trading a common signal for an impossible one is a bad
+// trade, so the zone now changes only when someone asks for it in the popup.
 
 try { importScripts("browser-identity-worker.js"); } catch (_) {}
 
@@ -23,11 +30,7 @@ installBrowserIdentityHeaderRules();
 
 async function init() {
   await installBrowserIdentityHeaderRules();
-  let { tz, auto } = await chrome.storage.local.get(["tz", "auto"]);
-  if (!tz && auto !== false) {
-    const detected = await detectIPTimezone();
-    if (detected) { tz = detected; await chrome.storage.local.set({ tz, autoDetected: detected }); }
-  }
+  const { tz } = await chrome.storage.local.get("tz");
   if (tz) injectOpenTabs(tz);
 }
 
