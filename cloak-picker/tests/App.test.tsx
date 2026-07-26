@@ -367,7 +367,7 @@ describe("Cloak Picker cross-account and failure-state regressions", () => {
     expect(buttonWithText("重试", toast ?? document)).toBeTruthy();
   });
 
-  it("distinguishes a failed first load from an genuinely empty account list", async () => {
+  it("distinguishes a failed first load from a genuinely empty account list", async () => {
     await act(async () => {
       root?.unmount();
     });
