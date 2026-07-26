@@ -73,7 +73,7 @@ assert(argv.some((arg) => arg.startsWith("--fingerprint=")), "missing --fingerpr
 assert(argv.includes("--fingerprint-platform=macos"), "missing --fingerprint-platform=macos");
 assert(argv.some((arg) => arg.startsWith("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")), "missing coherent macOS --user-agent");
 assert(argv.some((arg) => arg.startsWith("--load-extension=")), "missing --load-extension");
-assert(argv.some((arg) => arg.startsWith("--disable-extensions-except=")), "missing --disable-extensions-except");
+assert(!argv.some((arg) => arg.startsWith("--disable-extensions-except=")), "--disable-extensions-except blocks Web Store installs");
 assert(argv.includes("--ignore-gpu-blocklist"), "missing --ignore-gpu-blocklist");
 assert(argv.includes("--test-type"), "missing bad-flags infobar suppression");
 assert(!argv.includes("--enable-automation"), "must not enable Chromium automation mode");
@@ -106,7 +106,9 @@ assert((plan.selftest_extension_paths || []).every((path) => !path.includes("Chr
 assert((plan.selftest_extension_paths || []).every((path) => !path.includes("沉浸式翻译")), "headless selftest must exclude immersive translate");
 NODE
 
-LC_ALL=C grep -aq -- "--disable-extensions-except=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --disable-extensions-except"
+if LC_ALL=C grep -aq -- "--disable-extensions-except=" "$tmpdir/bash-dry-run.txt"; then
+  fail "Bash dry-run blocks Web Store installs with --disable-extensions-except"
+fi
 LC_ALL=C grep -aq -- "--user-agent=Mozilla/5.0" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --user-agent"
 LC_ALL=C grep -aq -- "10_15_7" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing coherent macOS UA version"
 LC_ALL=C grep -aq -- "--ignore-gpu-blocklist" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --ignore-gpu-blocklist"

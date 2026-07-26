@@ -851,7 +851,9 @@ fn build_launch_plan_for_url(
         format!("--fingerprint-platform={}", fingerprint_platform()),
         format!("--user-agent={user_agent}"),
         format!("--load-extension={load_extensions}"),
-        format!("--disable-extensions-except={load_extensions}"),
+        // Chromium treats --disable-extensions-except as global extension
+        // disablement, which makes Web Store CRX installs fail with
+        // INSTALL_NOT_ENABLED even when the store companion is loaded.
         "--no-first-run".to_string(),
         "--no-default-browser-check".to_string(),
         "--ignore-gpu-blocklist".to_string(),
@@ -3244,7 +3246,7 @@ mod tests {
             .argv
             .iter()
             .any(|arg| arg.starts_with("--load-extension=")));
-        assert!(plan
+        assert!(!plan
             .argv
             .iter()
             .any(|arg| arg.starts_with("--disable-extensions-except=")));
@@ -3292,6 +3294,14 @@ mod tests {
             store_plan.argv.last().map(String::as_str),
             Some(CHROME_WEB_STORE_URL)
         );
+        assert!(store_plan
+            .argv
+            .iter()
+            .any(|arg| arg.starts_with("--load-extension=")));
+        assert!(!store_plan
+            .argv
+            .iter()
+            .any(|arg| arg.starts_with("--disable-extensions-except=")));
         assert_eq!(
             chatgpt_plan.profile_path, store_plan.profile_path,
             "store launch must keep the selected account profile"
