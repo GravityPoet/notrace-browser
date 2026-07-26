@@ -423,6 +423,33 @@ function installFingerprintSpoof(fpSeed) {
     }
     var nativeGetImageData = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype.getImageData;
     var nativePutImageData = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype.putImageData;
+
+    // Deriving the offsets costs ~40 string hashes per call, which dwarfed the
+    // handful of byte writes they describe: getImageData measured 1.1µs native
+    // against 7.9µs wrapped, and a page that reads pixels in a loop paid that on
+    // every iteration. The offsets depend only on the seed, the label and the
+    // pixel dimensions, so derive them once per shape; the values are unchanged.
+    // The cache is bounded because a page may ask for arbitrarily many rects.
+    var pointPlans = new Map();
+    function pointPlan(label, w, h) {
+      var key = label + ":" + w + "x" + h;
+      var points = pointPlans.get(key);
+      if (points) return points;
+      points = [];
+      for (var i = 0; i < 8; i++) {
+        var base = label + ":" + i;
+        points.push([
+          noiseFor(base + ":x:" + w, w),
+          noiseFor(base + ":y:" + h, h),
+          1 + noiseFor(base + ":r", 7),
+          1 + noiseFor(base + ":g", 7),
+          1 + noiseFor(base + ":b", 7),
+        ]);
+      }
+      if (pointPlans.size > 64) pointPlans.clear();
+      pointPlans.set(key, points);
+      return points;
+    }
     function restoreCanvasNoise(ctx, originals) {
       for (var i = originals.length - 1; i >= 0; i--) {
         try { nativePutImageData.call(ctx, originals[i][2], originals[i][0], originals[i][1]); } catch (_) {}
@@ -434,17 +461,16 @@ function installFingerprintSpoof(fpSeed) {
         if (!canvas || !canvas.width || !canvas.height) return null;
         ctx = canvas.getContext && canvas.getContext("2d");
         if (!ctx || !nativeGetImageData || !nativePutImageData) return null;
+        var points = pointPlan(label, canvas.width, canvas.height);
         originals = [];
         for (var i = 0; i < 8; i++) {
-          var base = label + ":" + i;
-          var x = noiseFor(base + ":x:" + canvas.width, canvas.width);
-          var y = noiseFor(base + ":y:" + canvas.height, canvas.height);
+          var point = points[i], x = point[0], y = point[1];
           var original = nativeGetImageData.call(ctx, x, y, 1, 1);
           var changed = nativeGetImageData.call(ctx, x, y, 1, 1);
           var data = changed.data;
-          data[0] = (data[0] + 1 + noiseFor(base + ":r", 7)) & 255;
-          data[1] = (data[1] + 1 + noiseFor(base + ":g", 7)) & 255;
-          data[2] = (data[2] + 1 + noiseFor(base + ":b", 7)) & 255;
+          data[0] = (data[0] + point[2]) & 255;
+          data[1] = (data[1] + point[3]) & 255;
+          data[2] = (data[2] + point[4]) & 255;
           data[3] = 255;
           originals.push([x, y, original]);
           nativePutImageData.call(ctx, changed, x, y);
@@ -500,27 +526,31 @@ function installFingerprintSpoof(fpSeed) {
       };
     });
     if (window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype) {
+      // Fingerprinters routinely hash a strided sample of the buffer instead of
+      // every byte, so land extra perturbations on the stride as well. These
+      // deltas depend on neither the rect nor the canvas, so derive them once.
+      var sampleDeltas = [];
+      for (var s = 0; s < 8; s++) sampleDeltas.push(1 + noiseFor("getImageData:sample:" + s, 251));
       wrap(CanvasRenderingContext2D.prototype, "getImageData", function (orig) {
         return function () {
           var image = orig.apply(this, arguments);
           try {
             var w = Math.max(1, image.width || arguments[2] || 1);
             var h = Math.max(1, image.height || arguments[3] || 1);
+            var data = image.data, len = data.length;
+            var points = pointPlan("getImageData", w, h);
             for (var i = 0; i < 8; i++) {
-              var base = "getImageData:" + i;
-              var px = noiseFor(base + ":x:" + w, w);
-              var py = noiseFor(base + ":y:" + h, h);
-              var idx = (py * w + px) * 4;
-              if (idx + 3 < image.data.length) {
-                image.data[idx] = (image.data[idx] + 1 + noiseFor(base + ":r", 7)) & 255;
-                image.data[idx + 1] = (image.data[idx + 1] + 1 + noiseFor(base + ":g", 7)) & 255;
-                image.data[idx + 2] = (image.data[idx + 2] + 1 + noiseFor(base + ":b", 7)) & 255;
-                image.data[idx + 3] = 255;
+              var point = points[i], idx = (point[1] * w + point[0]) * 4;
+              if (idx + 3 < len) {
+                data[idx] = (data[idx] + point[2]) & 255;
+                data[idx + 1] = (data[idx + 1] + point[3]) & 255;
+                data[idx + 2] = (data[idx + 2] + point[4]) & 255;
+                data[idx + 3] = 255;
               }
             }
-            for (var j = 0; j < 8 && image.data.length; j++) {
-              var sample = (j * 113) % image.data.length;
-              image.data[sample] = (image.data[sample] + 1 + noiseFor("getImageData:sample:" + j, 251)) & 255;
+            for (var j = 0; j < 8 && len; j++) {
+              var sample = (j * 113) % len;
+              data[sample] = (data[sample] + sampleDeltas[j]) & 255;
             }
           } catch (_) {}
           return image;
