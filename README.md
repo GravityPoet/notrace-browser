@@ -22,7 +22,7 @@ graph TD
     A[Cloak Picker App / CLI] -->|Launches with Seed & Proxy| B(NoTrace Account Profile)
     B -->|C++ Fingerprint Patches| C[Spoofed Canvas, WebGL, Audio & Client Hints]
     B -->|Proxy Relay Launcher| D[Authenticated SOCKS5 Exit]
-    B -->|Companion Extension| E[Matched Intl Timezone / Worker TZ]
+    B -->|TZ env + engine timezone flag| E[Intl Timezone matched in page and Worker]
     B -->|TCC Patched Engine| F[Microphone Voice / Bluetooth Passkeys]
     D -->|Target Network| G[Websites / AI / Web3 / Socials / eCommerce]
 ```
