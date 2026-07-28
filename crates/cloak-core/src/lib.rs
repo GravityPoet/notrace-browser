@@ -33,6 +33,8 @@ const HTTPS_ONLY_MODE_PREF: &str = "https_only_mode_enabled";
 const LOCAL_NETWORK_CONTENT_SETTINGS: &[&str] =
     &["local_network_access", "local_network", "loopback_network"];
 const LOCAL_NETWORK_MIGRATION_PREF: &str = "has_migrated_local_network_access";
+const FAKE_IP_ADDRESS_SPACE_OVERRIDE: &str =
+    "--ip-address-space-overrides=198.18.0.0/15=public,[fdfe:dcba:9876::]/48=public";
 const CONTENT_SETTING_ALLOW: i64 = 1;
 const CONTENT_SETTING_BLOCK: i64 = 2;
 const EXTENSION_MIME_REQUEST_HANDLING_FLAG: &str = "extension-mime-request-handling@2";
@@ -896,6 +898,10 @@ fn build_launch_plan_for_url(
         format!("--fingerprint-platform={}", fingerprint_platform()),
         format!("--user-agent={user_agent}"),
         format!("--load-extension={load_extensions}"),
+        // Clash-style fake-IP DNS uses reserved IPv4/IPv6 ranges. Chromium
+        // otherwise classifies cross-origin CDN traffic as local-network access.
+        // This leaves actual RFC1918 and loopback destinations protected.
+        FAKE_IP_ADDRESS_SPACE_OVERRIDE.to_string(),
         // Chromium treats --disable-extensions-except as global extension
         // disablement, which makes Web Store CRX installs fail with
         // INSTALL_NOT_ENABLED even when the store companion is loaded.
@@ -3511,6 +3517,10 @@ mod tests {
             .argv
             .iter()
             .any(|arg| arg.starts_with("--disable-extensions-except=")));
+        assert!(plan
+            .argv
+            .iter()
+            .any(|arg| arg == FAKE_IP_ADDRESS_SPACE_OVERRIDE));
         assert!(plan.argv.iter().any(|arg| arg == "--ignore-gpu-blocklist"));
         assert!(plan.argv.iter().any(|arg| arg == "--test-type"));
         assert!(!plan.argv.iter().any(|arg| arg == "--enable-automation"));

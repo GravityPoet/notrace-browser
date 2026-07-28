@@ -74,6 +74,7 @@ assert(argv.includes("--fingerprint-platform=macos"), "missing --fingerprint-pla
 assert(argv.some((arg) => arg.startsWith("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")), "missing coherent macOS --user-agent");
 assert(argv.some((arg) => arg.startsWith("--load-extension=")), "missing --load-extension");
 assert(!argv.some((arg) => arg.startsWith("--disable-extensions-except=")), "--disable-extensions-except blocks Web Store installs");
+assert(argv.includes("--ip-address-space-overrides=198.18.0.0/15=public,[fdfe:dcba:9876::]/48=public"), "missing fake-IP address-space override");
 assert(argv.includes("--ignore-gpu-blocklist"), "missing --ignore-gpu-blocklist");
 assert(argv.includes("--test-type"), "missing bad-flags infobar suppression");
 assert(!argv.includes("--enable-automation"), "must not enable Chromium automation mode");
@@ -111,6 +112,8 @@ if LC_ALL=C grep -aq -- "--disable-extensions-except=" "$tmpdir/bash-dry-run.txt
 fi
 LC_ALL=C grep -aq -- "--user-agent=Mozilla/5.0" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --user-agent"
 LC_ALL=C grep -aq -- "10_15_7" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing coherent macOS UA version"
+LC_ALL=C grep -Fq -- "--ip-address-space-overrides=198.18.0.0/15=public" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing IPv4 fake-IP address-space override"
+LC_ALL=C grep -Fq -- "fdfe:dcba:9876::" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing IPv6 fake-IP address-space override"
 LC_ALL=C grep -aq -- "--ignore-gpu-blocklist" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --ignore-gpu-blocklist"
 LC_ALL=C grep -aq -- "--test-type" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing bad-flags infobar suppression"
 if LC_ALL=C grep -aq -- "--enable-automation" "$tmpdir/bash-dry-run.txt"; then
