@@ -816,6 +816,9 @@ args=(
   "--fingerprint-platform=macos"
   "--user-agent=$CLOAK_USER_AGENT"
   "--load-extension=$load_extensions"
+  # Clash-style fake-IP DNS uses reserved IPv4/IPv6 ranges. Treat only those
+  # ranges as public while Chromium keeps real LAN and loopback access blocked.
+  "--ip-address-space-overrides=198.18.0.0/15=public,[fdfe:dcba:9876::]/48=public"
   # Do not add --disable-extensions-except here: Chromium treats it as global
   # extension disablement and rejects Chrome Web Store CRX installs.
   "--no-first-run"
