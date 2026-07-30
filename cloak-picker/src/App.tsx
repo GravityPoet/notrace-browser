@@ -365,6 +365,33 @@ export default function App() {
     }
   }
 
+  function handleAccountSearchChange(value: string) {
+    setAccountSearch(value);
+    const normalizedSearch = normalizeAccountSearch(value);
+    if (!normalizedSearch) return;
+
+    setSelectedGroup(allGroupsValue);
+    const match = searchAccounts(allOrderedAccounts, normalizedSearch)[0] ?? null;
+    if (!match) return;
+
+    const matchingGroup = accountGroupLabel(match);
+    setAccountView(match.trashed ? "trash" : "active");
+    setCollapsedGroups((current) =>
+      current.includes(matchingGroup) ? current.filter((label) => label !== matchingGroup) : current,
+    );
+    setSelectedName(match.name);
+  }
+
+  function handleAccountViewChange(view: AccountView) {
+    setAccountSearch("");
+    setAccountView(view);
+  }
+
+  function handleAccountSelection(name: string) {
+    setAccountSearch("");
+    setSelectedName(name);
+  }
+
   useEffect(() => {
     void run(() => refresh(undefined, "active"));
   }, []);
@@ -378,15 +405,24 @@ export default function App() {
 
   useEffect(() => {
     if (!hasAccountSearch) return;
-    setSelectedGroup(allGroupsValue);
+    if (selectedGroup !== allGroupsValue) setSelectedGroup(allGroupsValue);
     if (!accountSearchMatch) return;
     const matchingGroup = accountGroupLabel(accountSearchMatch);
-    setAccountView(accountSearchMatch.trashed ? "trash" : "active");
+    const matchingView = accountSearchMatch.trashed ? "trash" : "active";
+    if (accountView !== matchingView) setAccountView(matchingView);
     setCollapsedGroups((current) =>
       current.includes(matchingGroup) ? current.filter((label) => label !== matchingGroup) : current,
     );
-    setSelectedName(accountSearchMatch.name);
-  }, [accountSearchMatch?.group, accountSearchMatch?.name, accountSearchMatch?.trashed, hasAccountSearch]);
+    if (selectedName !== accountSearchMatch.name) setSelectedName(accountSearchMatch.name);
+  }, [
+    accountSearchMatch?.group,
+    accountSearchMatch?.name,
+    accountSearchMatch?.trashed,
+    accountView,
+    hasAccountSearch,
+    selectedGroup,
+    selectedName,
+  ]);
 
   useEffect(() => {
     if (!accountSearchMatch || selected?.name !== accountSearchMatch.name) return;
@@ -661,6 +697,7 @@ export default function App() {
     if (account.trashed) return;
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", account.name);
+    setAccountSearch("");
     setAccountDropTarget(null);
     setDraggingAccountName(account.name);
     setSelectedName(account.name);
@@ -762,6 +799,7 @@ export default function App() {
       accountContextMenuHeight(groupOptions.length, account.marked),
     );
     setGroupContextMenu(null);
+    setAccountSearch("");
     setSelectedName(account.name);
     setAccountContextMenu({
       account,
@@ -811,6 +849,7 @@ export default function App() {
     setDraggingGroupLabel("");
     setDropTargetGroup("");
     if (start && !moved) {
+      setAccountSearch("");
       setSelectedGroup(start.label);
     }
     window.setTimeout(() => {
@@ -823,6 +862,7 @@ export default function App() {
       groupDragMovedRef.current = false;
       return;
     }
+    setAccountSearch("");
     if (group.value === allGroupsValue && selectedGroup === allGroupsValue) {
       toggleAllGroupsCollapsed();
       return;
@@ -862,6 +902,7 @@ export default function App() {
   }
 
   function toggleGroupCollapse(groupLabel: string) {
+    setAccountSearch("");
     setCollapsedGroups((current) => toggleStringInArray(current, groupLabel));
   }
 
@@ -1190,7 +1231,7 @@ export default function App() {
               spellCheck={false}
               type="search"
               value={accountSearch}
-              onChange={(event) => setAccountSearch(event.currentTarget.value)}
+              onChange={(event) => handleAccountSearchChange(event.currentTarget.value)}
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
                   setAccountSearch("");
@@ -1228,7 +1269,7 @@ export default function App() {
               type="button"
               role="tab"
               aria-selected={accountView === "active"}
-              onClick={() => setAccountView("active")}
+              onClick={() => handleAccountViewChange("active")}
             >
               活跃
             </button>
@@ -1237,7 +1278,7 @@ export default function App() {
               type="button"
               role="tab"
               aria-selected={accountView === "trash"}
-              onClick={() => setAccountView("trash")}
+              onClick={() => handleAccountViewChange("trash")}
             >
               回收站
             </button>
@@ -1309,6 +1350,28 @@ export default function App() {
           </div>
 
           <div className="accountList" ref={accountListRef}>
+            {hasAccountSearch ? (
+              <div
+                className={`searchLocateStatus ${accountSearchMatch ? "matched" : "notFound"}`}
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                <Search aria-hidden="true" size={13} />
+                {accountSearchMatch ? (
+                  <span title={accountSearchMatch.name}>
+                    <strong>已定位</strong>
+                    {middleTruncate(accountSearchMatch.name, 30)} · {accountSearchMatch.trashed ? "回收站" : "活跃"} ·{" "}
+                    {accountGroupLabel(accountSearchMatch)}
+                  </span>
+                ) : (
+                  <span>
+                    <strong>未找到</strong>
+                    所有位置均未找到匹配账号
+                  </span>
+                )}
+              </div>
+            ) : null}
             {visibleAccounts.length === 0 && loadError ? (
               // "暂无活跃账号" next to a full disk of accounts is a lie, and the
               // error toast has already auto-dismissed by the time anyone looks.
@@ -1358,7 +1421,7 @@ export default function App() {
                   onLaunchAccount={launchAccount}
                   onOpenAccountContextMenu={openAccountContextMenu}
                   onRestoreAccount={restoreAccount}
-                  onSelectAccount={setSelectedName}
+                  onSelectAccount={handleAccountSelection}
                   onStartAccountDrag={startAccountDrag}
                   onToggleCollapse={toggleGroupCollapse}
                   searching={false}
