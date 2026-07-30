@@ -91,6 +91,10 @@ beforeEach(async () => {
   ) {
     return (this.isConnected ? [new DOMRect(0, 0, 1, 1)] : []) as unknown as DOMRectList;
   });
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: vi.fn(),
+  });
 
   container = document.createElement("div");
   document.body.append(container);
@@ -186,34 +190,52 @@ describe("Cloak Picker dialog regressions", () => {
     );
   });
 
-  it("searches every group and the trash without switching scope", async () => {
+  it("locates a matching account inside the complete left list", async () => {
     const codexGroup = document.querySelector<HTMLButtonElement>('[data-group-label="codex"] .groupFilterSelect');
     expect(codexGroup).not.toBeNull();
     await click(codexGroup as HTMLButtonElement);
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(2);
 
     const accountSearch = document.querySelector<HTMLInputElement>('input[type="search"]');
     expect(accountSearch).not.toBeNull();
-    await inputText(accountSearch as HTMLInputElement, "old-lab");
+    await inputText(accountSearch as HTMLInputElement, "missing-account");
     await settle(30);
 
-    expect(document.querySelector(".viewSwitch")).toBeNull();
-    expect(document.querySelector(".groupFilter")).toBeNull();
-    expect(document.querySelector(".accountGroupHeader")).toBeNull();
-    expect(document.querySelector(".searchScopeSummary")?.textContent).toContain("全部位置");
-    expect(document.querySelector(".searchScopeSummary")?.textContent).toContain("1 个匹配");
-    expect(document.querySelector(".searchScopeSummary")?.textContent).toContain("0 活跃 · 1 回收站");
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(3);
+    expect(document.querySelector<HTMLButtonElement>(".groupFilterSelect[aria-pressed=\"true\"]")?.textContent).toContain(
+      "全部",
+    );
 
-    const resultRows = Array.from(document.querySelectorAll<HTMLButtonElement>(".accountRow"));
-    expect(resultRows).toHaveLength(1);
-    expect(resultRows[0].textContent).toContain("old-lab");
-    expect(resultRows[0].querySelector(".accountLocationTag")?.textContent).toContain("回收站");
-    await click(resultRows[0]);
+    await inputText(accountSearch as HTMLInputElement, "demo-gamma-copy");
+    await settle(30);
 
-    expect(document.querySelector(".detail")?.textContent).toContain("已移入回收站");
-    expect(buttonWithText("恢复账号")).toBeTruthy();
+    expect(document.querySelector(".viewSwitch")).not.toBeNull();
+    expect(document.querySelector(".groupFilter")).not.toBeNull();
+    expect(document.querySelector(".accountGroupHeader")).not.toBeNull();
+    expect(document.querySelector(".searchScopeSummary")).toBeNull();
+    expect(document.querySelector<HTMLButtonElement>('.viewSwitch [role="tab"][aria-selected="true"]')?.textContent).toContain(
+      "活跃",
+    );
+    expect(document.querySelector<HTMLButtonElement>(".groupFilterSelect[aria-pressed=\"true\"]")?.textContent).toContain(
+      "全部",
+    );
+
+    const accountRows = Array.from(document.querySelectorAll<HTMLButtonElement>(".accountRow"));
+    expect(accountRows).toHaveLength(3);
+    expect(accountRows.map((row) => row.querySelector(".accountTitle strong")?.textContent)).toEqual([
+      "demo-alpha@example.test",
+      "demo-beta",
+      "demo-gamma-copy",
+    ]);
+    const selectedRow = accountRows.find((row) => row.classList.contains("selected"));
+    expect(selectedRow?.querySelector(".accountTitle strong")?.textContent).toBe("demo-gamma-copy");
+    expect(selectedRow?.querySelector(".accountLocationTag")).toBeNull();
+    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
+
+    expect(document.querySelector(".detail h1")?.textContent).toBe("demo-gamma-copy");
   });
 
-  it("ranks an exact account name before broader matches across locations", async () => {
+  it("ranks an exact account across locations and opens its complete view", async () => {
     const claudeGroup = document.querySelector<HTMLButtonElement>('[data-group-label="claude"] .groupFilterSelect');
     expect(claudeGroup).not.toBeNull();
     await click(claudeGroup as HTMLButtonElement);
@@ -222,12 +244,18 @@ describe("Cloak Picker dialog regressions", () => {
     await inputText(accountSearch as HTMLInputElement, "demo-gamma");
     await settle(30);
 
-    const resultRows = Array.from(document.querySelectorAll<HTMLButtonElement>(".accountRow"));
-    expect(resultRows).toHaveLength(2);
-    expect(resultRows[0].querySelector(".accountTitle strong")?.textContent).toBe("demo-gamma");
-    expect(resultRows[0].querySelector(".accountLocationTag")?.textContent).toContain("回收站");
-    expect(resultRows[1].querySelector(".accountTitle strong")?.textContent).toBe("demo-gamma-copy");
-    expect(resultRows[1].querySelector(".accountLocationTag")?.textContent).toContain("活跃");
+    expect(document.querySelector<HTMLButtonElement>('.viewSwitch [role="tab"][aria-selected="true"]')?.textContent).toContain(
+      "回收站",
+    );
+    const accountRows = Array.from(document.querySelectorAll<HTMLButtonElement>(".accountRow"));
+    expect(accountRows).toHaveLength(2);
+    expect(accountRows.map((row) => row.querySelector(".accountTitle strong")?.textContent)).toEqual([
+      "demo-gamma",
+      "old-lab",
+    ]);
+    expect(accountRows[0].classList.contains("selected")).toBe(true);
+    expect(document.querySelector(".detail h1")?.textContent).toBe("demo-gamma");
+    expect(document.querySelector(".detail")?.textContent).toContain("已移入回收站");
   });
 
   it("shows actual launch diagnostics after the single launch request completes", async () => {
