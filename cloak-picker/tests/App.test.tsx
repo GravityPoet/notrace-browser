@@ -202,6 +202,7 @@ describe("Cloak Picker dialog regressions", () => {
     await settle(30);
 
     expect(document.querySelectorAll(".accountRow")).toHaveLength(3);
+    expect(document.querySelector(".searchLocateStatus")?.textContent).toContain("所有位置均未找到匹配账号");
     expect(document.querySelector<HTMLButtonElement>(".groupFilterSelect[aria-pressed=\"true\"]")?.textContent).toContain(
       "全部",
     );
@@ -256,6 +257,26 @@ describe("Cloak Picker dialog regressions", () => {
     expect(accountRows[0].classList.contains("selected")).toBe(true);
     expect(document.querySelector(".detail h1")?.textContent).toBe("demo-gamma");
     expect(document.querySelector(".detail")?.textContent).toContain("已移入回收站");
+  });
+
+  it("clears a stale locator when the user manually leaves its result", async () => {
+    const accountSearch = document.querySelector<HTMLInputElement>('input[type="search"]');
+    await inputText(accountSearch as HTMLInputElement, "demo-gamma");
+    await settle(30);
+
+    expect(accountSearch?.value).toBe("demo-gamma");
+    expect(document.querySelector(".searchLocateStatus")?.textContent).toContain("已定位");
+    expect(document.querySelector<HTMLButtonElement>('.viewSwitch [role="tab"][aria-selected="true"]')?.textContent).toContain(
+      "回收站",
+    );
+
+    await click(buttonWithText("活跃"));
+
+    expect(accountSearch?.value).toBe("");
+    expect(document.querySelector(".searchLocateStatus")).toBeNull();
+    expect(document.querySelector<HTMLButtonElement>('.viewSwitch [role="tab"][aria-selected="true"]')?.textContent).toContain(
+      "活跃",
+    );
   });
 
   it("shows actual launch diagnostics after the single launch request completes", async () => {
