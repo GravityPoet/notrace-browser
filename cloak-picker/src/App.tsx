@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Folder,
   GripVertical,
   Globe2,
@@ -31,6 +32,7 @@ import {
   type CSSProperties,
   type DragEvent,
   type FormEvent,
+  type KeyboardEvent,
   type MouseEvent,
   type PointerEvent,
   type ReactNode,
@@ -287,13 +289,16 @@ export default function App() {
   const allOrderedAccounts = useMemo(() => orderAccounts(allAccounts, accountOrder), [allAccounts, accountOrder]);
   const normalizedAccountSearch = normalizeAccountSearch(accountSearch);
   const hasAccountSearch = normalizedAccountSearch.length > 0;
-  const accountSearchMatch = useMemo(
+  const accountSearchMatches = useMemo(
     () =>
       hasAccountSearch
-        ? searchAccounts(allOrderedAccounts, normalizedAccountSearch)[0] ?? null
-        : null,
+        ? searchAccounts(allOrderedAccounts, normalizedAccountSearch)
+        : [],
     [allOrderedAccounts, hasAccountSearch, normalizedAccountSearch],
   );
+  const selectedAccountSearchIndex = accountSearchMatches.findIndex((account) => account.name === selectedName);
+  const accountSearchIndex = selectedAccountSearchIndex >= 0 ? selectedAccountSearchIndex : 0;
+  const accountSearchMatch = accountSearchMatches[accountSearchIndex] ?? null;
   const groupFilters = useMemo(
     () => buildGroupFilters(accounts, groupOrder, hiddenGroups),
     [accounts, groupOrder, hiddenGroups],
@@ -382,6 +387,36 @@ export default function App() {
     setSelectedName(match.name);
   }
 
+  function moveAccountSearchMatch(offset: number) {
+    if (accountSearchMatches.length < 2) return;
+    const nextIndex = (accountSearchIndex + offset + accountSearchMatches.length) % accountSearchMatches.length;
+    const match = accountSearchMatches[nextIndex];
+    const matchingGroup = accountGroupLabel(match);
+    setSelectedGroup(allGroupsValue);
+    setAccountView(match.trashed ? "trash" : "active");
+    setCollapsedGroups((current) =>
+      current.includes(matchingGroup) ? current.filter((label) => label !== matchingGroup) : current,
+    );
+    setSelectedName(match.name);
+  }
+
+  function handleAccountSearchKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      setAccountSearch("");
+      event.currentTarget.blur();
+      return;
+    }
+    if (event.key === "ArrowDown" || (event.key === "Enter" && !event.shiftKey)) {
+      event.preventDefault();
+      moveAccountSearchMatch(1);
+      return;
+    }
+    if (event.key === "ArrowUp" || (event.key === "Enter" && event.shiftKey)) {
+      event.preventDefault();
+      moveAccountSearchMatch(-1);
+    }
+  }
+
   function handleAccountViewChange(view: AccountView) {
     setAccountSearch("");
     setAccountView(view);
@@ -429,7 +464,7 @@ export default function App() {
     const frame = window.requestAnimationFrame(() => {
       accountListRef.current
         ?.querySelector<HTMLElement>(".accountRow.selected")
-        ?.scrollIntoView?.({ block: "nearest" });
+        ?.scrollIntoView?.({ block: "center", inline: "nearest" });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [accountSearchMatch?.name, accountView, collapsedGroups, selected?.name, selectedGroup]);
@@ -1222,9 +1257,10 @@ export default function App() {
           </div>
         </div>
         <div className="accountSearch">
-          <div className="accountSearchField">
+          <div className={`accountSearchField ${hasAccountSearch && !accountSearchMatch ? "notFound" : ""}`}>
             <Search aria-hidden="true" size={15} />
             <input
+              aria-describedby={hasAccountSearch ? "account-search-result-status" : undefined}
               aria-label="搜索账号"
               autoComplete="off"
               placeholder="搜索所有账号、分组或标记"
@@ -1232,15 +1268,51 @@ export default function App() {
               type="search"
               value={accountSearch}
               onChange={(event) => handleAccountSearchChange(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  setAccountSearch("");
-                  event.currentTarget.blur();
-                }
-              }}
+              onKeyDown={handleAccountSearchKeyDown}
             />
             {hasAccountSearch ? (
-              <button aria-label="清除搜索" title="清除搜索" type="button" onClick={() => setAccountSearch("")}>
+              <div className="accountSearchNavigator" aria-label="搜索结果导航">
+                <span
+                  className={`accountSearchResultStatus ${accountSearchMatch ? "" : "notFound"}`}
+                  id="account-search-result-status"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >
+                  {accountSearchMatch ? `${accountSearchIndex + 1}/${accountSearchMatches.length}` : "无匹配"}
+                </span>
+                {accountSearchMatches.length > 1 ? (
+                  <>
+                    <button
+                      aria-label="上一个匹配"
+                      className="accountSearchNavButton"
+                      title="上一个匹配（↑ 或 Shift+Enter）"
+                      type="button"
+                      onClick={() => moveAccountSearchMatch(-1)}
+                    >
+                      <ChevronUp aria-hidden="true" size={11} />
+                    </button>
+                    <button
+                      aria-label="下一个匹配"
+                      className="accountSearchNavButton"
+                      title="下一个匹配（↓ 或 Enter）"
+                      type="button"
+                      onClick={() => moveAccountSearchMatch(1)}
+                    >
+                      <ChevronDown aria-hidden="true" size={11} />
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+            {hasAccountSearch ? (
+              <button
+                aria-label="清除搜索"
+                className="accountSearchClear"
+                title="清除搜索"
+                type="button"
+                onClick={() => setAccountSearch("")}
+              >
                 <X aria-hidden="true" size={11} />
               </button>
             ) : null}
@@ -1350,28 +1422,6 @@ export default function App() {
           </div>
 
           <div className="accountList" ref={accountListRef}>
-            {hasAccountSearch ? (
-              <div
-                className={`searchLocateStatus ${accountSearchMatch ? "matched" : "notFound"}`}
-                role="status"
-                aria-live="polite"
-                aria-atomic="true"
-              >
-                <Search aria-hidden="true" size={13} />
-                {accountSearchMatch ? (
-                  <span title={accountSearchMatch.name}>
-                    <strong>已定位</strong>
-                    {middleTruncate(accountSearchMatch.name, 30)} · {accountSearchMatch.trashed ? "回收站" : "活跃"} ·{" "}
-                    {accountGroupLabel(accountSearchMatch)}
-                  </span>
-                ) : (
-                  <span>
-                    <strong>未找到</strong>
-                    所有位置均未找到匹配账号
-                  </span>
-                )}
-              </div>
-            ) : null}
             {visibleAccounts.length === 0 && loadError ? (
               // "暂无活跃账号" next to a full disk of accounts is a lie, and the
               // error toast has already auto-dismissed by the time anyone looks.
@@ -1424,6 +1474,7 @@ export default function App() {
                   onSelectAccount={handleAccountSelection}
                   onStartAccountDrag={startAccountDrag}
                   onToggleCollapse={toggleGroupCollapse}
+                  locatedName={hasAccountSearch ? accountSearchMatch?.name ?? "" : ""}
                   searching={false}
                   selectedName={selected?.name ?? ""}
                   setDraggingAccountName={setDraggingAccountName}
@@ -1785,6 +1836,7 @@ function AccountGroupSection({
   collapsed,
   dropTarget,
   group,
+  locatedName,
   searching,
   selectedName,
   onAllowAccountDrop,
@@ -1807,6 +1859,7 @@ function AccountGroupSection({
   collapsed: boolean;
   dropTarget: boolean;
   group: AccountGroup;
+  locatedName: string;
   searching: boolean;
   selectedName: string;
   onAllowAccountDrop: (event: DragEvent<HTMLButtonElement>, account: Account) => void;
@@ -1857,59 +1910,67 @@ function AccountGroupSection({
       )}
       {collapsed
         ? null
-        : group.accounts.map((account) => (
-            <button
-              className={`accountRow ${searching ? "searchResult" : ""} ${account.name === selectedName ? "selected" : ""} ${!searching && accountDropTarget?.name === account.name ? (accountDropTarget.edge === "before" ? "dropBefore" : "dropAfter") : ""}`}
-              draggable={!searching && !account.trashed}
-              key={account.name}
-              title={`${account.name}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${searching || account.trashed ? "" : "｜拖动可调整顺序或移动分组"}`}
-              onClick={() => onSelectAccount(account.name)}
-              onContextMenu={(event) => onOpenAccountContextMenu(event, account)}
-              onDoubleClick={() => {
-                if (account.trashed) {
-                  void onRestoreAccount(account);
-                } else {
-                  void onLaunchAccount(account);
-                }
-              }}
-              onDragEnd={searching ? undefined : () => {
-                setDraggingAccountName("");
-                setAccountDropTarget(null);
-                setDropTargetGroup("");
-              }}
-              onDragLeave={searching ? undefined : (event) => onLeaveAccountDrop(event, account.name)}
-              onDragOver={searching ? undefined : (event) => onAllowAccountDrop(event, account)}
-              onDragStart={searching ? undefined : (event) => onStartAccountDrag(event, account)}
-              onDrop={searching ? undefined : (event) => onDropAccountOnAccount(event, account)}
-            >
-              <span className="accountRail" />
-              <span className="accountMain">
-                <span className="accountTitle">
-                  {searching ? null : <GripVertical className="dragHandle" size={14} />}
-                  <strong title={account.name}>{middleTruncate(account.name, 34)}</strong>
-                  {searching ? (
-                    <span
-                      className={`accountLocationTag ${account.trashed ? "trashed" : "active"}`}
-                      title={`${account.trashed ? "回收站" : "活跃"} · ${accountGroupLabel(account)}`}
-                    >
-                      {account.trashed ? "回收站" : "活跃"} · {accountGroupLabel(account)}
-                    </span>
-                  ) : null}
-                  {account.marked ? (
-                    <span
-                      className={`accountMark ${account.mark_note ? "withNote" : ""}`}
-                      title={account.mark_note ?? "已标记"}
-                      aria-label={account.mark_note ? `标记：${account.mark_note}` : "已标记"}
-                    >
-                      <span className="markDot" aria-hidden="true" />
-                      {account.mark_note ? <span className="markNote">{middleTruncate(account.mark_note, 16)}</span> : null}
-                    </span>
-                  ) : null}
-                  <code>{formatCreatedDate(account.created_at)}</code>
+        : group.accounts.map((account) => {
+            const isLocated = account.name === locatedName;
+            return (
+              <button
+                aria-current={isLocated ? "true" : undefined}
+                className={`accountRow ${searching ? "searchResult" : ""} ${account.name === selectedName ? "selected" : ""} ${isLocated ? "searchLocated" : ""} ${!searching && accountDropTarget?.name === account.name ? (accountDropTarget.edge === "before" ? "dropBefore" : "dropAfter") : ""}`}
+                draggable={!searching && !account.trashed}
+                key={account.name}
+                title={`${account.name}${isLocated ? "｜当前搜索匹配" : ""}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${searching || account.trashed ? "" : "｜拖动可调整顺序或移动分组"}`}
+                onClick={() => onSelectAccount(account.name)}
+                onContextMenu={(event) => onOpenAccountContextMenu(event, account)}
+                onDoubleClick={() => {
+                  if (account.trashed) {
+                    void onRestoreAccount(account);
+                  } else {
+                    void onLaunchAccount(account);
+                  }
+                }}
+                onDragEnd={searching ? undefined : () => {
+                  setDraggingAccountName("");
+                  setAccountDropTarget(null);
+                  setDropTargetGroup("");
+                }}
+                onDragLeave={searching ? undefined : (event) => onLeaveAccountDrop(event, account.name)}
+                onDragOver={searching ? undefined : (event) => onAllowAccountDrop(event, account)}
+                onDragStart={searching ? undefined : (event) => onStartAccountDrag(event, account)}
+                onDrop={searching ? undefined : (event) => onDropAccountOnAccount(event, account)}
+              >
+                <span className="accountRail" />
+                <span className="accountMain">
+                  <span className="accountTitle">
+                    {searching ? null : isLocated ? (
+                      <Search className="searchMatchIcon" size={14} />
+                    ) : (
+                      <GripVertical className="dragHandle" size={14} />
+                    )}
+                    <strong title={account.name}>{middleTruncate(account.name, 34)}</strong>
+                    {searching ? (
+                      <span
+                        className={`accountLocationTag ${account.trashed ? "trashed" : "active"}`}
+                        title={`${account.trashed ? "回收站" : "活跃"} · ${accountGroupLabel(account)}`}
+                      >
+                        {account.trashed ? "回收站" : "活跃"} · {accountGroupLabel(account)}
+                      </span>
+                    ) : null}
+                    {account.marked ? (
+                      <span
+                        className={`accountMark ${account.mark_note ? "withNote" : ""}`}
+                        title={account.mark_note ?? "已标记"}
+                        aria-label={account.mark_note ? `标记：${account.mark_note}` : "已标记"}
+                      >
+                        <span className="markDot" aria-hidden="true" />
+                        {account.mark_note ? <span className="markNote">{middleTruncate(account.mark_note, 16)}</span> : null}
+                      </span>
+                    ) : null}
+                    <code>{formatCreatedDate(account.created_at)}</code>
+                  </span>
                 </span>
-              </span>
-            </button>
-          ))}
+              </button>
+            );
+          })}
     </section>
   );
 }

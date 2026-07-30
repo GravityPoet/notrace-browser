@@ -245,49 +245,6 @@ summary:focus-visible {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
-.searchLocateStatus {
-  position: sticky;
-  z-index: 2;
-  top: -6px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--accent-soft);
-  color: var(--muted);
-  font-size: 11px;
-  letter-spacing: -0.12px;
-}
-
-.searchLocateStatus > svg {
-  flex: 0 0 auto;
-  color: var(--accent);
-}
-
-.searchLocateStatus span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.searchLocateStatus strong {
-  margin-right: 6px;
-  color: var(--accent);
-  font-weight: 650;
-}
-
-.searchLocateStatus.notFound {
-  background: var(--danger-soft);
-}
-
-.searchLocateStatus.notFound > svg,
-.searchLocateStatus.notFound strong {
-  color: var(--danger);
-}
-
 .accountSearch {
   display: flex;
   align-items: center;
@@ -318,6 +275,14 @@ summary:focus-visible {
   box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.14);
 }
 
+.accountSearchField.notFound {
+  border-color: rgba(217, 45, 32, 0.42);
+}
+
+.accountSearchField.notFound:focus-within {
+  box-shadow: 0 0 0 2px rgba(217, 45, 32, 0.1);
+}
+
 .accountSearchField > svg {
   flex: 0 0 auto;
 }
@@ -342,7 +307,39 @@ summary:focus-visible {
   display: none;
 }
 
-.accountSearchField button {
+.accountSearchNavigator {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 1px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.045);
+  padding: 0 2px 0 0;
+}
+
+.accountSearchResultStatus {
+  min-width: 34px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 0 6px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.accountSearchResultStatus.notFound {
+  min-width: auto;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.accountSearchNavButton,
+.accountSearchClear {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -357,7 +354,16 @@ summary:focus-visible {
   padding: 0;
 }
 
-.accountSearchField button:hover {
+.accountSearchNavButton {
+  background: transparent;
+}
+
+.accountSearchNavButton:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--text);
+}
+
+.accountSearchClear:hover {
   background: rgba(0, 0, 0, 0.14);
   color: var(--text);
 }
@@ -611,7 +617,7 @@ summary:focus-visible {
   color: inherit;
   text-align: left;
   cursor: pointer;
-  scroll-margin-block: 36px 8px;
+  scroll-margin-block: 12px;
   transition: background 140ms ease, color 140ms ease, opacity 140ms ease;
 }
 
@@ -626,6 +632,15 @@ summary:focus-visible {
 .accountRow.selected {
   background: rgba(255, 255, 255, 0.9);
   box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.14);
+}
+
+.accountRow.searchLocated {
+  background: rgba(0, 113, 227, 0.13);
+  box-shadow: inset 0 0 0 2px rgba(0, 113, 227, 0.38), 0 5px 16px rgba(0, 113, 227, 0.12);
+}
+
+.accountRow.searchLocated:hover {
+  background: rgba(0, 113, 227, 0.16);
 }
 
 .accountRow.dropBefore::before,
@@ -679,6 +694,11 @@ summary:focus-visible {
 .dragHandle {
   flex: 0 0 auto;
   color: var(--soft);
+}
+
+.searchMatchIcon {
+  flex: 0 0 auto;
+  color: var(--accent);
 }
 
 .accountTitle strong {

@@ -83,6 +83,17 @@ async function pressKey(key: string, shiftKey = false) {
   });
 }
 
+async function pressKeyOn(element: HTMLElement, key: string, shiftKey = false) {
+  await act(async () => {
+    element.dispatchEvent(new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key,
+      shiftKey,
+    }));
+  });
+}
+
 beforeEach(async () => {
   installMemoryStorage();
   window.localStorage.clear();
@@ -202,7 +213,9 @@ describe("Cloak Picker dialog regressions", () => {
     await settle(30);
 
     expect(document.querySelectorAll(".accountRow")).toHaveLength(3);
-    expect(document.querySelector(".searchLocateStatus")?.textContent).toContain("所有位置均未找到匹配账号");
+    expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("无匹配");
+    expect(document.querySelector(".accountSearchField")?.classList.contains("notFound")).toBe(true);
+    expect(document.querySelector(".searchLocateStatus")).toBeNull();
     expect(document.querySelector<HTMLButtonElement>(".groupFilterSelect[aria-pressed=\"true\"]")?.textContent).toContain(
       "全部",
     );
@@ -230,8 +243,14 @@ describe("Cloak Picker dialog regressions", () => {
     ]);
     const selectedRow = accountRows.find((row) => row.classList.contains("selected"));
     expect(selectedRow?.querySelector(".accountTitle strong")?.textContent).toBe("demo-gamma-copy");
+    expect(selectedRow?.classList.contains("searchLocated")).toBe(true);
+    expect(selectedRow?.querySelector(".searchMatchIcon")).not.toBeNull();
     expect(selectedRow?.querySelector(".accountLocationTag")).toBeNull();
-    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
+    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenLastCalledWith({
+      block: "center",
+      inline: "nearest",
+    });
+    expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("1/1");
 
     expect(document.querySelector(".detail h1")?.textContent).toBe("demo-gamma-copy");
   });
@@ -257,6 +276,41 @@ describe("Cloak Picker dialog regressions", () => {
     expect(accountRows[0].classList.contains("selected")).toBe(true);
     expect(document.querySelector(".detail h1")?.textContent).toBe("demo-gamma");
     expect(document.querySelector(".detail")?.textContent).toContain("已移入回收站");
+    expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("1/2");
+  });
+
+  it("moves through ranked matches without replacing the complete account list", async () => {
+    const accountSearch = document.querySelector<HTMLInputElement>('input[type="search"]');
+    await inputText(accountSearch as HTMLInputElement, "demo");
+    await settle(30);
+
+    expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("1/4");
+    expect(document.querySelector(".detail h1")?.textContent).toBe("demo-gamma-copy");
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(3);
+
+    const nextResult = document.querySelector<HTMLButtonElement>('button[aria-label="下一个匹配"]');
+    expect(nextResult).not.toBeNull();
+    await click(nextResult as HTMLButtonElement);
+    expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("2/4");
+    expect(document.querySelector(".detail h1")?.textContent).toBe("demo-gamma");
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(2);
+    expect(document.querySelector<HTMLButtonElement>('.viewSwitch [role="tab"][aria-selected="true"]')?.textContent).toContain(
+      "回收站",
+    );
+
+    await click(nextResult as HTMLButtonElement);
+    expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("3/4");
+    expect(document.querySelector(".detail h1")?.textContent).toBe("demo-beta");
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(3);
+    expect(document.querySelector<HTMLButtonElement>('.viewSwitch [role="tab"][aria-selected="true"]')?.textContent).toContain(
+      "活跃",
+    );
+
+    await pressKeyOn(accountSearch as HTMLInputElement, "ArrowUp");
+    expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("2/4");
+    await pressKeyOn(accountSearch as HTMLInputElement, "Enter");
+    expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("3/4");
+    expect(mockCommandCountForTest("launch_account")).toBe(0);
   });
 
   it("clears a stale locator when the user manually leaves its result", async () => {
@@ -265,7 +319,7 @@ describe("Cloak Picker dialog regressions", () => {
     await settle(30);
 
     expect(accountSearch?.value).toBe("demo-gamma");
-    expect(document.querySelector(".searchLocateStatus")?.textContent).toContain("已定位");
+    expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("1/2");
     expect(document.querySelector<HTMLButtonElement>('.viewSwitch [role="tab"][aria-selected="true"]')?.textContent).toContain(
       "回收站",
     );
@@ -273,7 +327,7 @@ describe("Cloak Picker dialog regressions", () => {
     await click(buttonWithText("活跃"));
 
     expect(accountSearch?.value).toBe("");
-    expect(document.querySelector(".searchLocateStatus")).toBeNull();
+    expect(document.querySelector(".accountSearchResultStatus")).toBeNull();
     expect(document.querySelector<HTMLButtonElement>('.viewSwitch [role="tab"][aria-selected="true"]')?.textContent).toContain(
       "活跃",
     );
