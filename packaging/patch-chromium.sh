@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT/packaging/codesign-common.sh"
+
 # Patch the CloakBrowser Chromium so ChatGPT voice/camera/passkey do not crash macOS TCC.
 #
 # CloakBrowser ships an ad-hoc Chromium whose Info.plist has no NSMicrophoneUsageDescription.
@@ -16,10 +19,11 @@ set -euo pipefail
 # present in the binary (webauthn.cablev2_pairings); only the usage-description key is missing.
 #
 # Fix: inject NSMicrophoneUsageDescription + NSCameraUsageDescription + NSBluetoothAlwaysUsageDescription
-# into the main app and its helper bundles, then ad-hoc re-sign only when those files changed
-# or the existing signature is invalid. Avoiding unnecessary re-signing preserves the app's
-# CDHash and therefore its existing macOS TCC permission identity. CloakBrowser upgrades replace
-# Chromium and drop the keys again, so re-run after every CloakBrowser upgrade.
+# into the main app and its helper bundles, then sign with the persistent local identity when
+# available. Its designated requirement stays stable even when an upgrade changes the CDHash.
+# Machines without that identity retain the ad-hoc fallback, and unchanged valid signatures are
+# still left alone. CloakBrowser upgrades replace Chromium and drop the keys again, so re-run
+# after every CloakBrowser upgrade.
 #
 # Note: Chromium is intentionally NOT rebranded. The green ChatGPT identity belongs to the
 # NoTrace Browser launcher; the Chromium it drives stays a plain browser so the two are distinct.
@@ -30,6 +34,7 @@ CAM_DESC="ChatGPT video and vision features use the camera."
 BT_DESC="Passkey sign-in uses Bluetooth to connect your phone or security key."
 
 CLOAK_DIR="${CLOAKBROWSER_DIR:-$HOME/.cloakbrowser}"
+CODESIGN_IDENTITY="$(resolve_cloak_codesign_identity)"
 
 shopt -s nullglob
 if [[ -n "${CLOAK_BROWSER_APP:-}" ]]; then
@@ -66,6 +71,7 @@ set_key() {
 
 for APP in "${APPS[@]}"; do
   plist_changed=0
+  signature_needs_upgrade=0
   PLISTS=("$APP/Contents/Info.plist")
   HELPERS_DIR="$APP/Contents/Frameworks/Chromium Framework.framework/Versions/Current/Helpers"
   for HELPER in "$HELPERS_DIR"/*.app; do
@@ -79,12 +85,22 @@ for APP in "${APPS[@]}"; do
     set_key "$PLIST" NSBluetoothAlwaysUsageDescription "$BT_DESC"
   done
 
-  if [[ "$plist_changed" == "1" ]] || ! /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
+  if [[ "$CODESIGN_IDENTITY" != "-" ]] && ! cloak_signature_matches_identity "$APP" "$CODESIGN_IDENTITY"; then
+    signature_needs_upgrade=1
+  fi
+
+  if [[ "$plist_changed" == "1" ]] || [[ "$signature_needs_upgrade" == "1" ]] || \
+     ! /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
     # Re-sign bottom-up so modified Info.plist hashes and nested seals match again.
-    # The upstream build is ad-hoc (no Team ID), so the default remains ad-hoc.
-    /usr/bin/codesign --force --deep --sign - "$APP"
+    # Prefer the persistent local identity when present so TCC grants survive
+    # Chromium upgrades; CI and machines without it retain the ad-hoc fallback.
+    /usr/bin/codesign --force --deep --timestamp=none --sign "$CODESIGN_IDENTITY" "$APP"
     /usr/bin/codesign --verify --deep --strict "$APP"
-    printf 'patched + resigned: %s\n' "$APP"
+    if ! cloak_signature_matches_identity "$APP" "$CODESIGN_IDENTITY"; then
+      printf 'error: Chromium signature does not match requested identity: %s\n' "$CODESIGN_IDENTITY" >&2
+      exit 1
+    fi
+    printf 'patched + resigned (%s): %s\n' "$CODESIGN_IDENTITY" "$APP"
   else
     printf 'already patched; signature preserved: %s\n' "$APP"
   fi

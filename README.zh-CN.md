@@ -134,7 +134,7 @@ NoTrace Browser 的每个账号工作区都可以通过编译生成的 `cloak` �
 NoTrace Browser 针对 macOS 系统环境进行了深度的专属适配：
 
 - **顽固的绿色桌面图标**：Chromium 在更新 PWA 快捷方式时会自动重写并覆盖 `app.icns`，导致自定义图标丢失。NoTrace 通过 `NSWorkspace setIcon:forFile:` 接口，强行在 Bundle 根目录下设置 Finder 级的自定义 Custom Icon (`kHasCustomIcon` 属性与 `Icon\r` 资源文件)。这使得 LaunchServices 和 Dock 能持久锁定绿色的应用图标，**即使浏览器内核重构更新也不会丢失**。
-- **系统级 TCC 权限修护**： ad-hoc 签名编译的 Chromium 内核默认缺少麦克风、摄像头和蓝牙的隐私描述。当网页尝试录音时，macOS 系统安全组件 (TCC) 会直接强行闪退该进程。NoTrace 的 `patch-chromium.sh` 脚本在打包时将 `NSMicrophoneUsageDescription`、`NSCameraUsageDescription` 与 `NSBluetoothAlwaysUsageDescription` 写入 `Info.plist` 并重新签名，彻底解决了网页语音输入和手机蓝牙 Passkey 登录时的系统崩溃闪退问题。
+- **稳定的 TCC 权限身份**：ad-hoc 签名的 Chromium 不仅缺少麦克风、摄像头和蓝牙隐私描述，而且每次 CDHash 变化都会被 macOS 当成新应用。NoTrace 会写入 `NSMicrophoneUsageDescription`、`NSCameraUsageDescription` 与 `NSBluetoothAlwaysUsageDescription`，优先使用长期本地签名身份，并让所有账号入口通过 LaunchServices 启动 Chromium。这样 Picker、CLI 和账号启动器共用同一个 Chromium TCC 身份，不再为每个启动器单独申请蓝牙权限。
 
 ---
 
@@ -166,7 +166,7 @@ NoTrace Browser 针对 macOS 系统环境进行了深度的专属适配：
 ```bash
 ./packaging/patch-chromium.sh
 ```
-*提示：每当 CloakBrowser 大版本更新后，请重新运行一次该脚本。*
+*提示：每当 CloakBrowser 大版本更新后，请重新运行一次该脚本。已安装 `ChatGPT Cloak Local Code Signing` 时会自动使用它，也可通过 `CLOAK_CODESIGN_IDENTITY=<名称>` 指定；没有长期签名身份时会回退为 ad-hoc，并提示内核更新后可能再次询问权限。*
 
 ### 第三步：应用原生绿色 Dock 图标
 默认的 PWA 图标会在白底中内嵌一个绿色的缩略图。通过以下脚本将其替换为精美、全画幅的 macOS 绿底图标：
@@ -211,7 +211,7 @@ node selftest/run-live-challenge-audit.mjs --headed --site browserscan --site fi
 
 ## ⚠️ 局限性与避坑指南
 
-* **蓝牙 / Passkey 授权范围**：macOS 蓝牙权限属于 CloakBrowser App 的代码身份，并不属于某个 NoTrace 账号；同一份未变化的内核不应再次要求系统授权，但内核升级或确有必要的重签仍可能重新弹窗。Chromium 与网站权限保存在各自隔离的账号 Profile 中，因此每个新建账号第一次使用 Passkey 时仍可能单独询问一次。
+* **蓝牙 / Passkey 授权范围**：macOS 强制要求用户亲自批准第一次蓝牙授权，普通应用不能静默代点“允许”。完成这一次授权后，Picker、CLI 与账号启动器都会复用带长期证书的 Chromium 身份；新建账号以及使用同一证书签名的内核更新不会再次弹出系统蓝牙窗口。只有删除/更换签名证书或强制改回 ad-hoc 时，才需要对新 TCC 身份再批准一次。网页自己的 Passkey 选择器与这项 macOS 权限彼此独立，仍可能正常显示。
 * **内置网页翻译不可用**：CloakBrowser 采用了 *ungoogled-chromium* 编译版，在网络底层剥离了 Google 域名（重定向至 `chrome.9oo91e.qjz9zk`）和 Chrome 应用商店接口。因此，Chromium 右键的“翻译此页”会报错失效。
   * *避坑方案*：将您喜欢的翻译插件打包为 **已解压的扩展程序** (unpacked) 并在您的账号 Profile 页面手动加载即可。
 * **原生 PWA 的启动参数限制**：如果您从 Launchpad 或 Dock 直接点击创建的单 PWA 应用，macOS 的快捷方式机制不支持在启动时追加命令行 flag（例如 `--proxy-server` 或 `--fingerprint-webrtc-ip` 无法直接传入）。如需要严格的代理隔离与高级 Seed 指纹防关联，请务必使用 **多账号选择器 (Cloak Picker)** 启动独立实例。

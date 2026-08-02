@@ -1022,21 +1022,18 @@ fn launch_plan(
     let launch_started = Instant::now();
     let preflight_duration = launch_started.saturating_duration_since(preflight_started);
     ensure_launch_not_cancelled(options.cancellation.as_deref())?;
-    let mut command = Command::new(&plan.browser_binary);
-    command.args(&argv);
-    if let Some(tz) = plan.geo.timezone.as_deref() {
-        command.env("TZ", tz);
-    }
-    command.stdin(Stdio::null());
-    command.stdout(Stdio::null());
-    command.stderr(Stdio::null());
-    let child = command.spawn()?;
+    let pid = launch_browser_process(
+        &plan.browser_binary,
+        &plan.profile_path,
+        &argv,
+        plan.geo.timezone.as_deref(),
+    )?;
     let result = LaunchResult {
         account: plan.account.clone(),
         profile_path: plan.profile_path.clone(),
         browser_binary: plan.browser_binary.clone(),
         url,
-        pid: child.id(),
+        pid,
         launched_at: current_created_at(),
         diagnostics: LaunchDiagnostics {
             engine_major: plan.engine_major.clone(),
@@ -1058,6 +1055,133 @@ fn launch_plan(
     }
 
     Ok(result)
+}
+
+#[cfg(target_os = "macos")]
+fn launch_browser_process(
+    browser_binary: &Path,
+    profile_path: &Path,
+    argv: &[String],
+    timezone: Option<&str>,
+) -> Result<u32> {
+    let Some(app_bundle) = macos_app_bundle_for_binary(browser_binary) else {
+        return launch_browser_direct(browser_binary, argv, timezone);
+    };
+
+    // LaunchServices makes Chromium, rather than whichever Picker/account tile
+    // happened to invoke it, the responsible process for macOS TCC. All account
+    // entry points can therefore reuse one Bluetooth/passkey permission grant.
+    let mut command = Command::new("/usr/bin/open");
+    command
+        .arg("-n")
+        .args(["--stdin", "/dev/null"])
+        .args(["--stdout", "/dev/null"])
+        .args(["--stderr", "/dev/null"]);
+    if let Some(tz) = timezone {
+        command.arg("--env").arg(format!("TZ={tz}"));
+    }
+    command.arg(app_bundle).arg("--args").args(argv);
+    command.stdin(Stdio::null());
+
+    let output = command.output()?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(CloakError::Io(io::Error::other(if detail.is_empty() {
+            format!("LaunchServices failed with status {}", output.status)
+        } else {
+            format!("LaunchServices failed: {detail}")
+        })));
+    }
+
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(5) {
+        if let Some(pid) = running_browser_pid(browser_binary, profile_path)? {
+            return Ok(pid);
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    Err(CloakError::Io(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!(
+            "LaunchServices returned successfully, but no Chromium process appeared for {}",
+            profile_path.display()
+        ),
+    )))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn launch_browser_process(
+    browser_binary: &Path,
+    _profile_path: &Path,
+    argv: &[String],
+    timezone: Option<&str>,
+) -> Result<u32> {
+    launch_browser_direct(browser_binary, argv, timezone)
+}
+
+fn launch_browser_direct(
+    browser_binary: &Path,
+    argv: &[String],
+    timezone: Option<&str>,
+) -> Result<u32> {
+    let mut command = Command::new(browser_binary);
+    command.args(argv);
+    if let Some(tz) = timezone {
+        command.env("TZ", tz);
+    }
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::null());
+    command.stderr(Stdio::null());
+    Ok(command.spawn()?.id())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_app_bundle_for_binary(browser_binary: &Path) -> Option<&Path> {
+    let macos_dir = browser_binary.parent()?;
+    let contents_dir = macos_dir.parent()?;
+    let app_bundle = contents_dir.parent()?;
+    if macos_dir.file_name()? != OsStr::new("MacOS")
+        || contents_dir.file_name()? != OsStr::new("Contents")
+        || app_bundle.extension()? != OsStr::new("app")
+    {
+        return None;
+    }
+    Some(app_bundle)
+}
+
+#[cfg(target_os = "macos")]
+fn running_browser_pid(browser_binary: &Path, profile_path: &Path) -> Result<Option<u32>> {
+    let output = Command::new("ps")
+        .args(["axww", "-o", "pid=,command="])
+        .output()?;
+    Ok(browser_pid_from_process_listing(
+        &String::from_utf8_lossy(&output.stdout),
+        browser_binary,
+        profile_path,
+    ))
+}
+
+fn browser_pid_from_process_listing(
+    listing: &str,
+    browser_binary: &Path,
+    profile_path: &Path,
+) -> Option<u32> {
+    let executable = browser_binary.to_string_lossy();
+    let needle = user_data_dir_needle(profile_path);
+    listing.lines().find_map(|line| {
+        let mut fields = line.trim_start().splitn(2, |ch: char| ch.is_whitespace());
+        let pid = fields.next()?.parse::<u32>().ok()?;
+        let command = fields.next()?.trim_start();
+        let rest = command.strip_prefix(executable.as_ref())?;
+        if !rest.chars().next().is_some_and(char::is_whitespace)
+            || command.contains(" --type=")
+            || !command_line_mentions_user_data_dir(command, &needle)
+        {
+            return None;
+        }
+        Some(pid)
+    })
 }
 
 pub fn maybe_run_relay_supervisor() -> Result<bool> {
@@ -3591,6 +3715,43 @@ mod tests {
             "/Applications/Chromium --user-data-dir=/tmp/Cloak Accounts/work2 --fingerprint=12345",
             &needle,
         ));
+    }
+
+    #[test]
+    fn browser_pid_detection_ignores_helpers_and_other_profiles() {
+        let browser = Path::new("/Applications/Cloak Chromium.app/Contents/MacOS/Chromium");
+        let profile = Path::new("/tmp/Cloak Accounts/work");
+        let listing = concat!(
+            "  701 /Applications/Cloak Chromium.app/Contents/Frameworks/Chromium Helper ",
+            "--type=renderer --user-data-dir=/tmp/Cloak Accounts/work\n",
+            "  702 /Applications/Cloak Chromium.app/Contents/MacOS/Chromium ",
+            "--user-data-dir=/tmp/Cloak Accounts/work2 --new-window\n",
+            "  703 /Applications/Cloak Chromium.app/Contents/MacOS/Chromium ",
+            "--user-data-dir=/tmp/Cloak Accounts/work --new-window\n",
+        );
+
+        assert_eq!(
+            browser_pid_from_process_listing(listing, browser, profile),
+            Some(703)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn browser_binary_resolves_to_its_macos_app_bundle() {
+        let binary = Path::new(
+            "/Users/example/.cloakbrowser/chromium-145/Chromium.app/Contents/MacOS/Chromium",
+        );
+        assert_eq!(
+            macos_app_bundle_for_binary(binary),
+            Some(Path::new(
+                "/Users/example/.cloakbrowser/chromium-145/Chromium.app"
+            ))
+        );
+        assert_eq!(
+            macos_app_bundle_for_binary(Path::new("/usr/local/bin/chromium")),
+            None
+        );
     }
 
     #[test]
