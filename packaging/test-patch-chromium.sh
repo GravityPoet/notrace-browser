@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT/packaging/codesign-common.sh"
 PATCH_SCRIPT="$ROOT/packaging/patch-chromium.sh"
 PLISTBUDDY=/usr/libexec/PlistBuddy
 TMP_ROOT="$(/usr/bin/mktemp -d /tmp/notrace-patch-test.XXXXXX)"
@@ -33,7 +34,7 @@ cdhash() {
 }
 
 before="$(cdhash "$APP")"
-CLOAK_BROWSER_APP="$APP" "$PATCH_SCRIPT" >/dev/null
+CLOAK_CODESIGN_IDENTITY=- CLOAK_BROWSER_APP="$APP" "$PATCH_SCRIPT" >/dev/null
 after_unchanged="$(cdhash "$APP")"
 [[ "$before" == "$after_unchanged" ]] || {
   printf '%s\n' "error: unchanged Chromium signature identity was replaced" >&2
@@ -41,7 +42,7 @@ after_unchanged="$(cdhash "$APP")"
 }
 
 "$PLISTBUDDY" -c 'Delete :NSBluetoothAlwaysUsageDescription' "$PLIST"
-CLOAK_BROWSER_APP="$APP" "$PATCH_SCRIPT" >/dev/null
+CLOAK_CODESIGN_IDENTITY=- CLOAK_BROWSER_APP="$APP" "$PATCH_SCRIPT" >/dev/null
 /usr/bin/codesign --verify --deep --strict "$APP"
 bluetooth_description="$("$PLISTBUDDY" -c 'Print :NSBluetoothAlwaysUsageDescription' "$PLIST")"
 [[ "$bluetooth_description" == "Passkey sign-in uses Bluetooth to connect your phone or security key." ]] || {
@@ -50,11 +51,28 @@ bluetooth_description="$("$PLISTBUDDY" -c 'Print :NSBluetoothAlwaysUsageDescript
 }
 
 after_repair="$(cdhash "$APP")"
-CLOAK_BROWSER_APP="$APP" "$PATCH_SCRIPT" >/dev/null
+CLOAK_CODESIGN_IDENTITY=- CLOAK_BROWSER_APP="$APP" "$PATCH_SCRIPT" >/dev/null
 after_repeat="$(cdhash "$APP")"
 [[ "$after_repair" == "$after_repeat" ]] || {
   printf '%s\n' "error: repeated Chromium patch changed signature identity" >&2
   exit 1
 }
+
+if cloak_codesign_identity_exists "$CLOAK_DEFAULT_CODESIGN_IDENTITY"; then
+  CLOAK_BROWSER_APP="$APP" "$PATCH_SCRIPT" >/dev/null
+  cloak_signature_matches_identity "$APP" "$CLOAK_DEFAULT_CODESIGN_IDENTITY" || {
+    printf '%s\n' "error: Chromium was not migrated to the persistent signing identity" >&2
+    exit 1
+  }
+  stable_requirement="$(/usr/bin/codesign -d -r- "$APP" 2>&1 | tail -1)"
+
+  "$PLISTBUDDY" -c 'Delete :NSCameraUsageDescription' "$PLIST"
+  CLOAK_BROWSER_APP="$APP" "$PATCH_SCRIPT" >/dev/null
+  repaired_requirement="$(/usr/bin/codesign -d -r- "$APP" 2>&1 | tail -1)"
+  [[ "$stable_requirement" == "$repaired_requirement" ]] || {
+    printf '%s\n' "error: persistent designated requirement changed after repair" >&2
+    exit 1
+  }
+fi
 
 printf '%s\n' "PASS: Chromium TCC patch is idempotent"

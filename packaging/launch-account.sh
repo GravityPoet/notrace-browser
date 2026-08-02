@@ -976,8 +976,20 @@ fi
 
 abort_on_privacy_failures
 
-"$BIN" "${args[@]}" &
-browser_pid=$!
+if [[ "$(/usr/bin/uname -s)" == "Darwin" ]] && [[ "$BIN" == */Contents/MacOS/* ]]; then
+  # LaunchServices makes Chromium the macOS TCC responsible process. Without
+  # this hop, the Picker or each individual account tile owns a separate
+  # Bluetooth/passkey grant and macOS asks again for every launcher identity.
+  browser_app="${BIN%/Contents/MacOS/*}"
+  open_args=(-W -n --stdin /dev/null --stdout /dev/null --stderr /dev/null)
+  [[ -n "${TZ:-}" ]] && open_args+=(--env "TZ=$TZ")
+  open_args+=("$browser_app" --args)
+  /usr/bin/open "${open_args[@]}" "${args[@]}" &
+  browser_pid=$!
+else
+  "$BIN" "${args[@]}" &
+  browser_pid=$!
+fi
 
 if [[ "${CLOAK_PREFLIGHT:-off}" == "async" ]]; then
   run_browser_selftest

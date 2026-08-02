@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT/packaging/codesign-common.sh"
 PICKER_DIR="$ROOT/cloak-picker"
 APP_NAME="Cloak Picker"
 BUILT_APP="$ROOT/target/release/bundle/macos/$APP_NAME.app"
@@ -10,6 +11,7 @@ INSTALL_PARENT="$(dirname "$INSTALL_APP")"
 INSTALL_TMP="$INSTALL_PARENT/.$APP_NAME.app.tmp.$$"
 EXPECTED_BUNDLE_ID="local.cloak.picker"
 LSREG="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+CODESIGN_IDENTITY="$(resolve_cloak_codesign_identity)"
 
 printf '%s\n' "backup: skipped; Cloak Picker.app is a generated Tauri bundle and is reinstallable from this script."
 
@@ -52,8 +54,12 @@ if /usr/bin/pgrep -f "$INSTALL_APP/Contents/MacOS/cloak-picker" >/dev/null 2>&1;
   exit 1
 fi
 
-/usr/bin/codesign --force --deep --sign - "$BUILT_APP"
+/usr/bin/codesign --force --deep --timestamp=none --sign "$CODESIGN_IDENTITY" "$BUILT_APP"
 /usr/bin/codesign --verify --deep --strict "$BUILT_APP"
+if ! cloak_signature_matches_identity "$BUILT_APP" "$CODESIGN_IDENTITY"; then
+  printf 'error: Picker signature does not match requested identity: %s\n' "$CODESIGN_IDENTITY" >&2
+  exit 1
+fi
 
 /bin/rm -rf "$INSTALL_TMP"
 /usr/bin/ditto "$BUILT_APP" "$INSTALL_TMP"
@@ -62,6 +68,10 @@ fi
 /bin/rm -rf "$INSTALL_APP"
 /bin/mv "$INSTALL_TMP" "$INSTALL_APP"
 /usr/bin/codesign --verify --deep --strict "$INSTALL_APP"
+if ! cloak_signature_matches_identity "$INSTALL_APP" "$CODESIGN_IDENTITY"; then
+  printf 'error: installed Picker signature does not match requested identity: %s\n' "$CODESIGN_IDENTITY" >&2
+  exit 1
+fi
 /usr/bin/touch "$INSTALL_APP"
 if [[ -x "$LSREG" ]]; then
   "$LSREG" -f "$INSTALL_APP" >/dev/null 2>&1 || true
@@ -80,4 +90,8 @@ if [[ "$BUILT_APP" != "$INSTALL_APP" ]]; then
   /bin/rm -rf "$BUILT_APP"
 fi
 
+printf 'signing : %s\n' "$CODESIGN_IDENTITY"
+if [[ "$CODESIGN_IDENTITY" == "-" ]]; then
+  printf '%s\n' "warning: no persistent code-signing identity found; macOS privacy grants can be requested again after a rebuild" >&2
+fi
 printf '%s\n' "$INSTALL_APP"

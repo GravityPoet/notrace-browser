@@ -111,7 +111,7 @@ Chromium without shell interpolation.
 NoTrace Browser is built specifically to feel like a premium application on macOS:
 
 - **Durable Green Icon**: Chromium shims overwrite `app.icns` on updates, stripping custom PWA icons. NoTrace applies a Finder-level custom icon (`kHasCustomIcon` + bundle-root `Icon\r` resource) via `NSWorkspace setIcon:forFile:`. This custom icon is preferred by LaunchServices and **survives browser engine rebuilds**.
-- **TCC Permission Patching**: Chromium compiled ad-hoc lacks microphone, camera, and Bluetooth usage descriptions. macOS TCC terminates the process instantly when a page requests voice input. NoTrace provides `patch-chromium.sh` which injects `NSMicrophoneUsageDescription`, `NSCameraUsageDescription`, and `NSBluetoothAlwaysUsageDescription` into `Info.plist` and re-signs the application, resolving voice search and passkey authorization crashes.
+- **Stable TCC Permission Identity**: Chromium compiled ad-hoc lacks microphone, camera, and Bluetooth usage descriptions, and each changed ad-hoc CDHash looks like a different app to macOS. NoTrace injects `NSMicrophoneUsageDescription`, `NSCameraUsageDescription`, and `NSBluetoothAlwaysUsageDescription`, prefers the persistent local signing identity when available, and dispatches every account launch through LaunchServices. Picker, CLI, and per-account tiles therefore share the Chromium TCC identity instead of creating one Bluetooth grant per launcher.
 
 ---
 
@@ -143,7 +143,7 @@ To prevent crashes when using Voice Inputs or Passkeys, patch and sign the Cloak
 ```bash
 ./packaging/patch-chromium.sh
 ```
-*Note: Run this patcher after every major CloakBrowser update.*
+*Note: Run this patcher after every major CloakBrowser update. The scripts automatically use `ChatGPT Cloak Local Code Signing` when that identity is installed, or `CLOAK_CODESIGN_IDENTITY=<name>` when explicitly configured; otherwise they fall back to ad-hoc signing and warn that macOS may ask again after an update.*
 
 ### Step 3: Apply the Native Green Icon
 Chromium PWAs default to a low-res green badge on a white tile. Set the beautiful, full-bleed macOS green icon:
@@ -188,7 +188,7 @@ Validate CLI arguments, contract hooks, and headless privacy engines:
 
 ## ⚠️ Limitations & Workarounds
 
-* **Bluetooth / Passkey Permission Scope**: macOS Bluetooth access belongs to the CloakBrowser app's code identity, not to a NoTrace account. Reusing the same unchanged engine should not require a new system grant, although an engine upgrade or necessary re-sign can prompt again. Chromium and website permissions are stored inside each isolated account profile, so each newly created account may still ask once on first Passkey use.
+* **Bluetooth / Passkey Permission Scope**: macOS requires the user to approve the first Bluetooth prompt; an ordinary app cannot silently press **Allow**. After that one approval, Picker, CLI, and per-account launchers reuse the certificate-backed Chromium identity, so new accounts and normally signed engine updates do not produce another system Bluetooth prompt. Removing/changing the signing certificate or forcing ad-hoc signing creates a new TCC identity and requires one new approval. A website can still show its own Passkey chooser independently of this macOS permission.
 * **Google Translation Failure**: CloakBrowser is an *ungoogled-chromium* compilation; Google domains are decoupled (`chrome.9oo91e.qjz9zk`) at the network layer. Built-in translation will fail.
   * *Workaround*: Sideload your preferred translation plugin as an **unpacked extension** in your profile workspace.
 * **PWA Flag Limitations**: The daily PWA launcher (launched directly from macOS Launchpad/Dock) cannot receive runtime flags like `--proxy-server` or `--fingerprint-webrtc-ip`. Use the **Multi-Account Picker** when strict proxy isolation and advanced seed-level masking are required.
