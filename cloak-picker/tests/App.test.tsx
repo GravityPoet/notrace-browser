@@ -131,6 +131,28 @@ afterEach(async () => {
 });
 
 describe("Cloak Picker dialog regressions", () => {
+  function accountRow(name: string): HTMLButtonElement {
+    const row = Array.from(document.querySelectorAll<HTMLButtonElement>(".accountRow")).find(
+      (candidate) => candidate.querySelector(".accountTitle strong")?.textContent === name,
+    );
+    if (!row) throw new Error(`account row not found: ${name}`);
+    return row;
+  }
+
+  async function openMarkDialog(name: string) {
+    await openContextMenu(accountRow(name));
+    const menu = document.querySelector<HTMLElement>('[role="menu"]');
+    expect(menu).not.toBeNull();
+    const action = Array.from(menu?.querySelectorAll<HTMLButtonElement>("button") ?? []).find((button) =>
+      ["标记", "编辑标记"].includes(button.textContent?.trim() ?? ""),
+    );
+    expect(action).toBeTruthy();
+    await click(action as HTMLButtonElement);
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    return dialog as HTMLElement;
+  }
+
   it("labels the modal, traps focus in both directions, closes on Escape, and restores focus", async () => {
     const trigger = buttonWithText("代理");
     trigger.focus();
@@ -176,6 +198,65 @@ describe("Cloak Picker dialog regressions", () => {
     await pressKey("Escape");
     await settle(30);
     expect(document.activeElement).toBe(origin);
+  });
+
+  it("applies the built-in Plus mark with one click", async () => {
+    const dialog = await openMarkDialog("demo-beta");
+    expect(buttonWithText("Plus", dialog)).toBeTruthy();
+    expect(buttonWithText("自用", dialog)).toBeTruthy();
+
+    await click(buttonWithText("Plus", dialog));
+    await settle(180);
+
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(mockCommandCountForTest("set_mark")).toBe(1);
+
+    const reopened = await openMarkDialog("demo-beta");
+    expect(reopened.querySelector<HTMLInputElement>(".field input")?.value).toBe("Plus");
+  });
+
+  it("persists, applies, and removes a custom quick mark", async () => {
+    const dialog = await openMarkDialog("demo-beta");
+    await click(buttonWithText("新增快捷项", dialog));
+    const presetInput = dialog.querySelector<HTMLInputElement>('input[aria-label="新的快捷标记"]');
+    expect(presetInput).not.toBeNull();
+    expect(presetInput?.maxLength).toBe(24);
+    await inputText(presetInput as HTMLInputElement, "工作");
+    await click(buttonWithText("添加", dialog));
+
+    expect(window.localStorage.getItem("cloak-picker.markPresets.v1")).toBe('["工作"]');
+    await click(buttonWithText("工作", dialog));
+    await settle(180);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(mockCommandCountForTest("set_mark")).toBe(1);
+
+    const reopened = await openMarkDialog("demo-beta");
+    expect(reopened.querySelector<HTMLInputElement>(".field input")?.value).toBe("工作");
+    const removeButton = reopened.querySelector<HTMLButtonElement>('button[aria-label="删除快捷标记 工作"]');
+    expect(removeButton).not.toBeNull();
+    await click(removeButton as HTMLButtonElement);
+
+    expect(window.localStorage.getItem("cloak-picker.markPresets.v1")).toBe("[]");
+    expect(Array.from(reopened.querySelectorAll("button")).some((button) => button.textContent?.trim() === "工作")).toBe(
+      false,
+    );
+  });
+
+  it("ignores invalid or duplicate quick marks from local storage", async () => {
+    window.localStorage.setItem(
+      "cloak-picker.markPresets.v1",
+      JSON.stringify(["Plus", "", "1234567890123456789012345", "两行\n标记", "工作", "工作", 42]),
+    );
+
+    const dialog = await openMarkDialog("demo-beta");
+    expect(Array.from(dialog.querySelectorAll("button")).filter((button) => button.textContent?.trim() === "Plus")).toHaveLength(
+      1,
+    );
+    expect(Array.from(dialog.querySelectorAll("button")).filter((button) => button.textContent?.trim() === "工作")).toHaveLength(
+      1,
+    );
+    expect(dialog.textContent).not.toContain("1234567890123456789012345");
+    expect(dialog.textContent).not.toContain("两行");
   });
 
   it("keeps legacy archived accounts in the trash workflow", async () => {
