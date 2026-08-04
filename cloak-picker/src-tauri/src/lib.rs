@@ -274,9 +274,15 @@ async fn set_group(name: String, value: Option<String>) -> Result<Account, Strin
 }
 
 #[tauri::command]
-async fn set_mark(name: String, marked: bool, note: Option<String>) -> Result<Account, String> {
+async fn set_mark(
+    name: String,
+    marked: bool,
+    note: Option<String>,
+    color: Option<String>,
+) -> Result<Account, String> {
     run_blocking(move || {
-        core_set_mark(&config()?, &name, marked, note.as_deref()).map_err(|err| err.to_string())
+        core_set_mark(&config()?, &name, marked, note.as_deref(), color.as_deref())
+            .map_err(|err| err.to_string())
     })
     .await
 }

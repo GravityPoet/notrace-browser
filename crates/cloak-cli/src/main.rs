@@ -86,6 +86,8 @@ enum AccountCommand {
     SetMark {
         name: String,
         value: Option<String>,
+        #[arg(long, value_name = "COLOR")]
+        color: Option<String>,
         #[arg(long)]
         clear: bool,
         #[arg(long)]
@@ -197,6 +199,7 @@ fn handle_account(command: AccountCommand, config: &CloakConfig) -> Result<()> {
         AccountCommand::SetMark {
             name,
             value,
+            color,
             clear,
             json,
         } => {
@@ -205,6 +208,7 @@ fn handle_account(command: AccountCommand, config: &CloakConfig) -> Result<()> {
                 &name,
                 !clear,
                 if clear { None } else { value.as_deref() },
+                if clear { None } else { color.as_deref() },
             )?;
             print_account(account, json)?;
         }
