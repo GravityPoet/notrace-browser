@@ -38,6 +38,14 @@ import {
   type ReactNode,
 } from "react";
 
+const markColorValues = ["red", "orange", "green", "blue", "purple", "gray"] as const;
+type MarkColor = (typeof markColorValues)[number];
+
+type MarkPreset = {
+  label: string;
+  color: MarkColor;
+};
+
 type Account = {
   name: string;
   profile_path: string;
@@ -48,6 +56,7 @@ type Account = {
   group: string | null;
   marked: boolean;
   mark_note: string | null;
+  mark_color: MarkColor | null;
   region: string | null;
   locale_enabled: boolean;
   proxy_display: string;
@@ -148,7 +157,7 @@ type DialogState =
   | { kind: "proxy"; account: Account; value: string }
   | { kind: "region"; account: Account; value: string }
   | { kind: "group"; account: Account; value: string }
-  | { kind: "mark"; account: Account; value: string }
+  | { kind: "mark"; account: Account; value: string; color: MarkColor }
   | { kind: "delete"; account: Account }
   | { kind: "permanentDelete"; account: Account }
   | { kind: "deleteGroup"; groupLabel: string; count: number };
@@ -180,7 +189,7 @@ const accountContextMenuMaxHeight = 320;
 const contextMenuViewportPadding = 8;
 
 const emptyAccounts: Account[] = [];
-const mockMarkOverrides = new Map<string, { marked: boolean; note: string | null }>();
+const mockMarkOverrides = new Map<string, { marked: boolean; note: string | null; color: MarkColor | null }>();
 const mockCommandCounts = new Map<string, number>();
 const mockCommandFailures = new Map<string, number>();
 const mockCancelledLaunches = new Set<string>();
@@ -216,13 +225,119 @@ const accountOrderStorageKey = "cloak-picker.accountOrder.v1";
 const collapsedGroupsStorageKey = "cloak-picker.collapsedGroups.v1";
 const hiddenGroupsStorageKey = "cloak-picker.hiddenGroups.v1";
 const sidebarWidthStorageKey = "cloak-picker.sidebarWidth.v1";
-const markPresetsStorageKey = "cloak-picker.markPresets.v1";
-const defaultMarkPresets = ["Plus", "自用"] as const;
+const legacyMarkPresetsStorageKey = "cloak-picker.markPresets.v1";
+const markPresetsStorageKey = "cloak-picker.markPresets.v2";
+const defaultMarkPresets: MarkPreset[] = [
+  { label: "Plus", color: "red" },
+  { label: "自用", color: "red" },
+];
 const maxMarkLength = 24;
 const defaultSidebarWidth = 326;
 const minSidebarWidth = 260;
 const minDetailWidth = 360;
 const paneResizerWidth = 8;
+
+type MarkColorDefinition = {
+  label: string;
+  solid: string;
+  text: string;
+  background: string;
+  strongBackground: string;
+  border: string;
+  ring: string;
+};
+
+const markColorDefinitions: Record<MarkColor, MarkColorDefinition> = {
+  red: {
+    label: "红色",
+    solid: "#e02b20",
+    text: "#b42318",
+    background: "#fff2f1",
+    strongBackground: "#ffe7e5",
+    border: "#f2b9b4",
+    ring: "rgba(217, 45, 32, 0.16)",
+  },
+  orange: {
+    label: "橙色",
+    solid: "#e76f00",
+    text: "#9a4d00",
+    background: "#fff5e8",
+    strongBackground: "#ffe8c7",
+    border: "#f3c48a",
+    ring: "rgba(231, 111, 0, 0.16)",
+  },
+  green: {
+    label: "绿色",
+    solid: "#1a8f4b",
+    text: "#13713b",
+    background: "#edf9f1",
+    strongBackground: "#ddf3e5",
+    border: "#a8dbb9",
+    ring: "rgba(26, 143, 75, 0.16)",
+  },
+  blue: {
+    label: "蓝色",
+    solid: "#0071e3",
+    text: "#005fc2",
+    background: "#eef6ff",
+    strongBackground: "#dcecff",
+    border: "#a9cdf3",
+    ring: "rgba(0, 113, 227, 0.16)",
+  },
+  purple: {
+    label: "紫色",
+    solid: "#7a4cc2",
+    text: "#6336a4",
+    background: "#f6f1fc",
+    strongBackground: "#ece1f8",
+    border: "#cfb7ea",
+    ring: "rgba(122, 76, 194, 0.16)",
+  },
+  gray: {
+    label: "灰色",
+    solid: "#6e6e73",
+    text: "#4d4d52",
+    background: "#f3f3f5",
+    strongBackground: "#e8e8eb",
+    border: "#c9c9cd",
+    ring: "rgba(110, 110, 115, 0.16)",
+  },
+};
+
+type MarkColorStyle = CSSProperties & {
+  "--mark-solid": string;
+  "--mark-text": string;
+  "--mark-bg": string;
+  "--mark-bg-strong": string;
+  "--mark-border": string;
+  "--mark-ring": string;
+};
+
+function markColorStyle(value: unknown): MarkColorStyle {
+  const definition = markColorDefinitions[normalizeMarkColor(value)];
+  return {
+    "--mark-solid": definition.solid,
+    "--mark-text": definition.text,
+    "--mark-bg": definition.background,
+    "--mark-bg-strong": definition.strongBackground,
+    "--mark-border": definition.border,
+    "--mark-ring": definition.ring,
+  };
+}
+
+function parseMarkColor(value: unknown): MarkColor | null {
+  return typeof value === "string" && markColorValues.includes(value as MarkColor)
+    ? (value as MarkColor)
+    : null;
+}
+
+function normalizeMarkColor(value: unknown): MarkColor {
+  return parseMarkColor(value) ?? "red";
+}
+
+function markColorLabel(value: unknown): string {
+  return markColorDefinitions[normalizeMarkColor(value)].label;
+}
 
 type GroupOption = {
   label: string;
@@ -660,7 +775,7 @@ export default function App() {
     }
 
     if (dialog.kind === "mark") {
-      await saveAccountMark(dialog.account, value);
+      await saveAccountMark(dialog.account, value, dialog.color);
       return;
     }
 
@@ -685,11 +800,11 @@ export default function App() {
     setDialog(next);
   }
 
-  async function saveAccountMark(account: Account, rawValue: string) {
+  async function saveAccountMark(account: Account, rawValue: string, color: MarkColor) {
     if (markSaveInFlightRef.current) return;
     const value = rawValue.trim();
     const currentNote = account.mark_note?.trim() || "";
-    if (account.marked && value === currentNote) {
+    if (account.marked && value === currentNote && color === normalizeMarkColor(account.mark_color)) {
       setDialog(null);
       return;
     }
@@ -701,6 +816,7 @@ export default function App() {
           name: account.name,
           marked: true,
           note: value || null,
+          color,
         }),
       );
       if (updated) {
@@ -821,7 +937,15 @@ export default function App() {
 
   function markAccountFromContextMenu(account: Account, trigger: HTMLElement) {
     setAccountContextMenu(null);
-    openDialog({ kind: "mark", account, value: account.mark_note ?? "" }, trigger);
+    openDialog(
+      {
+        kind: "mark",
+        account,
+        value: account.mark_note ?? "",
+        color: normalizeMarkColor(account.mark_color),
+      },
+      trigger,
+    );
   }
 
   async function clearAccountMarkFromContextMenu(account: Account) {
@@ -831,6 +955,7 @@ export default function App() {
         name: account.name,
         marked: false,
         note: null,
+        color: null,
       }),
     );
     if (updated) await refresh(updated.name);
@@ -1770,7 +1895,11 @@ export default function App() {
               markAccountFromContextMenu(accountContextMenu.account, accountContextMenu.returnFocusElement)
             }
           >
-            <span className="contextMarkDot" aria-hidden="true" />
+            <span
+              className="contextMarkDot"
+              style={markColorStyle(accountContextMenu.account.mark_color)}
+              aria-hidden="true"
+            />
             <span className="contextMenuItemLabel">{accountContextMenu.account.marked ? "编辑标记" : "标记"}</span>
           </button>
           {accountContextMenu.account.marked ? (
@@ -1781,7 +1910,11 @@ export default function App() {
               role="menuitem"
               onClick={() => void clearAccountMarkFromContextMenu(accountContextMenu.account)}
             >
-              <span className="contextMarkDot clear" aria-hidden="true" />
+              <span
+                className="contextMarkDot clear"
+                style={markColorStyle(accountContextMenu.account.mark_color)}
+                aria-hidden="true"
+              />
               <span className="contextMenuItemLabel">取消标记</span>
             </button>
           ) : null}
@@ -1840,7 +1973,7 @@ export default function App() {
           onConfirmPermanentDelete={confirmPermanentDeleteAccount}
           groupOptions={groupOptions}
           onQuickGroup={(account, value) => void assignAccountGroup(account, value || null, true)}
-          onQuickMark={(account, value) => void saveAccountMark(account, value)}
+          onQuickMark={(account, value, color) => void saveAccountMark(account, value, color)}
           onSubmit={submitDialog}
         />
       ) : null}
@@ -1976,8 +2109,13 @@ function AccountGroupSection({
                     {account.marked ? (
                       <span
                         className={`accountMark ${account.mark_note ? "withNote" : ""}`}
-                        title={account.mark_note ?? "已标记"}
-                        aria-label={account.mark_note ? `标记：${account.mark_note}` : "已标记"}
+                        style={markColorStyle(account.mark_color)}
+                        title={account.mark_note
+                          ? `${account.mark_note}（${markColorLabel(account.mark_color)}）`
+                          : `已标记（${markColorLabel(account.mark_color)}）`}
+                        aria-label={account.mark_note
+                          ? `标记：${account.mark_note}，颜色：${markColorLabel(account.mark_color)}`
+                          : `已标记，颜色：${markColorLabel(account.mark_color)}`}
                       >
                         <span className="markDot" aria-hidden="true" />
                         {account.mark_note ? <span className="markNote">{middleTruncate(account.mark_note, 16)}</span> : null}
@@ -2019,7 +2157,7 @@ function EditorDialog({
   onConfirmPermanentDelete: (account: Account) => void;
   groupOptions: GroupOption[];
   onQuickGroup: (account: Account, value: string) => void;
-  onQuickMark: (account: Account, value: string) => void;
+  onQuickMark: (account: Account, value: string, color: MarkColor) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const modalRef = useRef<HTMLElement | null>(null);
@@ -2237,8 +2375,10 @@ function EditorDialog({
         {dialog.kind === "mark" ? (
           <MarkPresetPicker
             activeValue={dialog.value.trim()}
+            activeColor={dialog.color}
             busy={busy}
-            onApply={(value) => onQuickMark(dialog.account, value)}
+            onActiveColorChange={(color) => onChange({ ...dialog, color })}
+            onApply={(preset) => onQuickMark(dialog.account, preset.label, preset.color)}
           />
         ) : null}
         <label className="field">
@@ -2268,20 +2408,26 @@ function EditorDialog({
 
 function MarkPresetPicker({
   activeValue,
+  activeColor,
   busy,
+  onActiveColorChange,
   onApply,
 }: {
   activeValue: string;
+  activeColor: MarkColor;
   busy: boolean;
-  onApply: (value: string) => void;
+  onActiveColorChange: (color: MarkColor) => void;
+  onApply: (preset: MarkPreset) => void;
 }) {
-  const [customPresets, setCustomPresets] = useState<string[]>(readStoredMarkPresets);
+  const [presets, setPresets] = useState<MarkPreset[]>(readStoredMarkPresets);
   const [addingPreset, setAddingPreset] = useState(false);
   const [newPreset, setNewPreset] = useState("");
+  const [editingPreset, setEditingPreset] = useState<string | null>(null);
   const newPresetInputRef = useRef<HTMLInputElement | null>(null);
-  const presets = [...defaultMarkPresets, ...customPresets];
   const normalizedNewPreset = normalizeMarkPreset(newPreset);
-  const canAddPreset = Boolean(normalizedNewPreset && !presets.includes(normalizedNewPreset));
+  const canAddPreset = Boolean(normalizedNewPreset && !presets.some((preset) => preset.label === normalizedNewPreset));
+  const builtInLabels = new Set(defaultMarkPresets.map((preset) => preset.label));
+  const presetBeingEdited = presets.find((preset) => preset.label === editingPreset) ?? null;
 
   useEffect(() => {
     if (!addingPreset) return;
@@ -2289,18 +2435,26 @@ function MarkPresetPicker({
   }, [addingPreset]);
 
   function addPreset() {
-    if (!normalizedNewPreset || presets.includes(normalizedNewPreset)) return;
-    const next = [...customPresets, normalizedNewPreset];
-    setCustomPresets(next);
+    if (!normalizedNewPreset || presets.some((preset) => preset.label === normalizedNewPreset)) return;
+    const next = [...presets, { label: normalizedNewPreset, color: activeColor }];
+    setPresets(next);
     writeStoredMarkPresets(next);
     setNewPreset("");
     setAddingPreset(false);
   }
 
   function removePreset(value: string) {
-    const next = customPresets.filter((preset) => preset !== value);
-    setCustomPresets(next);
+    const next = presets.filter((preset) => preset.label !== value);
+    setPresets(next);
     writeStoredMarkPresets(next);
+    if (editingPreset === value) setEditingPreset(null);
+  }
+
+  function updatePresetColor(label: string, color: MarkColor) {
+    const next = presets.map((preset) => (preset.label === label ? { ...preset, color } : preset));
+    setPresets(next);
+    writeStoredMarkPresets(next);
+    if (activeValue === label) onActiveColorChange(color);
   }
 
   return (
@@ -2311,29 +2465,43 @@ function MarkPresetPicker({
       </div>
       <div className="markPresetList">
         {presets.map((preset) => {
-          const isCustom = customPresets.includes(preset);
-          const isActive = activeValue === preset;
+          const isCustom = !builtInLabels.has(preset.label);
+          const isActive = activeValue === preset.label && activeColor === preset.color;
           return (
-            <span className={`markPresetItem ${isActive ? "active" : ""}`} key={preset}>
+            <span
+              className={`markPresetItem ${isActive ? "active" : ""}`}
+              key={preset.label}
+              style={markColorStyle(preset.color)}
+            >
               <button
-                aria-label={`使用快捷标记 ${preset}，立即保存`}
+                aria-label={`修改 ${preset.label} 的颜色，当前${markColorLabel(preset.color)}`}
+                aria-expanded={editingPreset === preset.label}
+                className="markPresetColor"
+                disabled={busy}
+                title="修改这个快捷项的颜色"
+                type="button"
+                onClick={() => setEditingPreset((current) => (current === preset.label ? null : preset.label))}
+              >
+                <span aria-hidden="true" />
+              </button>
+              <button
+                aria-label={`使用快捷标记 ${preset.label}，${markColorLabel(preset.color)}，立即保存`}
                 aria-pressed={isActive}
                 className="markPresetApply"
                 disabled={busy}
                 type="button"
                 onClick={() => onApply(preset)}
               >
-                <Tag aria-hidden="true" size={13} />
-                <span>{preset}</span>
+                <span>{preset.label}</span>
               </button>
               {isCustom ? (
                 <button
-                  aria-label={`删除快捷标记 ${preset}`}
+                  aria-label={`删除快捷标记 ${preset.label}`}
                   className="markPresetRemove"
                   disabled={busy}
                   title="只删除快捷项，不更改账号标记"
                   type="button"
-                  onClick={() => removePreset(preset)}
+                  onClick={() => removePreset(preset.label)}
                 >
                   <X aria-hidden="true" size={12} />
                 </button>
@@ -2351,6 +2519,23 @@ function MarkPresetPicker({
           新增快捷项
         </button>
       </div>
+      {presetBeingEdited ? (
+        <div className="markPresetColorEditor">
+          <div className="markColorEditorHeader">
+            <span>“{presetBeingEdited.label}”快捷项颜色</span>
+            <button aria-label="关闭快捷项颜色设置" type="button" onClick={() => setEditingPreset(null)}>
+              完成
+            </button>
+          </div>
+          <MarkColorPicker
+            ariaLabel={`选择 ${presetBeingEdited.label} 的快捷项颜色`}
+            buttonLabelPrefix={`将 ${presetBeingEdited.label} 改为`}
+            busy={busy}
+            value={presetBeingEdited.color}
+            onChange={(color) => updatePresetColor(presetBeingEdited.label, color)}
+          />
+        </div>
+      ) : null}
       {addingPreset ? (
         <div className="markPresetEditor">
           <input
@@ -2375,7 +2560,62 @@ function MarkPresetPicker({
           </button>
         </div>
       ) : null}
+      <div className="markCurrentColor">
+        <div className="markColorEditorHeader">
+          <span>当前标记颜色</span>
+          <span className="markCurrentColorName" style={markColorStyle(activeColor)}>
+            <span aria-hidden="true" />
+            {markColorLabel(activeColor)}
+          </span>
+        </div>
+        <MarkColorPicker
+          ariaLabel="选择当前标记颜色"
+          buttonLabelPrefix="使用"
+          busy={busy}
+          value={activeColor}
+          onChange={onActiveColorChange}
+        />
+      </div>
     </section>
+  );
+}
+
+function MarkColorPicker({
+  ariaLabel,
+  buttonLabelPrefix,
+  busy,
+  value,
+  onChange,
+}: {
+  ariaLabel: string;
+  buttonLabelPrefix: string;
+  busy: boolean;
+  value: MarkColor;
+  onChange: (color: MarkColor) => void;
+}) {
+  return (
+    <div className="markColorPalette" role="radiogroup" aria-label={ariaLabel}>
+      {markColorValues.map((color) => {
+        const isActive = color === value;
+        return (
+          <button
+            aria-checked={isActive}
+            aria-label={`${buttonLabelPrefix}${markColorLabel(color)}`}
+            className={`markColorOption ${isActive ? "active" : ""}`}
+            disabled={busy}
+            key={color}
+            role="radio"
+            style={markColorStyle(color)}
+            type="button"
+            onClick={() => onChange(color)}
+          >
+            <span className="markColorOptionDot" aria-hidden="true" />
+            <span>{markColorLabel(color)}</span>
+            {isActive ? <Check aria-hidden="true" size={12} /> : null}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -2422,7 +2662,7 @@ function dialogConfig(
         label: "标记内容（可选，最多 24 个字符）",
         placeholder: "例如：待处理 / 备用 / 已验证",
         action: "保存标记",
-        description: "不输入文字时只显示红色圆圈；输入后会显示在圆圈旁边。",
+        description: "可选择标记颜色；不输入文字时只显示圆点，输入后会显示彩色标记。",
       };
     }
   }
@@ -2716,29 +2956,56 @@ function normalizeMarkPreset(value: string): string | null {
   return normalized;
 }
 
-function readStoredMarkPresets(): string[] {
-  const stored = readStoredStringArray(markPresetsStorageKey);
-  const seen = new Set<string>(defaultMarkPresets);
-  const presets: string[] = [];
-  for (const value of stored) {
-    const normalized = normalizeMarkPreset(value);
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    presets.push(normalized);
+function readStoredMarkPresets(): MarkPreset[] {
+  const defaults = defaultMarkPresets.map((preset) => ({ ...preset }));
+  try {
+    const raw = window.localStorage.getItem(markPresetsStorageKey);
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return normalizeMarkPresets(parsed, defaults);
+      }
+    }
+  } catch {
+    // Fall back to the legacy string-only format below.
   }
-  return presets;
+
+  const legacyPresets = readStoredStringArray(legacyMarkPresetsStorageKey).map((label) => ({
+    label,
+    color: "red" as MarkColor,
+  }));
+  return normalizeMarkPresets(legacyPresets, defaults);
 }
 
-function writeStoredMarkPresets(values: string[]) {
-  const seen = new Set<string>(defaultMarkPresets);
-  const safeValues: string[] = [];
-  for (const value of values) {
-    const normalized = normalizeMarkPreset(value);
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    safeValues.push(normalized);
+function writeStoredMarkPresets(values: MarkPreset[]) {
+  const safeValues = normalizeMarkPresets(values, defaultMarkPresets);
+  try {
+    window.localStorage.setItem(markPresetsStorageKey, JSON.stringify(safeValues));
+  } catch {
+    // Ignore storage failures; presets still work for the current dialog.
   }
-  writeStoredStringArray(markPresetsStorageKey, safeValues);
+}
+
+function normalizeMarkPresets(values: unknown[], defaults: MarkPreset[]): MarkPreset[] {
+  const candidateByLabel = new Map<string, MarkPreset>();
+  for (const value of values) {
+    if (!value || typeof value !== "object") continue;
+    const rawLabel = (value as { label?: unknown }).label;
+    if (typeof rawLabel !== "string") continue;
+    const label = normalizeMarkPreset(rawLabel);
+    const color = parseMarkColor((value as { color?: unknown }).color);
+    if (!label || !color || candidateByLabel.has(label)) continue;
+    candidateByLabel.set(label, { label, color });
+  }
+
+  const result = defaults.map((preset) => candidateByLabel.get(preset.label) ?? { ...preset });
+  const seen = new Set(result.map((preset) => preset.label));
+  for (const preset of candidateByLabel.values()) {
+    if (seen.has(preset.label)) continue;
+    seen.add(preset.label);
+    result.push(preset);
+  }
+  return result;
 }
 
 function readStoredNumber(key: string, fallback: number) {
@@ -2874,6 +3141,7 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
       group: (args?.group as string | null | undefined) ?? null,
       marked: false,
       mark_note: null,
+      mark_color: null,
     } as T;
   }
   if (command === "rename_account") return { ...accounts[0], name: String(args?.newName ?? "renamed") } as T;
@@ -2886,9 +3154,10 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
     const name = String(args?.name ?? accounts[0].name);
     const marked = Boolean(args?.marked);
     const note = (args?.note as string | null | undefined) ?? null;
-    mockMarkOverrides.set(name, { marked, note });
+    const color = marked ? parseMarkColor(args?.color) ?? "red" : null;
+    mockMarkOverrides.set(name, { marked, note, color });
     const account = accounts.find((item) => item.name === name) ?? accounts[0];
-    return { ...account, name, marked, mark_note: marked ? note : null } as T;
+    return { ...account, name, marked, mark_note: marked ? note : null, mark_color: color } as T;
   }
   if (command === "set_proxy" || command === "set_region" || command === "toggle_locale") return accounts[0] as T;
   return undefined as T;
@@ -2906,6 +3175,7 @@ function mockAccounts(): Account[] {
       group: "codex",
       marked: true,
       mark_note: null,
+      mark_color: null,
       region: null,
       locale_enabled: false,
       proxy_display: "关",
@@ -2921,6 +3191,7 @@ function mockAccounts(): Account[] {
       group: "codex",
       marked: false,
       mark_note: null,
+      mark_color: null,
       region: "JP",
       locale_enabled: true,
       proxy_display: "关",
@@ -2936,6 +3207,7 @@ function mockAccounts(): Account[] {
       group: "codex",
       marked: true,
       mark_note: "待检查",
+      mark_color: "orange",
       region: "US",
       locale_enabled: false,
       proxy_display: "socks5://proxy.example.net:1080（经本机 SOCKS5 中继）",
@@ -2951,6 +3223,7 @@ function mockAccounts(): Account[] {
       group: "antigravity",
       marked: false,
       mark_note: null,
+      mark_color: null,
       region: null,
       locale_enabled: false,
       proxy_display: "关",
@@ -2966,6 +3239,7 @@ function mockAccounts(): Account[] {
       group: null,
       marked: false,
       mark_note: null,
+      mark_color: null,
       region: "NL",
       locale_enabled: false,
       proxy_display: "关",
@@ -2975,7 +3249,12 @@ function mockAccounts(): Account[] {
   return accounts.map((account) => {
     const override = mockMarkOverrides.get(account.name);
     return override
-      ? { ...account, marked: override.marked, mark_note: override.marked ? override.note : null }
+      ? {
+          ...account,
+          marked: override.marked,
+          mark_note: override.marked ? override.note : null,
+          mark_color: override.marked ? override.color : null,
+        }
       : account;
   });
 }
@@ -3112,6 +3391,9 @@ function errorMessage(caught: unknown) {
   }
   if (raw.includes("unsupported proxy URL")) {
     return "代理须以 socks5://、http:// 或 https:// 开头。";
+  }
+  if (raw.includes("account mark color is invalid")) {
+    return "标记颜色无效：请从红、橙、绿、蓝、紫、灰中选择。";
   }
   if (raw.includes("account mark is invalid")) {
     return "标记内容无效：请使用不超过 24 个字符的单行文字。";

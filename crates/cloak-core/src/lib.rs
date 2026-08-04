@@ -143,6 +143,8 @@ pub enum CloakError {
     InvalidProxy,
     #[error("account mark is invalid; use one line with at most 24 characters")]
     InvalidAccountMark,
+    #[error("account mark color is invalid; use red, orange, green, blue, purple, or gray")]
+    InvalidAccountMarkColor,
     #[error("CloakBrowser binary not found")]
     BrowserMissing,
     #[error("companion extension not found: {0}")]
@@ -213,6 +215,7 @@ pub struct Account {
     pub group: Option<String>,
     pub marked: bool,
     pub mark_note: Option<String>,
+    pub mark_color: Option<String>,
     pub region: Option<String>,
     pub locale_enabled: bool,
     pub proxy_display: String,
@@ -494,6 +497,8 @@ pub fn read_account(config: &CloakConfig, name: &str) -> Result<Account> {
     let mark_path = profile_path.join(".cloak-marked");
     let marked = mark_path.exists();
     let mark_note = read_first_line(&mark_path)?;
+    let mark_color = read_first_line(&profile_path.join(".cloak-mark-color"))?
+        .filter(|value| valid_mark_color(value));
     let region = read_first_line(&profile_path.join(".cloak-region"))?;
     let locale_enabled = profile_path.join(".cloak-locale").exists();
     let proxy_raw = read_first_line(&profile_path.join(".cloak-proxy"))?;
@@ -516,6 +521,7 @@ pub fn read_account(config: &CloakConfig, name: &str) -> Result<Account> {
         group: group.filter(|s| !s.is_empty()),
         marked,
         mark_note,
+        mark_color,
         region: region.filter(|s| !s.is_empty()),
         locale_enabled,
         proxy_display,
@@ -705,9 +711,11 @@ pub fn set_mark(
     name: &str,
     marked: bool,
     note: Option<&str>,
+    color: Option<&str>,
 ) -> Result<Account> {
     let profile = ensure_profile(config, name)?;
     let path = profile.join(".cloak-marked");
+    let color_path = profile.join(".cloak-mark-color");
     if marked {
         let note = note.map(str::trim).filter(|value| !value.is_empty());
         if note
@@ -715,11 +723,26 @@ pub fn set_mark(
         {
             return Err(CloakError::InvalidAccountMark);
         }
+        let color = color.map(str::trim).filter(|value| !value.is_empty());
+        if color.is_some_and(|value| !valid_mark_color(value)) {
+            return Err(CloakError::InvalidAccountMarkColor);
+        }
         write_secret_atomic(&path, note.unwrap_or(""))?;
+        if let Some(color) = color {
+            write_secret_atomic(&color_path, color)?;
+        }
     } else {
         remove_if_present(&path)?;
+        remove_if_present(&color_path)?;
     }
     read_account(config, name)
+}
+
+fn valid_mark_color(value: &str) -> bool {
+    matches!(
+        value,
+        "red" | "orange" | "green" | "blue" | "purple" | "gray"
+    )
 }
 
 pub fn toggle_locale(config: &CloakConfig, name: &str) -> Result<Account> {
@@ -2854,6 +2877,7 @@ fn secure_account_dir(path: &Path) -> Result<()> {
         ".cloak-region",
         ".cloak-group",
         ".cloak-marked",
+        ".cloak-mark-color",
     ] {
         let path = path.join(file);
         if path.exists() {
@@ -3353,29 +3377,43 @@ mod tests {
         fs::create_dir_all(&config.extension_source).unwrap();
 
         create_account(&config, "work").unwrap();
-        let marked = set_mark(&config, "work", true, None).unwrap();
+        let marked = set_mark(&config, "work", true, None, Some("green")).unwrap();
         assert!(marked.marked);
         assert_eq!(marked.mark_note, None);
+        assert_eq!(marked.mark_color.as_deref(), Some("green"));
         assert!(config.profile_dir("work").join(".cloak-marked").exists());
+        assert!(config
+            .profile_dir("work")
+            .join(".cloak-mark-color")
+            .exists());
 
-        let noted = set_mark(&config, "work", true, Some("  待复查  ")).unwrap();
+        let noted = set_mark(&config, "work", true, Some("  待复查  "), None).unwrap();
         assert!(noted.marked);
         assert_eq!(noted.mark_note.as_deref(), Some("待复查"));
+        assert_eq!(noted.mark_color.as_deref(), Some("green"));
 
         let renamed = rename_account(&config, "work", "work2").unwrap();
         assert!(renamed.marked);
         assert_eq!(renamed.mark_note.as_deref(), Some("待复查"));
+        assert_eq!(renamed.mark_color.as_deref(), Some("green"));
         let trashed = set_account_trashed(&config, "work2", true).unwrap();
         assert!(trashed.marked);
         assert_eq!(trashed.mark_note.as_deref(), Some("待复查"));
+        assert_eq!(trashed.mark_color.as_deref(), Some("green"));
         let restored = set_account_trashed(&config, "work2", false).unwrap();
         assert!(restored.marked);
         assert_eq!(restored.mark_note.as_deref(), Some("待复查"));
+        assert_eq!(restored.mark_color.as_deref(), Some("green"));
 
-        let cleared = set_mark(&config, "work2", false, None).unwrap();
+        let cleared = set_mark(&config, "work2", false, None, None).unwrap();
         assert!(!cleared.marked);
         assert_eq!(cleared.mark_note, None);
+        assert_eq!(cleared.mark_color, None);
         assert!(!config.profile_dir("work2").join(".cloak-marked").exists());
+        assert!(!config
+            .profile_dir("work2")
+            .join(".cloak-mark-color")
+            .exists());
     }
 
     #[test]
@@ -3391,14 +3429,27 @@ mod tests {
         create_account(&config, "work").unwrap();
 
         assert!(matches!(
-            set_mark(&config, "work", true, Some("first\nsecond")),
+            set_mark(&config, "work", true, Some("first\nsecond"), None),
             Err(CloakError::InvalidAccountMark)
         ));
         assert!(matches!(
-            set_mark(&config, "work", true, Some("1234567890123456789012345")),
+            set_mark(
+                &config,
+                "work",
+                true,
+                Some("1234567890123456789012345"),
+                None
+            ),
             Err(CloakError::InvalidAccountMark)
         ));
+        assert!(matches!(
+            set_mark(&config, "work", true, Some("work"), Some("pink")),
+            Err(CloakError::InvalidAccountMarkColor)
+        ));
         assert!(!read_account(&config, "work").unwrap().marked);
+
+        fs::write(config.profile_dir("work").join(".cloak-mark-color"), "pink").unwrap();
+        assert_eq!(read_account(&config, "work").unwrap().mark_color, None);
     }
 
     #[test]

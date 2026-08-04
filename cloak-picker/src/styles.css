@@ -756,9 +756,9 @@ summary:focus-visible {
   justify-content: flex-start;
   gap: 5px;
   overflow: hidden;
-  border: 1px solid rgba(217, 45, 32, 0.2);
+  border: 1px solid var(--mark-border, rgba(217, 45, 32, 0.2));
   border-radius: 999px;
-  background: var(--danger-soft);
+  background: var(--mark-bg, var(--danger-soft));
   padding: 0 7px 0 5px;
   line-height: 18px;
 }
@@ -769,8 +769,8 @@ summary:focus-visible {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: var(--danger);
-  box-shadow: 0 0 0 2px rgba(217, 45, 32, 0.1);
+  background: var(--mark-solid, var(--danger));
+  box-shadow: 0 0 0 2px var(--mark-ring, rgba(217, 45, 32, 0.1));
 }
 
 .contextMarkDot {
@@ -787,15 +787,15 @@ summary:focus-visible {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: var(--danger);
-  box-shadow: 0 0 0 2px rgba(217, 45, 32, 0.1);
+  background: var(--mark-solid, var(--danger));
+  box-shadow: 0 0 0 2px var(--mark-ring, rgba(217, 45, 32, 0.1));
   content: "";
 }
 
 .markNote {
   min-width: 0;
   overflow: hidden;
-  color: #b42318;
+  color: var(--mark-text, #b42318);
   font-size: 10px;
   font-weight: 650;
   text-overflow: ellipsis;
@@ -803,7 +803,7 @@ summary:focus-visible {
 }
 
 .contextMarkDot.clear::before {
-  border: 1.5px solid rgba(217, 45, 32, 0.72);
+  border: 1.5px solid var(--mark-solid, rgba(217, 45, 32, 0.72));
   background: transparent;
   box-shadow: none;
 }
@@ -1494,8 +1494,10 @@ button:disabled {
   gap: 14px;
   width: min(440px, calc(100vw - 36px));
   max-width: 100%;
+  max-height: calc(100vh - 36px);
   min-width: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   border: 1px solid var(--border-strong);
   border-radius: 10px;
   background: var(--panel);
@@ -1624,20 +1626,24 @@ button:disabled {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
-  border: 1px solid rgba(0, 113, 227, 0.18);
+  border: 1px solid var(--mark-border);
   border-radius: 980px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+  background: var(--mark-bg);
+  color: var(--mark-text);
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
 }
 
 .markPresetItem:hover,
 .markPresetItem.active {
-  border-color: rgba(0, 113, 227, 0.44);
-  background: var(--accent);
-  color: #ffffff;
+  border-color: var(--mark-solid);
+  background: var(--mark-bg-strong);
 }
 
+.markPresetItem.active {
+  box-shadow: 0 0 0 2px var(--mark-ring);
+}
+
+.markPresetColor,
 .markPresetApply,
 .markPresetRemove,
 .markPresetAdd {
@@ -1653,10 +1659,27 @@ button:disabled {
   font-weight: 650;
 }
 
+.markPresetColor {
+  width: 29px;
+  border-right: 1px solid var(--mark-border);
+  padding: 0;
+}
+
+.markPresetColor > span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--mark-solid);
+  box-shadow: 0 0 0 2px var(--mark-ring);
+}
+
+.markPresetColor:hover {
+  background: var(--mark-bg-strong);
+}
+
 .markPresetApply {
-  gap: 6px;
   min-width: 0;
-  padding: 0 10px;
+  padding: 0 11px 0 8px;
 }
 
 .markPresetApply span {
@@ -1714,6 +1737,109 @@ button:disabled {
 .markPresetEditor input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.markPresetColorEditor,
+.markCurrentColor {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(246, 248, 251, 0.72);
+  padding: 9px;
+}
+
+.markPresetColorEditor {
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+
+.markColorEditorHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.markColorEditorHeader > button {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 1px 2px;
+  font: inherit;
+}
+
+.markCurrentColorName {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--mark-text);
+}
+
+.markCurrentColorName > span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--mark-solid);
+}
+
+.markColorPalette {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.markColorOption {
+  display: grid;
+  grid-template-columns: 11px minmax(0, 1fr) 12px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 30px;
+  border: 1px solid var(--mark-border);
+  border-radius: 7px;
+  background: var(--mark-bg);
+  color: var(--mark-text);
+  cursor: pointer;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 650;
+  text-align: left;
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.markColorOption:hover,
+.markColorOption.active {
+  border-color: var(--mark-solid);
+  background: var(--mark-bg-strong);
+}
+
+.markColorOption.active {
+  box-shadow: 0 0 0 2px var(--mark-ring);
+}
+
+.markColorOptionDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--mark-solid);
+  box-shadow: 0 0 0 2px var(--mark-ring);
+}
+
+.markColorOption > span:nth-child(2) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markColorOption > svg {
+  justify-self: end;
 }
 
 .modalClose {
