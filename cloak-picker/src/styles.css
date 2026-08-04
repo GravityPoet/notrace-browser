@@ -1584,6 +1584,138 @@ button:disabled {
   box-shadow: 0 8px 18px rgba(0, 113, 227, 0.14);
 }
 
+.markPresetPicker {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.markPresetHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.markPresetLabel {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.markPresetHint {
+  color: var(--soft);
+  font-size: 11px;
+  text-align: right;
+}
+
+.markPresetList {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.markPresetItem {
+  display: inline-flex;
+  align-items: stretch;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(0, 113, 227, 0.18);
+  border-radius: 980px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.markPresetItem:hover,
+.markPresetItem.active {
+  border-color: rgba(0, 113, 227, 0.44);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.markPresetApply,
+.markPresetRemove,
+.markPresetAdd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.markPresetApply {
+  gap: 6px;
+  min-width: 0;
+  padding: 0 10px;
+}
+
+.markPresetApply span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markPresetRemove {
+  width: 28px;
+  border-left: 1px solid currentColor;
+  opacity: 0.72;
+  padding: 0;
+}
+
+.markPresetRemove:hover {
+  opacity: 1;
+}
+
+.markPresetAdd {
+  gap: 5px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 980px;
+  color: var(--muted);
+  padding: 0 10px;
+}
+
+.markPresetAdd:hover {
+  border-color: rgba(0, 113, 227, 0.4);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.markPresetEditor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 7px;
+}
+
+.markPresetEditor input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: #fbfcff;
+  color: var(--text);
+  padding: 0 9px;
+  font-size: 12px;
+  outline: none;
+}
+
+.markPresetEditor input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
 .modalClose {
   position: absolute;
   top: 12px;

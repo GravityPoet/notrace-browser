@@ -187,6 +187,7 @@ const mockCancelledLaunches = new Set<string>();
 let mockChallengeAuditCancelled = false;
 
 export function resetMockCommandsForTest() {
+  mockMarkOverrides.clear();
   mockCommandCounts.clear();
   mockCommandFailures.clear();
   mockCancelledLaunches.clear();
@@ -215,6 +216,9 @@ const accountOrderStorageKey = "cloak-picker.accountOrder.v1";
 const collapsedGroupsStorageKey = "cloak-picker.collapsedGroups.v1";
 const hiddenGroupsStorageKey = "cloak-picker.hiddenGroups.v1";
 const sidebarWidthStorageKey = "cloak-picker.sidebarWidth.v1";
+const markPresetsStorageKey = "cloak-picker.markPresets.v1";
+const defaultMarkPresets = ["Plus", "自用"] as const;
+const maxMarkLength = 24;
 const defaultSidebarWidth = 326;
 const minSidebarWidth = 260;
 const minDetailWidth = 360;
@@ -279,6 +283,7 @@ export default function App() {
   const accountListRef = useRef<HTMLDivElement | null>(null);
   const resizingPaneRef = useRef(false);
   const dialogTriggerRef = useRef<HTMLElement | null>(null);
+  const markSaveInFlightRef = useRef(false);
 
   const accounts = accountView === "trash" ? trashedAccounts : activeAccounts;
   const allAccounts = useMemo(
@@ -655,22 +660,7 @@ export default function App() {
     }
 
     if (dialog.kind === "mark") {
-      const currentNote = dialog.account.mark_note?.trim() || "";
-      if (dialog.account.marked && value === currentNote) {
-        setDialog(null);
-        return;
-      }
-      const updated = await run(() =>
-        call<Account>("set_mark", {
-          name: dialog.account.name,
-          marked: true,
-          note: value || null,
-        }),
-      );
-      if (updated) {
-        setDialog(null);
-        await refresh(updated.name);
-      }
+      await saveAccountMark(dialog.account, value);
       return;
     }
 
@@ -693,6 +683,33 @@ export default function App() {
     // dialog opens already showing the previous action's error.
     setDialogError("");
     setDialog(next);
+  }
+
+  async function saveAccountMark(account: Account, rawValue: string) {
+    if (markSaveInFlightRef.current) return;
+    const value = rawValue.trim();
+    const currentNote = account.mark_note?.trim() || "";
+    if (account.marked && value === currentNote) {
+      setDialog(null);
+      return;
+    }
+
+    markSaveInFlightRef.current = true;
+    try {
+      const updated = await run(() =>
+        call<Account>("set_mark", {
+          name: account.name,
+          marked: true,
+          note: value || null,
+        }),
+      );
+      if (updated) {
+        setDialog(null);
+        await refresh(updated.name);
+      }
+    } finally {
+      markSaveInFlightRef.current = false;
+    }
   }
 
   function openCreateDialog(trigger?: HTMLElement | null) {
@@ -1823,6 +1840,7 @@ export default function App() {
           onConfirmPermanentDelete={confirmPermanentDeleteAccount}
           groupOptions={groupOptions}
           onQuickGroup={(account, value) => void assignAccountGroup(account, value || null, true)}
+          onQuickMark={(account, value) => void saveAccountMark(account, value)}
           onSubmit={submitDialog}
         />
       ) : null}
@@ -1987,6 +2005,7 @@ function EditorDialog({
   onConfirmPermanentDelete,
   groupOptions,
   onQuickGroup,
+  onQuickMark,
   onSubmit,
 }: {
   dialog: DialogState;
@@ -2000,6 +2019,7 @@ function EditorDialog({
   onConfirmPermanentDelete: (account: Account) => void;
   groupOptions: GroupOption[];
   onQuickGroup: (account: Account, value: string) => void;
+  onQuickMark: (account: Account, value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const modalRef = useRef<HTMLElement | null>(null);
@@ -2214,11 +2234,18 @@ function EditorDialog({
         <h2 id={dialogTitleId}>{config.title}</h2>
         {config.description ? <p>{config.description}</p> : null}
         {dialog.kind === "group" ? groupPicker : null}
+        {dialog.kind === "mark" ? (
+          <MarkPresetPicker
+            activeValue={dialog.value.trim()}
+            busy={busy}
+            onApply={(value) => onQuickMark(dialog.account, value)}
+          />
+        ) : null}
         <label className="field">
           <span>{config.label}</span>
           <input
             autoFocus
-            maxLength={dialog.kind === "mark" ? 24 : undefined}
+            maxLength={dialog.kind === "mark" ? maxMarkLength : undefined}
             value={dialog.value}
             placeholder={config.placeholder}
             onChange={(event) => onChange({ ...dialog, value: event.currentTarget.value })}
@@ -2236,6 +2263,119 @@ function EditorDialog({
         </div>
       </form>
     </div>
+  );
+}
+
+function MarkPresetPicker({
+  activeValue,
+  busy,
+  onApply,
+}: {
+  activeValue: string;
+  busy: boolean;
+  onApply: (value: string) => void;
+}) {
+  const [customPresets, setCustomPresets] = useState<string[]>(readStoredMarkPresets);
+  const [addingPreset, setAddingPreset] = useState(false);
+  const [newPreset, setNewPreset] = useState("");
+  const newPresetInputRef = useRef<HTMLInputElement | null>(null);
+  const presets = [...defaultMarkPresets, ...customPresets];
+  const normalizedNewPreset = normalizeMarkPreset(newPreset);
+  const canAddPreset = Boolean(normalizedNewPreset && !presets.includes(normalizedNewPreset));
+
+  useEffect(() => {
+    if (!addingPreset) return;
+    newPresetInputRef.current?.focus();
+  }, [addingPreset]);
+
+  function addPreset() {
+    if (!normalizedNewPreset || presets.includes(normalizedNewPreset)) return;
+    const next = [...customPresets, normalizedNewPreset];
+    setCustomPresets(next);
+    writeStoredMarkPresets(next);
+    setNewPreset("");
+    setAddingPreset(false);
+  }
+
+  function removePreset(value: string) {
+    const next = customPresets.filter((preset) => preset !== value);
+    setCustomPresets(next);
+    writeStoredMarkPresets(next);
+  }
+
+  return (
+    <section className="markPresetPicker" aria-label="快捷标记">
+      <div className="markPresetHeader">
+        <span className="markPresetLabel">快捷标记</span>
+        <span className="markPresetHint">点击即保存到当前账号</span>
+      </div>
+      <div className="markPresetList">
+        {presets.map((preset) => {
+          const isCustom = customPresets.includes(preset);
+          const isActive = activeValue === preset;
+          return (
+            <span className={`markPresetItem ${isActive ? "active" : ""}`} key={preset}>
+              <button
+                aria-label={`使用快捷标记 ${preset}，立即保存`}
+                aria-pressed={isActive}
+                className="markPresetApply"
+                disabled={busy}
+                type="button"
+                onClick={() => onApply(preset)}
+              >
+                <Tag aria-hidden="true" size={13} />
+                <span>{preset}</span>
+              </button>
+              {isCustom ? (
+                <button
+                  aria-label={`删除快捷标记 ${preset}`}
+                  className="markPresetRemove"
+                  disabled={busy}
+                  title="只删除快捷项，不更改账号标记"
+                  type="button"
+                  onClick={() => removePreset(preset)}
+                >
+                  <X aria-hidden="true" size={12} />
+                </button>
+              ) : null}
+            </span>
+          );
+        })}
+        <button
+          className="markPresetAdd"
+          disabled={busy}
+          type="button"
+          onClick={() => setAddingPreset((current) => !current)}
+        >
+          <Plus aria-hidden="true" size={13} />
+          新增快捷项
+        </button>
+      </div>
+      {addingPreset ? (
+        <div className="markPresetEditor">
+          <input
+            aria-label="新的快捷标记"
+            autoComplete="off"
+            maxLength={maxMarkLength}
+            placeholder="输入常用标记"
+            ref={newPresetInputRef}
+            value={newPreset}
+            onChange={(event) => setNewPreset(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return;
+              event.preventDefault();
+              addPreset();
+            }}
+          />
+          <button className="secondaryButton" type="button" onClick={() => setAddingPreset(false)}>
+            取消新增
+          </button>
+          <button className="primaryButton" disabled={!canAddPreset} type="button" onClick={addPreset}>
+            添加
+          </button>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -2568,6 +2708,37 @@ function writeStoredStringArray(key: string, values: string[]) {
   } catch {
     // Ignore storage failures; grouping still works for the current session.
   }
+}
+
+function normalizeMarkPreset(value: string): string | null {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maxMarkLength || /[\r\n]/.test(normalized)) return null;
+  return normalized;
+}
+
+function readStoredMarkPresets(): string[] {
+  const stored = readStoredStringArray(markPresetsStorageKey);
+  const seen = new Set<string>(defaultMarkPresets);
+  const presets: string[] = [];
+  for (const value of stored) {
+    const normalized = normalizeMarkPreset(value);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    presets.push(normalized);
+  }
+  return presets;
+}
+
+function writeStoredMarkPresets(values: string[]) {
+  const seen = new Set<string>(defaultMarkPresets);
+  const safeValues: string[] = [];
+  for (const value of values) {
+    const normalized = normalizeMarkPreset(value);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    safeValues.push(normalized);
+  }
+  writeStoredStringArray(markPresetsStorageKey, safeValues);
 }
 
 function readStoredNumber(key: string, fallback: number) {
