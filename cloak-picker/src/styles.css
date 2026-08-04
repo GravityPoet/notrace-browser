@@ -1626,24 +1626,23 @@ button:disabled {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
-  border: 1px solid var(--mark-border);
+  border: 1px solid rgba(0, 113, 227, 0.24);
   border-radius: 980px;
-  background: var(--mark-bg);
-  color: var(--mark-text);
+  background: var(--accent-soft);
+  color: var(--accent);
   transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
 }
 
 .markPresetItem:hover,
 .markPresetItem.active {
-  border-color: var(--mark-solid);
-  background: var(--mark-bg-strong);
+  border-color: rgba(0, 113, 227, 0.58);
+  background: #dcecff;
 }
 
 .markPresetItem.active {
-  box-shadow: 0 0 0 2px var(--mark-ring);
+  box-shadow: 0 0 0 2px var(--accent-ring);
 }
 
-.markPresetColor,
 .markPresetApply,
 .markPresetRemove,
 .markPresetAdd {
@@ -1659,27 +1658,19 @@ button:disabled {
   font-weight: 650;
 }
 
-.markPresetColor {
-  width: 29px;
-  border-right: 1px solid var(--mark-border);
-  padding: 0;
-}
-
-.markPresetColor > span {
+.markPresetDot {
+  flex: 0 0 auto;
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: var(--mark-solid);
-  box-shadow: 0 0 0 2px var(--mark-ring);
-}
-
-.markPresetColor:hover {
-  background: var(--mark-bg-strong);
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-ring);
 }
 
 .markPresetApply {
+  gap: 7px;
   min-width: 0;
-  padding: 0 11px 0 8px;
+  padding: 0 11px;
 }
 
 .markPresetApply span {
@@ -1691,7 +1682,7 @@ button:disabled {
 
 .markPresetRemove {
   width: 28px;
-  border-left: 1px solid currentColor;
+  border-left: 1px solid rgba(0, 113, 227, 0.24);
   opacity: 0.72;
   padding: 0;
 }
@@ -1739,7 +1730,6 @@ button:disabled {
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
-.markPresetColorEditor,
 .markCurrentColor {
   display: grid;
   gap: 7px;
@@ -1747,11 +1737,6 @@ button:disabled {
   border-radius: 9px;
   background: rgba(246, 248, 251, 0.72);
   padding: 9px;
-}
-
-.markPresetColorEditor {
-  border-color: var(--border-strong);
-  background: var(--surface);
 }
 
 .markColorEditorHeader {
@@ -1763,15 +1748,6 @@ button:disabled {
   color: var(--muted);
   font-size: 11px;
   font-weight: 650;
-}
-
-.markColorEditorHeader > button {
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  cursor: pointer;
-  padding: 1px 2px;
-  font: inherit;
 }
 
 .markCurrentColorName {
