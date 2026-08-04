@@ -204,6 +204,11 @@ describe("Cloak Picker dialog regressions", () => {
     const dialog = await openMarkDialog("demo-beta");
     expect(buttonWithText("Plus", dialog)).toBeTruthy();
     expect(buttonWithText("自用", dialog)).toBeTruthy();
+    expect(Array.from(dialog.querySelectorAll(".markColorOption")).map((option) => option.textContent?.trim())).toEqual([
+      "绿色",
+      "蓝色",
+      "红色",
+    ]);
 
     await click(buttonWithText("Plus", dialog));
     await settle(180);
@@ -213,21 +218,19 @@ describe("Cloak Picker dialog regressions", () => {
 
     const reopened = await openMarkDialog("demo-beta");
     expect(reopened.querySelector<HTMLInputElement>(".field input")?.value).toBe("Plus");
-    expect(reopened.querySelector('button[aria-label="修改 Plus 的颜色，当前红色"]')).not.toBeNull();
+    expect(reopened.querySelector('button[aria-label="使用快捷标记 Plus，采用当前红色，立即保存"]')).not.toBeNull();
+    expect(reopened.querySelector('button[aria-label^="修改 Plus 的颜色"]')).toBeNull();
   });
 
-  it("customizes a built-in mark color and applies the text and color together", async () => {
+  it("uses the selected color when applying a permanently blue quick mark", async () => {
     const dialog = await openMarkDialog("demo-beta");
-    const editColor = dialog.querySelector<HTMLButtonElement>('button[aria-label="修改 Plus 的颜色，当前红色"]');
-    expect(editColor).not.toBeNull();
-    await click(editColor as HTMLButtonElement);
-
-    const chooseGreen = dialog.querySelector<HTMLButtonElement>('button[aria-label="将 Plus 改为绿色"]');
+    const quickMark = buttonWithText("Plus", dialog);
+    expect(quickMark.querySelector(".markPresetDot")).not.toBeNull();
+    expect(quickMark.closest(".markPresetItem")?.hasAttribute("style")).toBe(false);
+    const chooseGreen = dialog.querySelector<HTMLButtonElement>('button[aria-label="使用绿色"]');
     expect(chooseGreen).not.toBeNull();
     await click(chooseGreen as HTMLButtonElement);
-    expect(window.localStorage.getItem("cloak-picker.markPresets.v2")).toBe(
-      '[{"label":"Plus","color":"green"},{"label":"自用","color":"red"}]',
-    );
+    expect(dialog.querySelector('button[aria-label="使用快捷标记 Plus，采用当前绿色，立即保存"]')).not.toBeNull();
 
     await click(buttonWithText("Plus", dialog));
     await settle(180);
@@ -237,7 +240,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(mark?.style.getPropertyValue("--mark-solid")).toBe("#1a8f4b");
 
     const reopened = await openMarkDialog("demo-beta");
-    expect(reopened.querySelector('button[aria-label="修改 Plus 的颜色，当前绿色"]')).not.toBeNull();
+    expect(reopened.querySelector('button[aria-label="使用快捷标记 Plus，采用当前绿色，立即保存"]')).not.toBeNull();
   });
 
   it("saves a manually entered mark with the selected color", async () => {
@@ -269,9 +272,7 @@ describe("Cloak Picker dialog regressions", () => {
     await inputText(presetInput as HTMLInputElement, "工作");
     await click(buttonWithText("添加", dialog));
 
-    expect(window.localStorage.getItem("cloak-picker.markPresets.v2")).toBe(
-      '[{"label":"Plus","color":"red"},{"label":"自用","color":"red"},{"label":"工作","color":"green"}]',
-    );
+    expect(window.localStorage.getItem("cloak-picker.markPresets.v3")).toBe('["工作"]');
     await click(buttonWithText("工作", dialog));
     await settle(180);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
@@ -279,14 +280,12 @@ describe("Cloak Picker dialog regressions", () => {
 
     const reopened = await openMarkDialog("demo-beta");
     expect(reopened.querySelector<HTMLInputElement>(".field input")?.value).toBe("工作");
-    expect(reopened.querySelector('button[aria-label="修改 工作 的颜色，当前绿色"]')).not.toBeNull();
+    expect(reopened.querySelector('button[aria-label="使用快捷标记 工作，采用当前绿色，立即保存"]')).not.toBeNull();
     const removeButton = reopened.querySelector<HTMLButtonElement>('button[aria-label="删除快捷标记 工作"]');
     expect(removeButton).not.toBeNull();
     await click(removeButton as HTMLButtonElement);
 
-    expect(window.localStorage.getItem("cloak-picker.markPresets.v2")).toBe(
-      '[{"label":"Plus","color":"red"},{"label":"自用","color":"red"}]',
-    );
+    expect(window.localStorage.getItem("cloak-picker.markPresets.v3")).toBe("[]");
     expect(Array.from(reopened.querySelectorAll("button")).some((button) => button.textContent?.trim() === "工作")).toBe(
       false,
     );
@@ -309,7 +308,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(dialog.textContent).not.toContain("两行");
   });
 
-  it("ignores invalid colors in the color-aware preset format", async () => {
+  it("migrates quick-mark text from the old color-aware format and ignores its colors", async () => {
     window.localStorage.setItem(
       "cloak-picker.markPresets.v2",
       JSON.stringify([
@@ -321,11 +320,12 @@ describe("Cloak Picker dialog regressions", () => {
     );
 
     const dialog = await openMarkDialog("demo-beta");
-    expect(dialog.querySelector('button[aria-label="修改 Plus 的颜色，当前绿色"]')).not.toBeNull();
+    expect(buttonWithText("工作", dialog)).toBeTruthy();
     expect(buttonWithText("复查", dialog)).toBeTruthy();
-    expect(Array.from(dialog.querySelectorAll("button")).some((button) => button.textContent?.trim() === "工作")).toBe(
-      false,
+    expect(Array.from(dialog.querySelectorAll("button")).filter((button) => button.textContent?.trim() === "复查")).toHaveLength(
+      1,
     );
+    expect(dialog.querySelector('button[aria-label^="修改 Plus 的颜色"]')).toBeNull();
   });
 
   it("keeps legacy archived accounts in the trash workflow", async () => {

@@ -143,7 +143,7 @@ pub enum CloakError {
     InvalidProxy,
     #[error("account mark is invalid; use one line with at most 24 characters")]
     InvalidAccountMark,
-    #[error("account mark color is invalid; use red, orange, green, blue, purple, or gray")]
+    #[error("account mark color is invalid; use green, blue, or red")]
     InvalidAccountMarkColor,
     #[error("CloakBrowser binary not found")]
     BrowserMissing,
@@ -739,10 +739,7 @@ pub fn set_mark(
 }
 
 fn valid_mark_color(value: &str) -> bool {
-    matches!(
-        value,
-        "red" | "orange" | "green" | "blue" | "purple" | "gray"
-    )
+    matches!(value, "green" | "blue" | "red")
 }
 
 pub fn toggle_locale(config: &CloakConfig, name: &str) -> Result<Account> {
@@ -3443,12 +3440,16 @@ mod tests {
             Err(CloakError::InvalidAccountMark)
         ));
         assert!(matches!(
-            set_mark(&config, "work", true, Some("work"), Some("pink")),
+            set_mark(&config, "work", true, Some("work"), Some("orange")),
             Err(CloakError::InvalidAccountMarkColor)
         ));
         assert!(!read_account(&config, "work").unwrap().marked);
 
-        fs::write(config.profile_dir("work").join(".cloak-mark-color"), "pink").unwrap();
+        fs::write(
+            config.profile_dir("work").join(".cloak-mark-color"),
+            "orange",
+        )
+        .unwrap();
         assert_eq!(read_account(&config, "work").unwrap().mark_color, None);
     }
 

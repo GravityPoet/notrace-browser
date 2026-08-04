@@ -38,13 +38,8 @@ import {
   type ReactNode,
 } from "react";
 
-const markColorValues = ["red", "orange", "green", "blue", "purple", "gray"] as const;
+const markColorValues = ["green", "blue", "red"] as const;
 type MarkColor = (typeof markColorValues)[number];
-
-type MarkPreset = {
-  label: string;
-  color: MarkColor;
-};
 
 type Account = {
   name: string;
@@ -226,11 +221,9 @@ const collapsedGroupsStorageKey = "cloak-picker.collapsedGroups.v1";
 const hiddenGroupsStorageKey = "cloak-picker.hiddenGroups.v1";
 const sidebarWidthStorageKey = "cloak-picker.sidebarWidth.v1";
 const legacyMarkPresetsStorageKey = "cloak-picker.markPresets.v1";
-const markPresetsStorageKey = "cloak-picker.markPresets.v2";
-const defaultMarkPresets: MarkPreset[] = [
-  { label: "Plus", color: "red" },
-  { label: "自用", color: "red" },
-];
+const colorAwareMarkPresetsStorageKey = "cloak-picker.markPresets.v2";
+const markPresetsStorageKey = "cloak-picker.markPresets.v3";
+const defaultMarkPresets = ["Plus", "自用"] as const;
 const maxMarkLength = 24;
 const defaultSidebarWidth = 326;
 const minSidebarWidth = 260;
@@ -248,24 +241,6 @@ type MarkColorDefinition = {
 };
 
 const markColorDefinitions: Record<MarkColor, MarkColorDefinition> = {
-  red: {
-    label: "红色",
-    solid: "#e02b20",
-    text: "#b42318",
-    background: "#fff2f1",
-    strongBackground: "#ffe7e5",
-    border: "#f2b9b4",
-    ring: "rgba(217, 45, 32, 0.16)",
-  },
-  orange: {
-    label: "橙色",
-    solid: "#e76f00",
-    text: "#9a4d00",
-    background: "#fff5e8",
-    strongBackground: "#ffe8c7",
-    border: "#f3c48a",
-    ring: "rgba(231, 111, 0, 0.16)",
-  },
   green: {
     label: "绿色",
     solid: "#1a8f4b",
@@ -284,23 +259,14 @@ const markColorDefinitions: Record<MarkColor, MarkColorDefinition> = {
     border: "#a9cdf3",
     ring: "rgba(0, 113, 227, 0.16)",
   },
-  purple: {
-    label: "紫色",
-    solid: "#7a4cc2",
-    text: "#6336a4",
-    background: "#f6f1fc",
-    strongBackground: "#ece1f8",
-    border: "#cfb7ea",
-    ring: "rgba(122, 76, 194, 0.16)",
-  },
-  gray: {
-    label: "灰色",
-    solid: "#6e6e73",
-    text: "#4d4d52",
-    background: "#f3f3f5",
-    strongBackground: "#e8e8eb",
-    border: "#c9c9cd",
-    ring: "rgba(110, 110, 115, 0.16)",
+  red: {
+    label: "红色",
+    solid: "#e02b20",
+    text: "#b42318",
+    background: "#fff2f1",
+    strongBackground: "#ffe7e5",
+    border: "#f2b9b4",
+    ring: "rgba(217, 45, 32, 0.16)",
   },
 };
 
@@ -2378,7 +2344,7 @@ function EditorDialog({
             activeColor={dialog.color}
             busy={busy}
             onActiveColorChange={(color) => onChange({ ...dialog, color })}
-            onApply={(preset) => onQuickMark(dialog.account, preset.label, preset.color)}
+            onApply={(value) => onQuickMark(dialog.account, value, dialog.color)}
           />
         ) : null}
         <label className="field">
@@ -2417,17 +2383,15 @@ function MarkPresetPicker({
   activeColor: MarkColor;
   busy: boolean;
   onActiveColorChange: (color: MarkColor) => void;
-  onApply: (preset: MarkPreset) => void;
+  onApply: (value: string) => void;
 }) {
-  const [presets, setPresets] = useState<MarkPreset[]>(readStoredMarkPresets);
+  const [presets, setPresets] = useState<string[]>(readStoredMarkPresets);
   const [addingPreset, setAddingPreset] = useState(false);
   const [newPreset, setNewPreset] = useState("");
-  const [editingPreset, setEditingPreset] = useState<string | null>(null);
   const newPresetInputRef = useRef<HTMLInputElement | null>(null);
   const normalizedNewPreset = normalizeMarkPreset(newPreset);
-  const canAddPreset = Boolean(normalizedNewPreset && !presets.some((preset) => preset.label === normalizedNewPreset));
-  const builtInLabels = new Set(defaultMarkPresets.map((preset) => preset.label));
-  const presetBeingEdited = presets.find((preset) => preset.label === editingPreset) ?? null;
+  const canAddPreset = Boolean(normalizedNewPreset && !presets.includes(normalizedNewPreset));
+  const builtInLabels = new Set<string>(defaultMarkPresets);
 
   useEffect(() => {
     if (!addingPreset) return;
@@ -2435,8 +2399,8 @@ function MarkPresetPicker({
   }, [addingPreset]);
 
   function addPreset() {
-    if (!normalizedNewPreset || presets.some((preset) => preset.label === normalizedNewPreset)) return;
-    const next = [...presets, { label: normalizedNewPreset, color: activeColor }];
+    if (!normalizedNewPreset || presets.includes(normalizedNewPreset)) return;
+    const next = [...presets, normalizedNewPreset];
     setPresets(next);
     writeStoredMarkPresets(next);
     setNewPreset("");
@@ -2444,64 +2408,42 @@ function MarkPresetPicker({
   }
 
   function removePreset(value: string) {
-    const next = presets.filter((preset) => preset.label !== value);
+    const next = presets.filter((preset) => preset !== value);
     setPresets(next);
     writeStoredMarkPresets(next);
-    if (editingPreset === value) setEditingPreset(null);
-  }
-
-  function updatePresetColor(label: string, color: MarkColor) {
-    const next = presets.map((preset) => (preset.label === label ? { ...preset, color } : preset));
-    setPresets(next);
-    writeStoredMarkPresets(next);
-    if (activeValue === label) onActiveColorChange(color);
   }
 
   return (
     <section className="markPresetPicker" aria-label="快捷标记">
       <div className="markPresetHeader">
         <span className="markPresetLabel">快捷标记</span>
-        <span className="markPresetHint">点击即保存到当前账号</span>
+        <span className="markPresetHint">使用下方颜色，点击即保存</span>
       </div>
       <div className="markPresetList">
         {presets.map((preset) => {
-          const isCustom = !builtInLabels.has(preset.label);
-          const isActive = activeValue === preset.label && activeColor === preset.color;
+          const isCustom = !builtInLabels.has(preset);
+          const isActive = activeValue === preset;
           return (
-            <span
-              className={`markPresetItem ${isActive ? "active" : ""}`}
-              key={preset.label}
-              style={markColorStyle(preset.color)}
-            >
+            <span className={`markPresetItem ${isActive ? "active" : ""}`} key={preset}>
               <button
-                aria-label={`修改 ${preset.label} 的颜色，当前${markColorLabel(preset.color)}`}
-                aria-expanded={editingPreset === preset.label}
-                className="markPresetColor"
-                disabled={busy}
-                title="修改这个快捷项的颜色"
-                type="button"
-                onClick={() => setEditingPreset((current) => (current === preset.label ? null : preset.label))}
-              >
-                <span aria-hidden="true" />
-              </button>
-              <button
-                aria-label={`使用快捷标记 ${preset.label}，${markColorLabel(preset.color)}，立即保存`}
+                aria-label={`使用快捷标记 ${preset}，采用当前${markColorLabel(activeColor)}，立即保存`}
                 aria-pressed={isActive}
                 className="markPresetApply"
                 disabled={busy}
                 type="button"
                 onClick={() => onApply(preset)}
               >
-                <span>{preset.label}</span>
+                <span className="markPresetDot" aria-hidden="true" />
+                <span>{preset}</span>
               </button>
               {isCustom ? (
                 <button
-                  aria-label={`删除快捷标记 ${preset.label}`}
+                  aria-label={`删除快捷标记 ${preset}`}
                   className="markPresetRemove"
                   disabled={busy}
                   title="只删除快捷项，不更改账号标记"
                   type="button"
-                  onClick={() => removePreset(preset.label)}
+                  onClick={() => removePreset(preset)}
                 >
                   <X aria-hidden="true" size={12} />
                 </button>
@@ -2519,23 +2461,6 @@ function MarkPresetPicker({
           新增快捷项
         </button>
       </div>
-      {presetBeingEdited ? (
-        <div className="markPresetColorEditor">
-          <div className="markColorEditorHeader">
-            <span>“{presetBeingEdited.label}”快捷项颜色</span>
-            <button aria-label="关闭快捷项颜色设置" type="button" onClick={() => setEditingPreset(null)}>
-              完成
-            </button>
-          </div>
-          <MarkColorPicker
-            ariaLabel={`选择 ${presetBeingEdited.label} 的快捷项颜色`}
-            buttonLabelPrefix={`将 ${presetBeingEdited.label} 改为`}
-            busy={busy}
-            value={presetBeingEdited.color}
-            onChange={(color) => updatePresetColor(presetBeingEdited.label, color)}
-          />
-        </div>
-      ) : null}
       {addingPreset ? (
         <div className="markPresetEditor">
           <input
@@ -2956,54 +2881,47 @@ function normalizeMarkPreset(value: string): string | null {
   return normalized;
 }
 
-function readStoredMarkPresets(): MarkPreset[] {
-  const defaults = defaultMarkPresets.map((preset) => ({ ...preset }));
+function readStoredMarkPresets(): string[] {
+  const defaults = [...defaultMarkPresets];
   try {
     const raw = window.localStorage.getItem(markPresetsStorageKey);
-    if (raw) {
+    if (raw !== null) {
       const parsed: unknown = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        return normalizeMarkPresets(parsed, defaults);
-      }
+      return Array.isArray(parsed) ? normalizeMarkPresets(parsed, defaults) : defaults;
+    }
+
+    const colorAwareRaw = window.localStorage.getItem(colorAwareMarkPresetsStorageKey);
+    if (colorAwareRaw !== null) {
+      const parsed: unknown = JSON.parse(colorAwareRaw);
+      return Array.isArray(parsed) ? normalizeMarkPresets(parsed, defaults) : defaults;
     }
   } catch {
-    // Fall back to the legacy string-only format below.
+    return defaults;
   }
 
-  const legacyPresets = readStoredStringArray(legacyMarkPresetsStorageKey).map((label) => ({
-    label,
-    color: "red" as MarkColor,
-  }));
-  return normalizeMarkPresets(legacyPresets, defaults);
+  return normalizeMarkPresets(readStoredStringArray(legacyMarkPresetsStorageKey), defaults);
 }
 
-function writeStoredMarkPresets(values: MarkPreset[]) {
+function writeStoredMarkPresets(values: string[]) {
   const safeValues = normalizeMarkPresets(values, defaultMarkPresets);
-  try {
-    window.localStorage.setItem(markPresetsStorageKey, JSON.stringify(safeValues));
-  } catch {
-    // Ignore storage failures; presets still work for the current dialog.
-  }
+  const builtInLabels = new Set<string>(defaultMarkPresets);
+  writeStoredStringArray(markPresetsStorageKey, safeValues.filter((value) => !builtInLabels.has(value)));
 }
 
-function normalizeMarkPresets(values: unknown[], defaults: MarkPreset[]): MarkPreset[] {
-  const candidateByLabel = new Map<string, MarkPreset>();
+function normalizeMarkPresets(values: unknown[], defaults: readonly string[]): string[] {
+  const result = [...defaults];
+  const seen = new Set<string>(result);
   for (const value of values) {
-    if (!value || typeof value !== "object") continue;
-    const rawLabel = (value as { label?: unknown }).label;
+    const rawLabel = typeof value === "string"
+      ? value
+      : value && typeof value === "object"
+        ? (value as { label?: unknown }).label
+        : null;
     if (typeof rawLabel !== "string") continue;
     const label = normalizeMarkPreset(rawLabel);
-    const color = parseMarkColor((value as { color?: unknown }).color);
-    if (!label || !color || candidateByLabel.has(label)) continue;
-    candidateByLabel.set(label, { label, color });
-  }
-
-  const result = defaults.map((preset) => candidateByLabel.get(preset.label) ?? { ...preset });
-  const seen = new Set(result.map((preset) => preset.label));
-  for (const preset of candidateByLabel.values()) {
-    if (seen.has(preset.label)) continue;
-    seen.add(preset.label);
-    result.push(preset);
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    result.push(label);
   }
   return result;
 }
@@ -3207,7 +3125,7 @@ function mockAccounts(): Account[] {
       group: "codex",
       marked: true,
       mark_note: "待检查",
-      mark_color: "orange",
+      mark_color: "green",
       region: "US",
       locale_enabled: false,
       proxy_display: "socks5://proxy.example.net:1080（经本机 SOCKS5 中继）",
@@ -3393,7 +3311,7 @@ function errorMessage(caught: unknown) {
     return "代理须以 socks5://、http:// 或 https:// 开头。";
   }
   if (raw.includes("account mark color is invalid")) {
-    return "标记颜色无效：请从红、橙、绿、蓝、紫、灰中选择。";
+    return "标记颜色无效：请从绿、蓝、红中选择。";
   }
   if (raw.includes("account mark is invalid")) {
     return "标记内容无效：请使用不超过 24 个字符的单行文字。";
