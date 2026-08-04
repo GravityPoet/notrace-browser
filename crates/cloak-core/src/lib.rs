@@ -39,7 +39,8 @@ const CONTENT_SETTING_ALLOW: i64 = 1;
 const CONTENT_SETTING_BLOCK: i64 = 2;
 const EXTENSION_MIME_REQUEST_HANDLING_FLAG: &str = "extension-mime-request-handling@2";
 const GEO_CACHE_TTL_SECS: u64 = 300;
-const GEO_REQUEST_TIMEOUT_SECS: u64 = 4;
+const GEO_ATTEMPT_TIMEOUT_SECS: u64 = 4;
+const GEO_LOOKUP_ATTEMPTS: usize = 2;
 
 /// Apple Silicon GPU renderer pool — base chips only, coherent with 8-core hardwareConcurrency.
 /// Pro/Max/Ultra variants excluded to avoid "M4 Max + 8 cores" inconsistency.
@@ -2034,7 +2035,38 @@ fn lookup_geo_cached(
 
 fn lookup_geo(proxy: &ProxyConfig, cancellation: Option<&AtomicBool>) -> Result<GeoPlan> {
     ensure_launch_not_cancelled(cancellation)?;
-    let mut builder = Client::builder().timeout(Duration::from_secs(GEO_REQUEST_TIMEOUT_SECS));
+    if let Some(geo) = first_complete_geo(GEO_LOOKUP_ATTEMPTS, || {
+        lookup_geo_attempt(proxy, cancellation)
+    })? {
+        return Ok(geo);
+    }
+    let total_timeout_secs = GEO_ATTEMPT_TIMEOUT_SECS * GEO_LOOKUP_ATTEMPTS as u64;
+    Err(CloakError::Io(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!(
+            "GeoIP providers did not return a complete IP/timezone result after {GEO_LOOKUP_ATTEMPTS} attempts ({total_timeout_secs} seconds total)"
+        ),
+    )))
+}
+
+fn first_complete_geo<F>(attempts: usize, mut attempt: F) -> Result<Option<GeoPlan>>
+where
+    F: FnMut() -> Result<Option<GeoPlan>>,
+{
+    for _ in 0..attempts {
+        if let Some(geo) = attempt()? {
+            return Ok(Some(geo));
+        }
+    }
+    Ok(None)
+}
+
+fn lookup_geo_attempt(
+    proxy: &ProxyConfig,
+    cancellation: Option<&AtomicBool>,
+) -> Result<Option<GeoPlan>> {
+    ensure_launch_not_cancelled(cancellation)?;
+    let mut builder = Client::builder().timeout(Duration::from_secs(GEO_ATTEMPT_TIMEOUT_SECS));
     if let Some(proxy_url) = &proxy.reqwest_proxy_url {
         builder = builder.proxy(reqwest::Proxy::all(proxy_url)?);
     }
@@ -2042,10 +2074,11 @@ fn lookup_geo(proxy: &ProxyConfig, cancellation: Option<&AtomicBool>) -> Result<
     let sources = [
         ("https://ipwho.is/", "ipwho"),
         ("https://ipinfo.io/json", "ipinfo"),
+        ("https://get.geojs.io/v1/ip/geo.json", "geojs"),
     ];
-    // Resolve independent providers concurrently. The old sequential path
-    // could wait for 2×12s before reaching the IP-only fallback and freeze the
-    // picker; each provider is now bounded to four seconds and raced.
+    // Race independent providers within a short round. lookup_geo starts a
+    // second round with a fresh client when every request in the first round
+    // stalls or returns incomplete data, avoiding reuse of a bad DNS/TLS path.
     let (sender, receiver) = mpsc::channel();
     let source_count = sources.len();
     for (url, source) in sources {
@@ -2063,18 +2096,12 @@ fn lookup_geo(proxy: &ProxyConfig, cancellation: Option<&AtomicBool>) -> Result<
         });
     }
     drop(sender);
-    if let Some(geo) = receive_first_geo(
+    receive_first_geo(
         &receiver,
         source_count,
-        Duration::from_secs(GEO_REQUEST_TIMEOUT_SECS),
+        Duration::from_secs(GEO_ATTEMPT_TIMEOUT_SECS),
         cancellation,
-    )? {
-        return Ok(geo);
-    }
-    Err(CloakError::Io(io::Error::new(
-        io::ErrorKind::TimedOut,
-        "GeoIP providers did not return a complete IP/timezone result within 4 seconds",
-    )))
+    )
 }
 
 fn receive_first_geo(
@@ -2146,6 +2173,14 @@ fn parse_geo_json(source: &str, body: &str) -> Option<GeoPlan> {
                 value.get("timezone")?.as_str()?,
             )
         }
+        "geojs" => (
+            value.get("ip")?.as_str()?,
+            value
+                .get("country_code")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+            value.get("timezone")?.as_str()?,
+        ),
         _ => return None,
     };
     if ip.is_empty() || timezone.is_empty() {
@@ -3246,6 +3281,43 @@ mod tests {
         let result = receive_first_geo(&receiver, 1, Duration::from_millis(40), None).unwrap();
         assert!(result.is_none());
         assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn geo_lookup_retries_after_an_incomplete_round() {
+        let mut calls = 0;
+        let result = first_complete_geo(GEO_LOOKUP_ATTEMPTS, || {
+            calls += 1;
+            if calls == 1 {
+                return Ok(None);
+            }
+            Ok(Some(GeoPlan {
+                exit_ip: Some("203.0.113.20".to_string()),
+                country: Some("JP".to_string()),
+                timezone: Some("Asia/Tokyo".to_string()),
+            }))
+        })
+        .unwrap();
+
+        assert_eq!(calls, 2);
+        assert_eq!(
+            result.and_then(|geo| geo.timezone),
+            Some("Asia/Tokyo".to_string())
+        );
+    }
+
+    #[test]
+    fn geojs_response_parses_complete_ip_timezone() {
+        let body = r#"{
+            "ip": "203.0.113.21",
+            "country_code": "JP",
+            "timezone": "Asia/Tokyo"
+        }"#;
+        let geo = parse_geo_json("geojs", body).unwrap();
+
+        assert_eq!(geo.exit_ip.as_deref(), Some("203.0.113.21"));
+        assert_eq!(geo.country.as_deref(), Some("JP"));
+        assert_eq!(geo.timezone.as_deref(), Some("Asia/Tokyo"));
     }
 
     #[test]
