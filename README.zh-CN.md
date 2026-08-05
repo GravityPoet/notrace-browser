@@ -44,23 +44,27 @@ graph TD
 
 NoTrace Browser 将 CloakBrowser 的源代码级内核补丁、伴侣扩展和按账号启动配置组合使用。这些机制用于降低账号关联信号；实际结果仍取决于具体内核版本、代理质量、网络路径和目标站点持续变化的检测逻辑。
 
+正常启动采用 **native-first**：依赖 CloakBrowser 内核与稳定 Seed，不向所有网页注入 Navigator/Canvas/Audio hook，也不修改页面的 `Function.prototype.toString`。旧的页面级伪装仅用于兼容对比，可通过 `CLOAK_COMPANION_PAGE_SPOOF=1` 显式启用；严格 Bot 检测场景不建议开启。
+
 ### 1. WebGL/GPU 渲染器伪装
 隐去真实的 GPU 型号（如 `Apple M4 Pro`），基于账号 Seed 注入随机化的 Apple M1–M4 渲染配置，统一上报为通用的 Metal 渲染字符串（`ANGLE (Apple, ANGLE Metal Renderer: Apple M1-M4, Unspecified Version)`，Vendor 为 `Google Inc. (Apple)`），用于减少可能导致 CreepJS 出现“like headless”提示的渲染特征矛盾。
 
 ### 2. WebRTC IP 泄露物理隔离
 利用 CloakBrowser 底层的 `--fingerprint-webrtc-ip` 参数，NoTrace 会请求受支持的内核版本在 WebRTC candidate 中呈现已配置的代理出口 IP。浏览器、网络和代理行为仍可能影响泄漏测试，每次更换内核或代理后都应重新运行实时审计。
 
-### 3. UA 与高熵客户端提示 (Client Hints) 一致性
-如果只修改 User Agent 却不改 Client Hints，会产生版本一致性矛盾。NoTrace 同步 User Agent 与 `navigator.userAgentData` 的高熵属性（包括 `fullVersionList`、`platformVersion` 和 `architecture`），用于减少应用层不一致。网络层 TLS 特征仍取决于所用内核版本与网络路径。
+### 3. UA 与客户端提示 (Client Hints) 一致性
+如果只修改 User Agent 却不改 Client Hints，会产生版本一致性矛盾。NoTrace 使用内核支持的 `Chrome` 品牌参数同步 UA、品牌主版本、`fullVersionList`、`platformVersion` 和 `architecture`；显式启用伴侣请求头规则时，也只生成浏览器原本会主动发送的低熵提示，不把高熵提示强塞给所有请求。当前 macOS 145 内核仍会返回空 `bitness`，实时审计会明确报告该上游限制。
 
-### 4. 无损 Canvas 与 Audio 噪声扰动
+### 4. 可选的旧版 Canvas 与 Audio 噪声扰动
+以下页面 hook 仅在 `CLOAK_COMPANION_PAGE_SPOOF=1` 时启用；默认由内核 Seed 负责原生指纹隔离。
+
 - **Canvas 噪声**：如果持续扭曲 Canvas 画布会导致网页图像绘制异常。NoTrace 仅在网页调用 `toDataURL` 和 `toBlob` 导出图像时拦截，临时为 8 个像素注入微小的 Seed 颜色偏置，提取数据后**立刻恢复像素原状**。这会产生按账号区分、对同一 Seed 稳定的输出，且不会故意改变可见画布。
 - **Audio 噪声**：拦截 `OfflineAudioContext.startRendering` 生成的音频信号，并在返回的 `AudioBuffer` 采样点中，按特定步长注入 $10^{-7}$ 级别的微小偏置，从而干扰 Audio 唯一指纹。
 
 ### 5. Web Worker 级时区物理同步
 普通插件无法将时区脚本注入到 Web Workers 线程中运行。NoTrace 在启动时同时应用 `--fingerprint-timezone` 参数与 `TZ` 环境变量，使受支持的内核版本能够对齐主页面与 Web Workers 的时区。
 
-### 6. 反劫持防护
+### 6. 旧版页面 hook 的掩码（仅显式启用时）
 - 将所有劫持逻辑隐藏于 Proxy 之下，并修改 `Function.prototype.toString`，使每一个被 hook 的原生函数仍然返回 `[native code]`。
 - 插件**不会**在 `window` 上留下任何属性。掩码状态保存在闭包里，调用方通过被 patch 的 `toString` 本身取回，因此没有任何页面全局变量可以指认本产品、关联共用它的多个账号，或把掩码关掉。
 
@@ -190,6 +194,11 @@ NoTrace Browser 针对 macOS 系统环境进行了深度的专属适配：
 要查看当前浏览器在有头模式下的具体指纹得分：
 ```bash
 node selftest/run-live-challenge-audit.mjs --headed --site browserscan --site fingerprintjs
+```
+
+审计指定代理时必须使用正式代理入口，以便 GeoIP、时区、语言和 WebRTC 同步生成：
+```bash
+node selftest/run-live-challenge-audit.mjs --headed --proxy-server http://127.0.0.1:7897 --site browserscan --site creepjs
 ```
 
 ### 运行自动化一致性验证

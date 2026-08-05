@@ -119,7 +119,7 @@ companion_page_spoof_enabled() {
     ! falsy "$CLOAK_JS_FINGERPRINT"
     return
   fi
-  return 0
+  return 1
 }
 
 ensure_chromium_webstore_install_flag() {
@@ -434,7 +434,14 @@ path = sys.argv[1]
 with open(path, "r", encoding="utf-8") as f:
     data = json.load(f)
 
-data.pop("content_scripts", None)
+content_scripts = [
+    entry for entry in data.get("content_scripts", [])
+    if entry.get("js") == ["startup-recovery.js"]
+]
+if content_scripts:
+    data["content_scripts"] = content_scripts
+else:
+    data.pop("content_scripts", None)
 data.pop("host_permissions", None)
 data.pop("background", None)
 data.pop("declarative_net_request", None)
@@ -827,9 +834,9 @@ args=(
   # Suppress Chromium's bad-flags infobar without enabling automation mode.
   "--test-type"
   "--disable-blink-features=AutomationControlled"
-  # Names the brand that --fingerprint-brand-version applies to; without it the
-  # engine emits Full-Version-List entries with no version at all.
-  "--fingerprint-brand=Google Chrome"
+  # CloakBrowser accepts the product token "Chrome" here; "Google Chrome" is
+  # the emitted Client-Hints label and leaves native full-version entries empty.
+  "--fingerprint-brand=Chrome"
   "--fingerprint-brand-version=$CLOAK_CHROME_FULL"
   "--fingerprint-platform-version=$CLOAK_MAC_PLATFORM_VERSION"
   "--fingerprint-gpu-vendor=Google Inc. (Apple)"

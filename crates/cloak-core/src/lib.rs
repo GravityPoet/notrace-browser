@@ -2441,14 +2441,11 @@ fn append_native_fingerprint_args(
     }
     // New: brand-version, platform-version, GPU vendor/renderer (C2+C3)
     //
-    // --fingerprint-brand names which brand --fingerprint-brand-version applies
-    // to. Without it the engine emits Sec-CH-UA-Full-Version-List entries with
-    // no version at all ("Not A(Brand";v="8.0.0.0", "Chromium", "Google Chrome"),
-    // which any origin that opts in via Accept-CH can read as inconsistent with
-    // Sec-CH-UA. Naming the brand versions the one that matters. It does not
-    // make the engine's list match Chrome — "Chromium" stays unversioned and the
-    // GREASE brand differs — but it is strictly closer.
-    argv.push("--fingerprint-brand=Google Chrome".to_string());
+    // CloakBrowser accepts the product token "Chrome" here, not the emitted
+    // Client-Hints label "Google Chrome". Passing the label leaves Chromium's
+    // native full-version entries empty; the supported token versions both the
+    // Chromium and Google Chrome entries coherently with the UA.
+    argv.push("--fingerprint-brand=Chrome".to_string());
     argv.push(format!(
         "--fingerprint-brand-version={full}",
         full = engine.full
@@ -2717,7 +2714,32 @@ fn strip_companion_page_scripts(manifest_path: &Path) -> Result<()> {
     let body = fs::read_to_string(manifest_path)?;
     let mut manifest: Value = serde_json::from_str(&body)?;
     if let Some(object) = manifest.as_object_mut() {
-        object.remove("content_scripts");
+        let retained_scripts = object
+            .get("content_scripts")
+            .and_then(Value::as_array)
+            .map(|scripts| {
+                scripts
+                    .iter()
+                    .filter(|entry| {
+                        entry
+                            .get("js")
+                            .and_then(Value::as_array)
+                            .is_some_and(|files| {
+                                files.len() == 1 && files[0].as_str() == Some("startup-recovery.js")
+                            })
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if retained_scripts.is_empty() {
+            object.remove("content_scripts");
+        } else {
+            object.insert(
+                "content_scripts".to_string(),
+                Value::Array(retained_scripts),
+            );
+        }
         object.remove("host_permissions");
         object.remove("background");
         object.remove("declarative_net_request");
@@ -3028,7 +3050,7 @@ fn companion_page_spoof_enabled_from(primary: Option<&str>, legacy: Option<&str>
     if let Some(value) = legacy {
         return !falsy(value);
     }
-    true
+    false
 }
 
 #[cfg(test)]
@@ -3711,7 +3733,7 @@ mod tests {
             "--fingerprint-locale=ja-JP",
             "--accept-lang=ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
             "--fingerprint-webrtc-ip=203.0.113.24",
-            "--fingerprint-brand=Google Chrome",
+            "--fingerprint-brand=Chrome",
             "--fingerprint-brand-version=145.0.0.0",
             "--fingerprint-platform-version=15.5.0",
             "--fingerprint-gpu-vendor=Google Inc. (Apple)",
@@ -3890,8 +3912,8 @@ mod tests {
     }
 
     #[test]
-    fn companion_page_spoof_is_enabled_by_default_for_current_binary() {
-        assert!(companion_page_spoof_enabled_from(None, None));
+    fn companion_page_spoof_is_opt_in_for_current_binary() {
+        assert!(!companion_page_spoof_enabled_from(None, None));
         assert!(companion_page_spoof_enabled_from(Some("1"), None));
         assert!(companion_page_spoof_enabled_from(None, Some("1")));
         assert!(!companion_page_spoof_enabled_from(Some("0"), None));
@@ -4192,7 +4214,10 @@ mod tests {
 	              "host_permissions": ["<all_urls>"],
 	              "background": { "service_worker": "background.js" },
 	              "declarative_net_request": { "rule_resources": [] },
-	              "content_scripts": [{ "matches": ["https://*/*"], "js": ["spoof.js"] }]
+	              "content_scripts": [
+	                { "matches": ["https://chatgpt.com/*"], "js": ["startup-recovery.js"] },
+	                { "matches": ["https://*/*"], "js": ["spoof.js"] }
+	              ]
 	            }"#,
         )
         .unwrap();
@@ -4200,7 +4225,15 @@ mod tests {
         strip_companion_page_scripts(&manifest).unwrap();
         let stripped: Value =
             serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
-        assert!(stripped.get("content_scripts").is_none());
+        let scripts = stripped
+            .get("content_scripts")
+            .and_then(Value::as_array)
+            .expect("the unrelated startup recovery script must remain");
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(
+            scripts[0].pointer("/js/0").and_then(Value::as_str),
+            Some("startup-recovery.js")
+        );
         assert!(stripped.get("host_permissions").is_none());
         assert!(stripped.get("background").is_none());
         assert!(stripped.get("declarative_net_request").is_none());

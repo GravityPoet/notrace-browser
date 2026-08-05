@@ -3,7 +3,7 @@
 // probe.html over CDP, and asserts privacy invariants. It can run a single probe
 // or a two-profile pair probe for per-seed and storage-isolation checks.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import {
   cpSync,
@@ -18,24 +18,19 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  browserIdentityForVersion,
+  browserIdentityHeaderRules,
+  companionPageSpoofEnabled,
+  parseChromiumVersion,
+} from "./browser-contract.mjs";
+
 const __dir = dirname(fileURLToPath(import.meta.url));
 const HOME = process.env.HOME;
 const BIN = process.env.CLOAK_BROWSER_BIN || `${HOME}/.cloakbrowser/current/Chromium.app/Contents/MacOS/Chromium`;
 const PROBE_PATH = join(__dir, "probe.html");
 const EXT_SOURCE = join(dirname(__dir), "extension", "cloak-companion");
-const BROWSER_IDENTITY = {
-  userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
-  platform: "MacIntel",
-  uaData: {
-    brands: [
-      { brand: "Google Chrome", version: "149" },
-      { brand: "Chromium", version: "149" },
-      { brand: "Not)A;Brand", version: "24" },
-    ],
-    mobile: false,
-    platform: "macOS",
-  },
-};
+let BROWSER_IDENTITY = null;
 
 const defaults = {
   seed: "24680",
@@ -97,21 +92,12 @@ const isPrivateV4 = (ip) =>
   /^172\.(1[6-9]|2\d|3[01])\./.test(ip);
 const isLinkLocalV6 = (ip) => /^(fe80|fc|fd)/i.test(ip);
 const isErr = (v) => typeof v !== "string" || v === "" || v.startsWith("ERR:");
-const falsy = (value) => /^(0|off|false|no)$/i.test(String(value ?? ""));
-
-function companionPageSpoofEnabled() {
-  if (Object.prototype.hasOwnProperty.call(process.env, "CLOAK_COMPANION_PAGE_SPOOF")) {
-    return !falsy(process.env.CLOAK_COMPANION_PAGE_SPOOF);
-  }
-  if (Object.prototype.hasOwnProperty.call(process.env, "CLOAK_JS_FINGERPRINT")) {
-    return !falsy(process.env.CLOAK_JS_FINGERPRINT);
-  }
-  return true;
-}
-
 function stripCompanionPageScripts(manifestPath) {
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  delete manifest.content_scripts;
+  const contentScripts = (manifest.content_scripts || [])
+    .filter((entry) => JSON.stringify(entry?.js) === JSON.stringify(["startup-recovery.js"]));
+  if (contentScripts.length) manifest.content_scripts = contentScripts;
+  else delete manifest.content_scripts;
   delete manifest.host_permissions;
   delete manifest.background;
   delete manifest.declarative_net_request;
@@ -279,6 +265,9 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
     `--fingerprint=${seed}`,
     "--fingerprint-platform=macos",
     `--user-agent=${BROWSER_IDENTITY.userAgent}`,
+    "--fingerprint-brand=Chrome",
+    `--fingerprint-brand-version=${BROWSER_IDENTITY.uaData.uaFullVersion}`,
+    `--fingerprint-platform-version=${BROWSER_IDENTITY.uaData.platformVersion}`,
     "--ignore-gpu-blocklist",
     "--test-type",
     "--disable-blink-features=AutomationControlled",
@@ -405,46 +394,6 @@ function writeBrowserIdentityHeaderRules(extDir, identity) {
   );
 }
 
-function browserIdentityHeaderRules(identity) {
-  if (!identity?.userAgent) return [];
-  const uaData = identity.uaData || {};
-  const headers = [
-    { header: "User-Agent", operation: "set", value: identity.userAgent },
-  ];
-  const brands = formatHeaderBrands(uaData.brands);
-  const fullVersionList = formatHeaderBrands(uaData.fullVersionList);
-  if (brands) headers.push({ header: "Sec-CH-UA", operation: "set", value: brands });
-  headers.push({ header: "Sec-CH-UA-Mobile", operation: "set", value: uaData.mobile ? "?1" : "?0" });
-  if (uaData.platform) headers.push({ header: "Sec-CH-UA-Platform", operation: "set", value: quoteHeader(uaData.platform) });
-  if (fullVersionList) headers.push({ header: "Sec-CH-UA-Full-Version-List", operation: "set", value: fullVersionList });
-  if (uaData.uaFullVersion) headers.push({ header: "Sec-CH-UA-Full-Version", operation: "set", value: quoteHeader(uaData.uaFullVersion) });
-  if (uaData.platformVersion) headers.push({ header: "Sec-CH-UA-Platform-Version", operation: "set", value: quoteHeader(uaData.platformVersion) });
-  if (uaData.architecture) headers.push({ header: "Sec-CH-UA-Arch", operation: "set", value: quoteHeader(uaData.architecture) });
-  if (uaData.bitness) headers.push({ header: "Sec-CH-UA-Bitness", operation: "set", value: quoteHeader(uaData.bitness) });
-  if (typeof uaData.model === "string") headers.push({ header: "Sec-CH-UA-Model", operation: "set", value: quoteHeader(uaData.model) });
-  return [{
-    id: 91001,
-    priority: 1,
-    action: { type: "modifyHeaders", requestHeaders: headers },
-    condition: {
-      regexFilter: "^https?://",
-      resourceTypes: ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "xmlhttprequest", "media", "other"],
-    },
-  }];
-}
-
-function quoteHeader(value) {
-  return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
-}
-
-function formatHeaderBrands(brands) {
-  if (!Array.isArray(brands)) return "";
-  return brands
-    .filter((item) => item && typeof item.brand === "string" && typeof item.version === "string")
-    .map((item) => `${quoteHeader(item.brand)};v=${quoteHeader(item.version)}`)
-    .join(", ");
-}
-
 async function runProbeWithRetry(label, serverUrl, opts, seed, writeStorage) {
   const maxAttempts = opts.keep ? 1 : 2;
   let lastError;
@@ -487,14 +436,21 @@ function addProbeChecks(checks, label, probe, opts) {
     (probe.cloak?.globals?.length ?? 0) === 0 && (probe.cloak?.enumerable?.length ?? 0) === 0,
     JSON.stringify(probe.cloak || {})
   );
-  const macUA = /Mac OS X/.test(probe.userAgent || "");
+  const expectedMajor = BROWSER_IDENTITY.userAgent.match(/Chrome\/(\d+)/)?.[1] || null;
+  const actualMajor = String(probe.userAgent || "").match(/Chrome\/(\d+)/)?.[1] || null;
+  const macUA = /Mac OS X/.test(probe.userAgent || "") && actualMajor === expectedMajor;
   const macUAVersion = /Mac OS X 10_15_7/.test(probe.userAgent || "");
   const macPlatform = probe.platform === "MacIntel";
-  const macCH = !probe.uaData || (probe.uaData.platform === "macOS" && !("platformVersion" in probe.uaData));
+  const macCH = !probe.uaData || (
+    probe.uaData.platform === "macOS"
+      && /^15(?:\.|$)/.test(String(probe.uaData.platformVersion || ""))
+      && /^(arm|arm64)$/.test(String(probe.uaData.architecture || ""))
+      && String(probe.uaData.model || "") === ""
+  );
   hard(
-    "UA / platform / UA-CH are coherent Mac",
+    "UA / platform / UA-CH identify the same Mac engine",
     macUA && macUAVersion && macPlatform && macCH,
-    `UA mac=${macUA} ua10157=${macUAVersion} platform=${probe.platform} CH=${probe.uaData?.platform ?? "n/a"} ${probe.uaData?.platformVersion ?? "n/a"}`
+    `UA major=${actualMajor} expected=${expectedMajor} ua10157=${macUAVersion} platform=${probe.platform} CH=${probe.uaData?.platform ?? "n/a"} ${probe.uaData?.platformVersion ?? "n/a"}`
   );
   // ContentIndex, navigator.contacts and connection.downlinkMax are Android-only.
   // Real macOS Chrome 145 reports all three undefined — checked against the
@@ -608,6 +564,11 @@ function printQuietReport(report) {
 async function main() {
   const opts = parseArgs(process.argv);
   if (!existsSync(BIN)) throw new Error(`binary not found: ${BIN}`);
+  const versionResult = spawnSync(BIN, ["--version"], { encoding: "utf8" });
+  if (versionResult.status !== 0) {
+    throw new Error(`could not read browser version: ${versionResult.stderr || versionResult.stdout}`);
+  }
+  BROWSER_IDENTITY = browserIdentityForVersion(parseChromiumVersion(versionResult.stdout));
   const server = await startProbeServer();
 
   try {
