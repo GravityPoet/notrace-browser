@@ -209,38 +209,43 @@ describe("Cloak Picker dialog regressions", () => {
       "蓝色",
       "红色",
     ]);
+    expect(dialog.querySelector('button[aria-label="使用绿色"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(dialog.querySelector('button[aria-label="使用快捷标记 Plus，采用当前绿色，立即保存"]')).not.toBeNull();
 
     await click(buttonWithText("Plus", dialog));
     await settle(180);
 
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(mockCommandCountForTest("set_mark")).toBe(1);
-
-    const reopened = await openMarkDialog("demo-beta");
-    expect(reopened.querySelector<HTMLInputElement>(".field input")?.value).toBe("Plus");
-    expect(reopened.querySelector('button[aria-label="使用快捷标记 Plus，采用当前红色，立即保存"]')).not.toBeNull();
-    expect(reopened.querySelector('button[aria-label^="修改 Plus 的颜色"]')).toBeNull();
-  });
-
-  it("uses the selected color when applying a permanently blue quick mark", async () => {
-    const dialog = await openMarkDialog("demo-beta");
-    const quickMark = buttonWithText("Plus", dialog);
-    expect(quickMark.querySelector(".markPresetDot")).not.toBeNull();
-    expect(quickMark.closest(".markPresetItem")?.hasAttribute("style")).toBe(false);
-    const chooseGreen = dialog.querySelector<HTMLButtonElement>('button[aria-label="使用绿色"]');
-    expect(chooseGreen).not.toBeNull();
-    await click(chooseGreen as HTMLButtonElement);
-    expect(dialog.querySelector('button[aria-label="使用快捷标记 Plus，采用当前绿色，立即保存"]')).not.toBeNull();
-
-    await click(buttonWithText("Plus", dialog));
-    await settle(180);
-
     const mark = accountRow("demo-beta").querySelector<HTMLElement>(".accountMark");
     expect(mark?.getAttribute("aria-label")).toBe("标记：Plus，颜色：绿色");
     expect(mark?.style.getPropertyValue("--mark-solid")).toBe("#1a8f4b");
 
     const reopened = await openMarkDialog("demo-beta");
+    expect(reopened.querySelector<HTMLInputElement>(".field input")?.value).toBe("Plus");
     expect(reopened.querySelector('button[aria-label="使用快捷标记 Plus，采用当前绿色，立即保存"]')).not.toBeNull();
+    expect(reopened.querySelector('button[aria-label^="修改 Plus 的颜色"]')).toBeNull();
+  });
+
+  it("uses an explicitly selected color when applying a permanently blue quick mark", async () => {
+    const dialog = await openMarkDialog("demo-beta");
+    const quickMark = buttonWithText("Plus", dialog);
+    expect(quickMark.querySelector(".markPresetDot")).not.toBeNull();
+    expect(quickMark.closest(".markPresetItem")?.hasAttribute("style")).toBe(false);
+    const chooseBlue = dialog.querySelector<HTMLButtonElement>('button[aria-label="使用蓝色"]');
+    expect(chooseBlue).not.toBeNull();
+    await click(chooseBlue as HTMLButtonElement);
+    expect(dialog.querySelector('button[aria-label="使用快捷标记 Plus，采用当前蓝色，立即保存"]')).not.toBeNull();
+
+    await click(buttonWithText("Plus", dialog));
+    await settle(180);
+
+    const mark = accountRow("demo-beta").querySelector<HTMLElement>(".accountMark");
+    expect(mark?.getAttribute("aria-label")).toBe("标记：Plus，颜色：蓝色");
+    expect(mark?.style.getPropertyValue("--mark-solid")).toBe("#0071e3");
+
+    const reopened = await openMarkDialog("demo-beta");
+    expect(reopened.querySelector('button[aria-label="使用快捷标记 Plus，采用当前蓝色，立即保存"]')).not.toBeNull();
   });
 
   it("saves a manually entered mark with the selected color", async () => {
