@@ -298,7 +298,7 @@ function parseMarkColor(value: unknown): MarkColor | null {
 }
 
 function normalizeMarkColor(value: unknown): MarkColor {
-  return parseMarkColor(value) ?? "red";
+  return parseMarkColor(value) ?? "green";
 }
 
 function markColorLabel(value: unknown): string {
