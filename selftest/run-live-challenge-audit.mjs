@@ -24,6 +24,11 @@ import {
   cloudflareMitigationSignal,
   mergeChallengeResponses,
 } from "./challenge-signals.mjs";
+import {
+  browserIdentityHeaderRules,
+  companionPageSpoofEnabled,
+  redactProxyCredentials,
+} from "./browser-contract.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(__dir);
@@ -60,8 +65,11 @@ const SITE_DEFS = {
           uaDataResult = { error: String(error?.message || error) };
         }
       }
-      const chMajor = uaDataResult?.brands?.[0]?.version || null;
-      const fvlMajor = uaDataResult?.fullVersionList?.[0]?.version?.split(".")?.[0] || null;
+      const productVersion = (items) => items?.find((item) => item?.brand === "Google Chrome")?.version
+        || items?.find((item) => item?.brand === "Chromium")?.version
+        || null;
+      const chMajor = productVersion(uaDataResult?.brands)?.split(".")?.[0] || null;
+      const fvlMajor = productVersion(uaDataResult?.fullVersionList)?.split(".")?.[0] || null;
       const issues = [];
       if (!uaMajor) issues.push("UA missing Chrome version");
       if (!uaDataResult) issues.push("userAgentData missing");
@@ -371,6 +379,7 @@ function parseArgs(argv) {
     sites: [],
     manualUrls: [],
     resultDir: "",
+    proxyServer: "",
   };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -407,6 +416,9 @@ function parseArgs(argv) {
       case "--result-dir":
         opts.resultDir = resolve(next());
         break;
+      case "--proxy-server":
+        opts.proxyServer = next();
+        break;
       default:
         throw new Error(`unknown argument: ${arg}`);
     }
@@ -416,6 +428,9 @@ function parseArgs(argv) {
   }
   if (!Number.isFinite(opts.timeoutMs) || opts.timeoutMs < 5000) {
     throw new Error("--timeout-ms must be at least 5000");
+  }
+  if (opts.proxyServer && !/^(https?|socks5):\/\//i.test(opts.proxyServer)) {
+    throw new Error("--proxy-server must use http://, https://, or socks5://");
   }
   for (const site of opts.sites) {
     if (!SITE_DEFS[site]) {
@@ -432,7 +447,9 @@ function runChecked(command, args, options = {}) {
     ...options,
   });
   if (result.status !== 0) {
-    throw new Error(`${command} ${args.join(" ")} failed\n${result.stderr || result.stdout}`);
+    const renderedCommand = [command, ...args].map(redactProxyCredentials).join(" ");
+    const details = redactProxyCredentials(result.stderr || result.stdout);
+    throw new Error(`${renderedCommand} failed\n${details}`);
   }
   return result.stdout;
 }
@@ -463,27 +480,12 @@ function verifyBrowserHash() {
   };
 }
 
-function truthy(value) {
-  return /^(1|on|true|yes)$/i.test(String(value ?? ""));
-}
-
-function falsy(value) {
-  return /^(0|off|false|no)$/i.test(String(value ?? ""));
-}
-
-function companionPageSpoofEnabled() {
-  if (Object.prototype.hasOwnProperty.call(process.env, "CLOAK_COMPANION_PAGE_SPOOF")) {
-    return !falsy(process.env.CLOAK_COMPANION_PAGE_SPOOF);
-  }
-  if (Object.prototype.hasOwnProperty.call(process.env, "CLOAK_JS_FINGERPRINT")) {
-    return !falsy(process.env.CLOAK_JS_FINGERPRINT);
-  }
-  return true;
-}
-
 function stripCompanionPageScripts(manifestPath) {
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  delete manifest.content_scripts;
+  const contentScripts = (manifest.content_scripts || [])
+    .filter((entry) => JSON.stringify(entry?.js) === JSON.stringify(["startup-recovery.js"]));
+  if (contentScripts.length) manifest.content_scripts = contentScripts;
+  else delete manifest.content_scripts;
   delete manifest.host_permissions;
   delete manifest.background;
   delete manifest.declarative_net_request;
@@ -540,46 +542,6 @@ function writeBrowserIdentityHeaderRules(dest, identity) {
     join(rulesDir, "browser-identity-headers.json"),
     `${JSON.stringify(browserIdentityHeaderRules(identity), null, 2)}\n`,
   );
-}
-
-function browserIdentityHeaderRules(identity) {
-  if (!identity?.userAgent) return [];
-  const uaData = identity.uaData || {};
-  const headers = [
-    { header: "User-Agent", operation: "set", value: identity.userAgent },
-  ];
-  const brands = formatHeaderBrands(uaData.brands);
-  const fullVersionList = formatHeaderBrands(uaData.fullVersionList);
-  if (brands) headers.push({ header: "Sec-CH-UA", operation: "set", value: brands });
-  headers.push({ header: "Sec-CH-UA-Mobile", operation: "set", value: uaData.mobile ? "?1" : "?0" });
-  if (uaData.platform) headers.push({ header: "Sec-CH-UA-Platform", operation: "set", value: quoteHeader(uaData.platform) });
-  if (fullVersionList) headers.push({ header: "Sec-CH-UA-Full-Version-List", operation: "set", value: fullVersionList });
-  if (uaData.uaFullVersion) headers.push({ header: "Sec-CH-UA-Full-Version", operation: "set", value: quoteHeader(uaData.uaFullVersion) });
-  if (uaData.platformVersion) headers.push({ header: "Sec-CH-UA-Platform-Version", operation: "set", value: quoteHeader(uaData.platformVersion) });
-  if (uaData.architecture) headers.push({ header: "Sec-CH-UA-Arch", operation: "set", value: quoteHeader(uaData.architecture) });
-  if (uaData.bitness) headers.push({ header: "Sec-CH-UA-Bitness", operation: "set", value: quoteHeader(uaData.bitness) });
-  if (typeof uaData.model === "string") headers.push({ header: "Sec-CH-UA-Model", operation: "set", value: quoteHeader(uaData.model) });
-  return [{
-    id: 91001,
-    priority: 1,
-    action: { type: "modifyHeaders", requestHeaders: headers },
-    condition: {
-      regexFilter: "^https?://",
-      resourceTypes: ["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "xmlhttprequest", "media", "other"],
-    },
-  }];
-}
-
-function quoteHeader(value) {
-  return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
-}
-
-function formatHeaderBrands(brands) {
-  if (!Array.isArray(brands)) return "";
-  return brands
-    .filter((item) => item && typeof item.brand === "string" && typeof item.version === "string")
-    .map((item) => `${quoteHeader(item.brand)};v=${quoteHeader(item.version)}`)
-    .join(", ");
 }
 
 async function sleep(ms) {
@@ -885,6 +847,9 @@ function launchArgsFromPlan(plan, opts) {
     if (!Array.isArray(extraArgs) || extraArgs.some((arg) => typeof arg !== "string")) {
       throw new Error("CLOAK_AUDIT_EXTRA_ARGS must be a JSON string array");
     }
+    if (extraArgs.some((arg) => arg.startsWith("--proxy-server="))) {
+      throw new Error("use --proxy-server so geo, timezone, and WebRTC follow the audited proxy");
+    }
     args.push(...extraArgs);
   }
   if (opts.headless) {
@@ -912,6 +877,9 @@ async function run() {
   mkdirSync(env.CLOAK_ACCOUNT_BASE, { recursive: true });
 
   runChecked(CLOAK, ["account", "create", opts.accountName, "--json"], { env, cwd: ROOT });
+  if (opts.proxyServer) {
+    runChecked(CLOAK, ["account", "set-proxy", opts.accountName, opts.proxyServer, "--json"], { env, cwd: ROOT });
+  }
   const plan = JSON.parse(runChecked(CLOAK, ["launch", opts.accountName, "--dry-run", "--json"], { env, cwd: ROOT }));
   const browserIdentityOverride = applyBrowserIdentityOverride(plan);
   if (plan.privacy_failures?.length) {

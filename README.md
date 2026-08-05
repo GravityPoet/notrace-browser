@@ -44,23 +44,27 @@ graph TD
 
 NoTrace Browser combines CloakBrowser's source-level engine patches with a companion extension and per-account launch configuration. These mechanisms are intended to reduce cross-account correlation; results still depend on the exact engine version, proxy quality, network path, and target site's changing detection logic.
 
+Normal launches are **native-first**: they use CloakBrowser's engine patches and a stable seed without injecting Navigator/Canvas/Audio hooks into every page or replacing page `Function.prototype.toString`. The legacy page spoof is opt-in via `CLOAK_COMPANION_PAGE_SPOOF=1` and is not recommended for strict bot-detection targets.
+
 ### 1. WebGL & GPU Masking
 Instead of reporting your physical GPU model (e.g., `Apple M4 Pro`), NoTrace overrides rendering parameters to report a generic Metal string (`ANGLE (Apple, ANGLE Metal Renderer: Apple M1-M4, Unspecified Version)`) with vendor `Google Inc. (Apple)`. This aims to reduce renderer inconsistencies that can contribute to CreepJS's `like headless` flags.
 
 ### 2. Physical WebRTC Isolation
 Utilizing CloakBrowser's `--fingerprint-webrtc-ip`, NoTrace asks supported engine builds to present the configured proxy exit IP in WebRTC candidates. Verify the result after every engine or proxy change because browser, network, and proxy behavior can still affect leakage tests.
 
-### 3. UA & High-Entropy Client Hints Consistency
-Modifying the User Agent alone creates a version-consistency discrepancy (UA vs. High-Entropy Client Hints vs. TLS/JA3/JA4 fingerprints). NoTrace maps User Agent strings with `navigator.userAgentData` (including `fullVersionList`, `platformVersion`, and `architecture`) to reduce application-layer mismatches. Network-layer TLS characteristics still depend on the selected engine build and network path.
+### 3. UA & Client Hints Consistency
+Modifying the User Agent alone creates a version-consistency discrepancy. NoTrace uses CloakBrowser's supported `Chrome` brand token to align the UA, product versions, `fullVersionList`, `platformVersion`, and `architecture`. When companion header rules are explicitly enabled, they emit only the low-entropy hints Chrome sends proactively and never force high-entropy hints onto every request. The current macOS 145 engine still reports an empty `bitness`, which the live audit records as an upstream limitation.
 
-### 4. Non-Destructive Canvas & Audio Noise
+### 4. Optional Legacy Canvas & Audio Noise
+The page hooks below run only with `CLOAK_COMPANION_PAGE_SPOOF=1`; native seed isolation is the default.
+
 - **Canvas Noise**: Instead of constantly distorting Canvas which breaks normal rendering, NoTrace intercepts `toDataURL` and `toBlob`. It injects stable, seed-based noise into 8 pixels, extracts the data, and **instantly restores the original pixels**. This produces account-specific, seed-stable output without intentionally changing the visible canvas.
 - **Audio Noise**: Intercepts `OfflineAudioContext.startRendering` to inject a stable $10^{-7}$ level delta noise across channels in the returned `AudioBuffer` samples, generating unique audio fingerprints.
 
 ### 5. Worker-Thread Timezone Sync
 Normal extensions cannot inject scripts into Web Workers, allowing fingerprinters to detect timezone mismatches inside Worker threads. NoTrace applies the `--fingerprint-timezone` flag and the `TZ` environment variable at launch so supported builds can align both the main window and Web Workers.
 
-### 6. Anti-Tampering
+### 6. Legacy Page-Hook Masking (Opt-In Only)
 - Wraps overridden properties inside clean Proxies and patches `Function.prototype.toString` so every hooked native still reports `[native code]`.
 - The companion adds **nothing** to `window`. The mask's state lives in a closure that callers reach through the patched `toString` itself, so no page global can name the product, link the accounts sharing it, or switch the mask off.
 
@@ -167,6 +171,11 @@ This repository provides local contract checks and a headed live-audit script. L
 To inspect your current fingerprint stealth under headed mode:
 ```bash
 node selftest/run-live-challenge-audit.mjs --headed --site browserscan --site fingerprintjs
+```
+
+Use the audit's proxy option so GeoIP, timezone, locale, and WebRTC are generated through the same route:
+```bash
+node selftest/run-live-challenge-audit.mjs --headed --proxy-server http://127.0.0.1:7897 --site browserscan --site creepjs
 ```
 
 Normal account launches keep the GeoIP, proxy, and privacy gates but do not run the two-profile headless browser self-test. Run checks explicitly from Cloak Picker (`检查出口` / `挑战兼容`), or opt in for CLI and legacy-script launches with `CLOAK_PREFLIGHT=async` or `CLOAK_PREFLIGHT=strict`.
