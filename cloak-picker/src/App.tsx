@@ -30,7 +30,6 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type DragEvent,
   type FormEvent,
   type KeyboardEvent,
   type MouseEvent,
@@ -177,11 +176,30 @@ type AccountDropTarget = {
   edge: "before" | "after";
 };
 
+type AccountPointerDrag = {
+  accountName: string;
+  sourceGroup: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  latestX: number;
+  latestY: number;
+  grabOffsetX: number;
+  grabOffsetY: number;
+  width: number;
+  height: number;
+  active: boolean;
+  captureElement: HTMLButtonElement;
+};
+
 const contextMenuWidth = 140;
 const contextMenuHeight = 44;
 const accountContextMenuWidth = 184;
 const accountContextMenuMaxHeight = 320;
 const contextMenuViewportPadding = 8;
+const accountDragActivationDistance = 8;
+const accountDragAutoScrollEdge = 44;
+const accountDragAutoScrollStep = 14;
 
 const emptyAccounts: Account[] = [];
 const mockMarkOverrides = new Map<string, { marked: boolean; note: string | null; color: MarkColor | null }>();
@@ -322,7 +340,9 @@ export default function App() {
   const [selectedGroup, setSelectedGroup] = useState<string>(allGroupsValue);
   const [accountSearch, setAccountSearch] = useState("");
   const [draggingAccountName, setDraggingAccountName] = useState<string>("");
+  const [pressedAccountName, setPressedAccountName] = useState<string>("");
   const [accountDropTarget, setAccountDropTarget] = useState<AccountDropTarget | null>(null);
+  const [accountReorderAnnouncement, setAccountReorderAnnouncement] = useState("");
   const [draggingGroupLabel, setDraggingGroupLabel] = useState<string>("");
   const [dropTargetGroup, setDropTargetGroup] = useState<string>("");
   const [groupOrder, setGroupOrder] = useState<string[]>(() => readStoredStringArray(groupOrderStorageKey));
@@ -360,6 +380,12 @@ export default function App() {
   const draggingGroupLabelRef = useRef("");
   const groupDragStartRef = useRef<{ label: string; x: number; y: number } | null>(null);
   const groupDragMovedRef = useRef(false);
+  const accountPointerDragRef = useRef<AccountPointerDrag | null>(null);
+  const accountDropTargetRef = useRef<AccountDropTarget | null>(null);
+  const accountDropTargetGroupRef = useRef("");
+  const accountDragPreviewRef = useRef<HTMLDivElement | null>(null);
+  const accountDragFrameRef = useRef<number | null>(null);
+  const accountDragSuppressClickRef = useRef(false);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const accountListRef = useRef<HTMLDivElement | null>(null);
   const resizingPaneRef = useRef(false);
@@ -512,6 +538,7 @@ export default function App() {
   }
 
   function handleAccountSelection(name: string) {
+    if (accountDragSuppressClickRef.current) return;
     setAccountSearch("");
     setSelectedName(name);
   }
@@ -565,6 +592,29 @@ export default function App() {
   useEffect(() => {
     writeStoredStringArray(accountOrderStorageKey, accountOrder);
   }, [accountOrder]);
+
+  useEffect(() => {
+    if (!draggingAccountName) return;
+    scheduleAccountDragPreview();
+    function cancelOnEscape(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      cancelAccountPointerDrag();
+    }
+    window.addEventListener("keydown", cancelOnEscape);
+    return () => window.removeEventListener("keydown", cancelOnEscape);
+  }, [draggingAccountName]);
+
+  useEffect(() => () => {
+    if (accountDragFrameRef.current !== null) {
+      window.cancelAnimationFrame(accountDragFrameRef.current);
+    }
+    const drag = accountPointerDragRef.current;
+    if (drag?.captureElement.hasPointerCapture(drag.pointerId)) {
+      drag.captureElement.releasePointerCapture(drag.pointerId);
+    }
+    accountPointerDragRef.current = null;
+  }, []);
 
   useEffect(() => {
     writeStoredStringArray(collapsedGroupsStorageKey, collapsedGroups);
@@ -831,12 +881,12 @@ export default function App() {
     return true;
   }
 
-  async function assignAccountGroup(account: Account, value: string | null, closeDialog: boolean) {
+  async function assignAccountGroup(account: Account, value: string | null, closeDialog: boolean): Promise<boolean> {
     const nextGroup = value?.trim() || null;
     const currentGroup = account.group?.trim() || null;
     if (currentGroup === nextGroup) {
       if (closeDialog) setDialog(null);
-      return;
+      return true;
     }
 
     const updated = await run(() =>
@@ -845,77 +895,232 @@ export default function App() {
         value: nextGroup,
       }),
     );
-    if (!updated) return;
+    if (!updated) return false;
     if (nextGroup) {
       setHiddenGroups((current) => current.filter((label) => label !== nextGroup));
       setGroupOrder((current) => [nextGroup, ...current.filter((label) => label !== nextGroup)]);
     }
     if (closeDialog) setDialog(null);
     await refresh(updated.name);
+    return true;
   }
 
-  function startAccountDrag(event: DragEvent<HTMLButtonElement>, account: Account) {
-    if (account.trashed) return;
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", account.name);
-    setAccountSearch("");
-    setAccountDropTarget(null);
-    setDraggingAccountName(account.name);
+  function updateAccountDropDestination(target: AccountDropTarget | null, groupLabel: string) {
+    accountDropTargetRef.current = target;
+    accountDropTargetGroupRef.current = groupLabel;
+    setAccountDropTarget((current) =>
+      current?.name === target?.name && current?.edge === target?.edge ? current : target,
+    );
+    setDropTargetGroup((current) => (current === groupLabel ? current : groupLabel));
+  }
+
+  function scheduleAccountDragPreview() {
+    if (accountDragFrameRef.current !== null) return;
+    accountDragFrameRef.current = window.requestAnimationFrame(() => {
+      accountDragFrameRef.current = null;
+      const drag = accountPointerDragRef.current;
+      const preview = accountDragPreviewRef.current;
+      if (!drag?.active || !preview) return;
+      const x = Math.round(drag.latestX - drag.grabOffsetX);
+      const y = Math.round(drag.latestY - drag.grabOffsetY);
+      preview.style.transform = `translate3d(${x}px, ${y}px, 0) scale(var(--account-drag-scale, 1.012))`;
+    });
+  }
+
+  function startAccountPointerDrag(event: PointerEvent<HTMLButtonElement>, account: Account) {
+    if (account.trashed || event.button !== 0 || event.isPrimary === false) return;
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest(".dragHandle")) return;
+
+    const bounds = event.currentTarget.getBoundingClientRect();
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.focus({ preventScroll: true });
+    event.currentTarget.setPointerCapture(event.pointerId);
+    accountPointerDragRef.current = {
+      accountName: account.name,
+      sourceGroup: accountGroupLabel(account),
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      latestX: event.clientX,
+      latestY: event.clientY,
+      grabOffsetX: event.clientX - bounds.left,
+      grabOffsetY: event.clientY - bounds.top,
+      width: bounds.width,
+      height: bounds.height,
+      active: false,
+      captureElement: event.currentTarget,
+    };
+    updateAccountDropDestination(null, "");
+    setPressedAccountName(account.name);
     setSelectedName(account.name);
   }
 
-  function allowAccountDrop(event: DragEvent<HTMLButtonElement>, target: Account) {
-    const source = accounts.find((account) => account.name === draggingAccountName);
-    if (!source || accountGroupLabel(source) !== accountGroupLabel(target)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = "move";
-    setDropTargetGroup("");
-    if (source.name === target.name) {
-      setAccountDropTarget(null);
+  function scrollAccountListForPointer(clientY: number) {
+    const list = accountListRef.current;
+    if (!list) return;
+    const bounds = list.getBoundingClientRect();
+    if (clientY < bounds.top - 12 || clientY > bounds.bottom + 12) return;
+    if (clientY < bounds.top + accountDragAutoScrollEdge) {
+      const strength = 1 - Math.max(clientY - bounds.top, 0) / accountDragAutoScrollEdge;
+      list.scrollTop -= Math.ceil(accountDragAutoScrollStep * strength);
+    } else if (clientY > bounds.bottom - accountDragAutoScrollEdge) {
+      const strength = 1 - Math.max(bounds.bottom - clientY, 0) / accountDragAutoScrollEdge;
+      list.scrollTop += Math.ceil(accountDragAutoScrollStep * strength);
+    }
+  }
+
+  function updateAccountPointerDestination(clientX: number, clientY: number, source: AccountPointerDrag) {
+    const hit = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+    const accountElement = hit?.closest<HTMLElement>(".accountRow[data-account-name]");
+    if (accountElement) {
+      const targetName = accountElement.dataset.accountName ?? "";
+      const targetAccount = accounts.find((account) => account.name === targetName);
+      if (!targetAccount || targetName === source.accountName) {
+        updateAccountDropDestination(null, "");
+        return;
+      }
+      const targetGroup = accountGroupLabel(targetAccount);
+      const bounds = accountElement.getBoundingClientRect();
+      const edge: AccountDropTarget["edge"] = clientY >= bounds.top + bounds.height / 2 ? "after" : "before";
+      updateAccountDropDestination(
+        { name: targetName, edge },
+        targetGroup === source.sourceGroup ? "" : targetGroup,
+      );
       return;
     }
-    setAccountDropTarget({ name: target.name, edge: accountDropEdge(event) });
+
+    const groupElement = hit?.closest<HTMLElement>("[data-account-group], [data-group-label]");
+    const targetGroup = groupElement?.dataset.accountGroup ?? groupElement?.dataset.groupLabel ?? "";
+    if (targetGroup && targetGroup !== source.sourceGroup) {
+      updateAccountDropDestination(null, targetGroup);
+      return;
+    }
+    updateAccountDropDestination(null, "");
   }
 
-  function dropAccountOnAccount(event: DragEvent<HTMLButtonElement>, target: Account) {
-    const sourceName = event.dataTransfer.getData("text/plain") || draggingAccountName;
-    const source = accounts.find((account) => account.name === sourceName);
-    if (!source || accountGroupLabel(source) !== accountGroupLabel(target)) return;
+  function moveAccountPointerDrag(event: PointerEvent<HTMLButtonElement>) {
+    const drag = accountPointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    drag.latestX = event.clientX;
+    drag.latestY = event.clientY;
+
+    if (!drag.active) {
+      const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+      if (distance < accountDragActivationDistance) return;
+      drag.active = true;
+      setAccountSearch("");
+      setPressedAccountName("");
+      setDraggingAccountName(drag.accountName);
+    }
+
     event.preventDefault();
     event.stopPropagation();
-    if (source.name !== target.name) {
-      const edge = accountDropTarget?.name === target.name ? accountDropTarget.edge : accountDropEdge(event);
-      setAccountOrder((current) => reorderAccountNames(current, accounts, source.name, target.name, edge));
+    scrollAccountListForPointer(event.clientY);
+    updateAccountPointerDestination(event.clientX, event.clientY, drag);
+    scheduleAccountDragPreview();
+  }
+
+  async function commitAccountPointerDrop(
+    sourceName: string,
+    target: AccountDropTarget | null,
+    requestedGroup: string,
+  ) {
+    const source = accounts.find((account) => account.name === sourceName);
+    const targetAccount = target ? accounts.find((account) => account.name === target.name) : null;
+    if (!source) return;
+    const sourceGroup = accountGroupLabel(source);
+    const destinationGroup = requestedGroup || (targetAccount ? accountGroupLabel(targetAccount) : sourceGroup);
+
+    if (destinationGroup === sourceGroup) {
+      if (!targetAccount || targetAccount.name === source.name || !target) return;
+      setAccountOrder((current) => reorderAccountNames(current, accounts, source.name, targetAccount.name, target.edge));
+      setAccountReorderAnnouncement(`${source.name} 的顺序已调整`);
+      return;
     }
+
+    const moved = await assignAccountGroup(
+      source,
+      destinationGroup === ungroupedLabel ? null : destinationGroup,
+      false,
+    );
+    if (!moved) return;
+    setAccountOrder((current) => {
+      if (targetAccount && target) {
+        return reorderAccountNames(current, accounts, source.name, targetAccount.name, target.edge);
+      }
+      const destinationAccounts = orderAccounts(accounts, current).filter(
+        (account) => account.name !== source.name && accountGroupLabel(account) === destinationGroup,
+      );
+      const lastAccount = destinationAccounts[destinationAccounts.length - 1];
+      return lastAccount
+        ? reorderAccountNames(current, accounts, source.name, lastAccount.name, "after")
+        : mergedAccountOrder(current, accounts);
+    });
+    setAccountReorderAnnouncement(`${source.name} 已移动到 ${destinationGroup}`);
+  }
+
+  function clearAccountPointerDrag() {
+    if (accountDragFrameRef.current !== null) {
+      window.cancelAnimationFrame(accountDragFrameRef.current);
+      accountDragFrameRef.current = null;
+    }
+    setPressedAccountName("");
     setDraggingAccountName("");
-    setAccountDropTarget(null);
-    setDropTargetGroup("");
+    updateAccountDropDestination(null, "");
   }
 
-  function leaveAccountDrop(event: DragEvent<HTMLButtonElement>, targetName: string) {
-    const related = event.relatedTarget;
-    if (related instanceof Node && event.currentTarget.contains(related)) return;
-    setAccountDropTarget((current) => (current?.name === targetName ? null : current));
+  function finishAccountPointerDrag(event: PointerEvent<HTMLButtonElement>, cancelled: boolean) {
+    const drag = accountPointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const target = accountDropTargetRef.current;
+    const targetGroup = accountDropTargetGroupRef.current;
+    accountPointerDragRef.current = null;
+    if (drag.captureElement.hasPointerCapture(event.pointerId)) {
+      drag.captureElement.releasePointerCapture(event.pointerId);
+    }
+    if (drag.active) {
+      event.preventDefault();
+      accountDragSuppressClickRef.current = true;
+      window.setTimeout(() => {
+        accountDragSuppressClickRef.current = false;
+      }, 0);
+    }
+    clearAccountPointerDrag();
+    if (drag.active && !cancelled) {
+      void commitAccountPointerDrop(drag.accountName, target, targetGroup);
+    }
   }
 
-  function allowGroupDrop(event: DragEvent<HTMLElement>, groupLabel: string) {
-    if (!draggingAccountName) return;
+  function cancelAccountPointerDrag() {
+    const drag = accountPointerDragRef.current;
+    accountPointerDragRef.current = null;
+    if (drag?.captureElement.hasPointerCapture(drag.pointerId)) {
+      drag.captureElement.releasePointerCapture(drag.pointerId);
+    }
+    clearAccountPointerDrag();
+  }
+
+  function moveAccountFromKeyboard(event: KeyboardEvent<HTMLButtonElement>, account: Account) {
+    if (!event.altKey || !["ArrowUp", "ArrowDown"].includes(event.key) || account.trashed) return;
+    const siblings = orderedAccounts.filter((candidate) => accountGroupLabel(candidate) === accountGroupLabel(account));
+    const sourceIndex = siblings.findIndex((candidate) => candidate.name === account.name);
+    const direction = event.key === "ArrowUp" ? -1 : 1;
+    const target = siblings[sourceIndex + direction];
     event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-    setAccountDropTarget(null);
-    setDropTargetGroup(groupLabel);
-  }
-
-  async function dropAccountOnGroup(event: DragEvent<HTMLElement>, groupLabel: string) {
-    event.preventDefault();
-    const accountName = event.dataTransfer.getData("text/plain") || draggingAccountName;
-    setDraggingAccountName("");
-    setAccountDropTarget(null);
-    setDropTargetGroup("");
-    const account = accounts.find((item) => item.name === accountName);
-    if (!account) return;
-    await assignAccountGroup(account, groupLabel === ungroupedLabel ? null : groupLabel, false);
+    event.stopPropagation();
+    if (!target) {
+      setAccountReorderAnnouncement(`${account.name} 已在当前分组的${direction < 0 ? "顶部" : "底部"}`);
+      return;
+    }
+    setAccountOrder((current) =>
+      reorderAccountNames(current, accounts, account.name, target.name, direction < 0 ? "before" : "after"),
+    );
+    setSelectedName(account.name);
+    setAccountReorderAnnouncement(
+      `${account.name} 已移至第 ${sourceIndex + direction + 1} 位，共 ${siblings.length} 个账号`,
+    );
   }
 
   async function moveAccountFromContextMenu(account: Account, value: string) {
@@ -1381,8 +1586,19 @@ export default function App() {
   const workspaceStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties & {
     "--sidebar-width": string;
   };
+  const draggingAccount = draggingAccountName
+    ? accounts.find((account) => account.name === draggingAccountName) ?? null
+    : null;
+  const activeAccountDrag = accountPointerDragRef.current;
+  const accountDragPreviewStyle = activeAccountDrag?.active
+    ? {
+        width: activeAccountDrag.width,
+        height: activeAccountDrag.height,
+        transform: `translate3d(${Math.round(activeAccountDrag.latestX - activeAccountDrag.grabOffsetX)}px, ${Math.round(activeAccountDrag.latestY - activeAccountDrag.grabOffsetY)}px, 0) scale(var(--account-drag-scale, 1.012))`,
+      }
+    : undefined;
   return (
-    <main className="shell">
+    <main className={`shell ${draggingAccountName ? "accountDragging" : ""}`}>
       <header className="topbar">
         <div className="brand">
           <span className="mark" />
@@ -1502,17 +1718,6 @@ export default function App() {
                   data-group-label={isAll ? undefined : group.label}
                   key={group.value}
                   title={isAll ? "再次点击可折叠或展开全部分组" : "按住拖动可调整分组顺序"}
-                  onDragLeave={() => setDropTargetGroup((current) => (current === group.label ? "" : current))}
-                  onDragOver={(event) => {
-                    if (!isAll) {
-                      allowGroupDrop(event, group.label);
-                    }
-                  }}
-                  onDrop={(event) => {
-                    if (!isAll) {
-                      void dropAccountOnGroup(event, group.label);
-                    }
-                  }}
                   onPointerCancel={endGroupPointerDrag}
                   onPointerDown={(event) => startGroupPointerDrag(event, group)}
                   onPointerMove={moveGroupPointerDrag}
@@ -1593,28 +1798,25 @@ export default function App() {
               groupedAccounts.map((group) => (
                 <AccountGroupSection
                   accountDropTarget={accountDropTarget}
+                  draggingAccountName={draggingAccountName}
+                  pressedAccountName={pressedAccountName}
                   collapsed={selectedGroup === allGroupsValue && collapsedGroups.includes(group.label)}
                   canCollapse={selectedGroup === allGroupsValue}
                   dropTarget={dropTargetGroup === group.label}
                   group={group}
                   key={group.label}
-                  onAllowDrop={allowGroupDrop}
-                  onAllowAccountDrop={allowAccountDrop}
-                  onDropAccount={dropAccountOnGroup}
-                  onDropAccountOnAccount={dropAccountOnAccount}
-                  onLeaveAccountDrop={leaveAccountDrop}
+                  onFinishAccountDrag={finishAccountPointerDrag}
                   onLaunchAccount={launchAccount}
+                  onMoveAccountDrag={moveAccountPointerDrag}
+                  onMoveAccountFromKeyboard={moveAccountFromKeyboard}
                   onOpenAccountContextMenu={openAccountContextMenu}
                   onRestoreAccount={restoreAccount}
                   onSelectAccount={handleAccountSelection}
-                  onStartAccountDrag={startAccountDrag}
+                  onStartAccountDrag={startAccountPointerDrag}
                   onToggleCollapse={toggleGroupCollapse}
                   locatedName={hasAccountSearch ? accountSearchMatch?.name ?? "" : ""}
                   searching={false}
                   selectedName={selected?.name ?? ""}
-                  setDraggingAccountName={setDraggingAccountName}
-                  setAccountDropTarget={setAccountDropTarget}
-                  setDropTargetGroup={setDropTargetGroup}
                 />
               ))
             )}
@@ -1813,6 +2015,35 @@ export default function App() {
         </section>
       </section>
 
+      {draggingAccount && activeAccountDrag?.active && accountDragPreviewStyle ? (
+        <div
+          aria-hidden="true"
+          className="accountDragPreview"
+          ref={accountDragPreviewRef}
+          style={accountDragPreviewStyle}
+        >
+          <span className="accountDragPreviewHandle">
+            <GripVertical size={14} />
+          </span>
+          <strong>{middleTruncate(draggingAccount.name, 34)}</strong>
+          {draggingAccount.marked ? (
+            <span
+              className={`accountMark ${draggingAccount.mark_note ? "withNote" : ""}`}
+              style={markColorStyle(draggingAccount.mark_color)}
+            >
+              <span className="markDot" />
+              {draggingAccount.mark_note ? (
+                <span className="markNote">{middleTruncate(draggingAccount.mark_note, 16)}</span>
+              ) : null}
+            </span>
+          ) : null}
+          <code>{formatCreatedDate(draggingAccount.created_at)}</code>
+        </div>
+      ) : null}
+      <span className="visuallyHidden" role="status" aria-live="polite" aria-atomic="true">
+        {accountReorderAnnouncement}
+      </span>
+
       {groupContextMenu ? (
         <div
           className="contextMenu"
@@ -1979,55 +2210,47 @@ function AccountGroupSection({
   accountDropTarget,
   canCollapse,
   collapsed,
+  draggingAccountName,
   dropTarget,
   group,
   locatedName,
+  pressedAccountName,
   searching,
   selectedName,
-  onAllowAccountDrop,
-  onAllowDrop,
-  onDropAccount,
-  onDropAccountOnAccount,
-  onLeaveAccountDrop,
+  onFinishAccountDrag,
   onLaunchAccount,
+  onMoveAccountDrag,
+  onMoveAccountFromKeyboard,
   onOpenAccountContextMenu,
   onRestoreAccount,
   onSelectAccount,
   onStartAccountDrag,
   onToggleCollapse,
-  setAccountDropTarget,
-  setDraggingAccountName,
-  setDropTargetGroup,
 }: {
   accountDropTarget: AccountDropTarget | null;
   canCollapse: boolean;
   collapsed: boolean;
+  draggingAccountName: string;
   dropTarget: boolean;
   group: AccountGroup;
   locatedName: string;
+  pressedAccountName: string;
   searching: boolean;
   selectedName: string;
-  onAllowAccountDrop: (event: DragEvent<HTMLButtonElement>, account: Account) => void;
-  onAllowDrop: (event: DragEvent<HTMLElement>, groupLabel: string) => void;
-  onDropAccount: (event: DragEvent<HTMLElement>, groupLabel: string) => Promise<void>;
-  onDropAccountOnAccount: (event: DragEvent<HTMLButtonElement>, account: Account) => void;
-  onLeaveAccountDrop: (event: DragEvent<HTMLButtonElement>, accountName: string) => void;
+  onFinishAccountDrag: (event: PointerEvent<HTMLButtonElement>, cancelled: boolean) => void;
   onLaunchAccount: (account: Account) => Promise<void>;
+  onMoveAccountDrag: (event: PointerEvent<HTMLButtonElement>) => void;
+  onMoveAccountFromKeyboard: (event: KeyboardEvent<HTMLButtonElement>, account: Account) => void;
   onOpenAccountContextMenu: (event: MouseEvent<HTMLButtonElement>, account: Account) => void;
   onRestoreAccount: (account: Account) => Promise<void>;
   onSelectAccount: (name: string) => void;
-  onStartAccountDrag: (event: DragEvent<HTMLButtonElement>, account: Account) => void;
+  onStartAccountDrag: (event: PointerEvent<HTMLButtonElement>, account: Account) => void;
   onToggleCollapse: (groupLabel: string) => void;
-  setAccountDropTarget: (target: AccountDropTarget | null) => void;
-  setDraggingAccountName: (name: string) => void;
-  setDropTargetGroup: (groupLabel: string) => void;
 }) {
   return (
     <section
       className={`accountGroup ${searching ? "searching" : ""} ${dropTarget ? "dropTarget" : ""} ${collapsed ? "collapsed" : ""}`}
-      onDragLeave={searching ? undefined : () => setDropTargetGroup("")}
-      onDragOver={searching ? undefined : (event) => onAllowDrop(event, group.label)}
-      onDrop={searching ? undefined : (event) => void onDropAccount(event, group.label)}
+      data-account-group={searching ? undefined : group.label}
     >
       {searching ? null : (
         <div className="accountGroupHeader">
@@ -2060,28 +2283,29 @@ function AccountGroupSection({
             return (
               <button
                 aria-current={isLocated ? "true" : undefined}
-                className={`accountRow ${searching ? "searchResult" : ""} ${account.name === selectedName ? "selected" : ""} ${isLocated ? "searchLocated" : ""} ${!searching && accountDropTarget?.name === account.name ? (accountDropTarget.edge === "before" ? "dropBefore" : "dropAfter") : ""}`}
-                draggable={!searching && !account.trashed}
+                aria-keyshortcuts={!searching && !account.trashed ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
+                className={`accountRow ${searching ? "searchResult" : ""} ${account.name === selectedName ? "selected" : ""} ${isLocated ? "searchLocated" : ""} ${account.name === pressedAccountName ? "dragPressed" : ""} ${account.name === draggingAccountName ? "dragOrigin" : ""} ${!searching && accountDropTarget?.name === account.name ? (accountDropTarget.edge === "before" ? "dropBefore" : "dropAfter") : ""}`}
+                data-account-group={searching ? undefined : group.label}
+                data-account-name={searching ? undefined : account.name}
                 key={account.name}
-                title={`${account.name}${isLocated ? "｜当前搜索匹配" : ""}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${searching || account.trashed ? "" : "｜拖动可调整顺序或移动分组"}`}
+                title={`${account.name}${isLocated ? "｜当前搜索匹配" : ""}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${searching || account.trashed ? "" : "｜拖动左侧手柄排序或移动分组；⌥↑ / ⌥↓ 微调"}`}
                 onClick={() => onSelectAccount(account.name)}
                 onContextMenu={(event) => onOpenAccountContextMenu(event, account)}
-                onDoubleClick={() => {
+                onDoubleClick={(event) => {
+                  const target = event.target;
+                  if (target instanceof Element && target.closest(".dragHandle")) return;
                   if (account.trashed) {
                     void onRestoreAccount(account);
                   } else {
                     void onLaunchAccount(account);
                   }
                 }}
-                onDragEnd={searching ? undefined : () => {
-                  setDraggingAccountName("");
-                  setAccountDropTarget(null);
-                  setDropTargetGroup("");
-                }}
-                onDragLeave={searching ? undefined : (event) => onLeaveAccountDrop(event, account.name)}
-                onDragOver={searching ? undefined : (event) => onAllowAccountDrop(event, account)}
-                onDragStart={searching ? undefined : (event) => onStartAccountDrag(event, account)}
-                onDrop={searching ? undefined : (event) => onDropAccountOnAccount(event, account)}
+                onKeyDown={searching ? undefined : (event) => onMoveAccountFromKeyboard(event, account)}
+                onLostPointerCapture={searching ? undefined : (event) => onFinishAccountDrag(event, true)}
+                onPointerCancel={searching ? undefined : (event) => onFinishAccountDrag(event, true)}
+                onPointerDown={searching ? undefined : (event) => onStartAccountDrag(event, account)}
+                onPointerMove={searching ? undefined : onMoveAccountDrag}
+                onPointerUp={searching ? undefined : (event) => onFinishAccountDrag(event, false)}
               >
                 <span className="accountRail" />
                 <span className="accountMain">
@@ -2089,7 +2313,9 @@ function AccountGroupSection({
                     {searching ? null : isLocated ? (
                       <Search className="searchMatchIcon" size={14} />
                     ) : (
-                      <GripVertical className="dragHandle" size={14} />
+                      <span className="dragHandle" title="拖动调整顺序或移动分组">
+                        <GripVertical size={14} />
+                      </span>
                     )}
                     <strong title={account.name}>{middleTruncate(account.name, 34)}</strong>
                     {searching ? (
@@ -2860,11 +3086,6 @@ function reorderAccountNames(
   if (targetIndex < 0) return currentOrder;
   names.splice(targetIndex + (edge === "after" ? 1 : 0), 0, source);
   return names;
-}
-
-function accountDropEdge(event: DragEvent<HTMLElement>): AccountDropTarget["edge"] {
-  const bounds = event.currentTarget.getBoundingClientRect();
-  return event.clientY >= bounds.top + bounds.height / 2 ? "after" : "before";
 }
 
 function groupAccounts(accounts: Account[]): AccountGroup[] {
