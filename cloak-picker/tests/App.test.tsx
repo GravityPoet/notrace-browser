@@ -222,6 +222,26 @@ describe("Cloak Picker dialog regressions", () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  it("creates a standalone empty group without requiring an account name", async () => {
+    await click(buttonWithText("新建"));
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    await click(buttonWithText("新建分组", dialog ?? document));
+    const groupNameInput = dialog?.querySelector<HTMLInputElement>('input[aria-label="新分组名称"]');
+    expect(groupNameInput).not.toBeNull();
+    await inputText(groupNameInput as HTMLInputElement, "注册邮箱");
+
+    await click(buttonWithText("创建分组", dialog ?? document));
+    await settle(30);
+
+    expect(mockCommandCountForTest("create_account")).toBe(0);
+    expect(buttonWithText("注册邮箱", dialog ?? document).getAttribute("aria-pressed")).toBe("true");
+    await click(buttonWithText("取消", dialog ?? document));
+    const groupFilter = document.querySelector<HTMLElement>('[data-group-label="注册邮箱"]');
+    expect(groupFilter?.querySelector("small")?.textContent).toBe("0");
+  });
+
   it("explains that the account name is required instead of ignoring create", async () => {
     await click(buttonWithText("新建"));
 
