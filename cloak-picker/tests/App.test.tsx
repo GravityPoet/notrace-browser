@@ -77,15 +77,39 @@ async function openContextMenu(element: HTMLElement) {
   });
 }
 
+async function dispatchPointer(
+  element: HTMLElement,
+  type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel",
+  clientX: number,
+  clientY: number,
+) {
+  await act(async () => {
+    const event = new MouseEvent(type, {
+      bubbles: true,
+      button: 0,
+      buttons: type === "pointerup" || type === "pointercancel" ? 0 : 1,
+      cancelable: true,
+      clientX,
+      clientY,
+    });
+    Object.defineProperties(event, {
+      isPrimary: { value: true },
+      pointerId: { value: 1 },
+    });
+    element.dispatchEvent(event);
+  });
+}
+
 async function pressKey(key: string, shiftKey = false) {
   await act(async () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key, shiftKey }));
   });
 }
 
-async function pressKeyOn(element: HTMLElement, key: string, shiftKey = false) {
+async function pressKeyOn(element: HTMLElement, key: string, shiftKey = false, altKey = false) {
   await act(async () => {
     element.dispatchEvent(new KeyboardEvent("keydown", {
+      altKey,
       bubbles: true,
       cancelable: true,
       key,
@@ -105,6 +129,15 @@ beforeEach(async () => {
   Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
     configurable: true,
     value: vi.fn(),
+  });
+  Object.defineProperties(HTMLElement.prototype, {
+    hasPointerCapture: { configurable: true, value: vi.fn(() => true) },
+    releasePointerCapture: { configurable: true, value: vi.fn() },
+    setPointerCapture: { configurable: true, value: vi.fn() },
+  });
+  Object.defineProperty(document, "elementFromPoint", {
+    configurable: true,
+    value: vi.fn(() => null),
   });
 
   container = document.createElement("div");
@@ -240,6 +273,52 @@ describe("Cloak Picker dialog regressions", () => {
     await click(buttonWithText("取消", dialog ?? document));
     const groupFilter = document.querySelector<HTMLElement>('[data-group-label="注册邮箱"]');
     expect(groupFilter?.querySelector("small")?.textContent).toBe("0");
+  });
+
+  it("reorders accounts without the native drag ghost and keeps a keyboard alternative", async () => {
+    const alpha = accountRow("demo-alpha@example.test");
+    expect(alpha.getAttribute("draggable")).toBeNull();
+    expect(alpha.getAttribute("aria-keyshortcuts")).toBe("Alt+ArrowUp Alt+ArrowDown");
+    expect(alpha.querySelector(".dragHandle")?.getAttribute("title")).toBe("拖动调整顺序或移动分组");
+
+    await pressKeyOn(alpha, "ArrowDown", false, true);
+    await settle(30);
+
+    const codexNames = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[data-account-group="codex"] > .accountRow'),
+    ).map((row) => row.querySelector(".accountTitle strong")?.textContent);
+    expect(codexNames).toEqual(["demo-beta", "demo-alpha@example.test"]);
+    expect(window.localStorage.getItem("cloak-picker.accountOrder.v1")).toContain(
+      '"demo-beta","demo-alpha@example.test"',
+    );
+    expect(document.querySelector('[role="status"]')?.textContent).toContain("已移至第 2 位");
+  });
+
+  it("shows one controlled pointer preview, keeps a source slot, and commits the drop", async () => {
+    const alpha = accountRow("demo-alpha@example.test");
+    const beta = accountRow("demo-beta");
+    const handle = alpha.querySelector<HTMLElement>(".dragHandle");
+    expect(handle).not.toBeNull();
+    vi.spyOn(alpha, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 280, 50));
+    vi.spyOn(beta, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 70, 280, 50));
+    vi.mocked(document.elementFromPoint).mockReturnValue(beta);
+
+    await dispatchPointer(handle as HTMLElement, "pointerdown", 22, 25);
+    await dispatchPointer(alpha, "pointermove", 22, 108);
+    await settle(30);
+
+    expect(document.querySelectorAll(".accountDragPreview")).toHaveLength(1);
+    expect(alpha.classList.contains("dragOrigin")).toBe(true);
+    expect(beta.classList.contains("dropAfter")).toBe(true);
+
+    await dispatchPointer(alpha, "pointerup", 22, 108);
+    await settle(30);
+
+    expect(document.querySelector(".accountDragPreview")).toBeNull();
+    const codexNames = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[data-account-group="codex"] > .accountRow'),
+    ).map((row) => row.querySelector(".accountTitle strong")?.textContent);
+    expect(codexNames).toEqual(["demo-beta", "demo-alpha@example.test"]);
   });
 
   it("explains that the account name is required instead of ignoring create", async () => {

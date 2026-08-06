@@ -490,14 +490,14 @@ summary:focus-visible {
 }
 
 .groupFilterButton.dropTarget {
-  border-color: rgba(0, 113, 227, 0.54);
-  background: var(--accent);
-  color: #ffffff;
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
+  border-color: rgba(0, 113, 227, 0.42);
+  background: rgba(0, 113, 227, 0.1);
+  color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.08);
 }
 
 .groupFilterButton.dropTarget .groupDragHandle {
-  color: rgba(255, 255, 255, 0.78);
+  color: var(--accent);
 }
 
 .accountList {
@@ -510,7 +510,7 @@ summary:focus-visible {
   min-width: 0;
   padding: 12px 14px 10px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.05);
-  transition: background 140ms ease;
+  transition: background 180ms ease;
 }
 
 .accountGroup:last-child {
@@ -522,7 +522,7 @@ summary:focus-visible {
 }
 
 .accountGroup.dropTarget {
-  background: rgba(0, 113, 227, 0.08);
+  background: rgba(0, 113, 227, 0.045);
 }
 
 .accountGroupHeader {
@@ -547,8 +547,8 @@ summary:focus-visible {
 }
 
 .accountGroup.dropTarget .accountGroupHeader {
-  background: rgba(0, 113, 227, 0.14);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
+  background: rgba(0, 113, 227, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.16);
 }
 
 .accountGroup.collapsed .accountGroupHeader {
@@ -618,7 +618,13 @@ summary:focus-visible {
   text-align: left;
   cursor: pointer;
   scroll-margin-block: 12px;
-  transition: background 140ms ease, color 140ms ease, opacity 140ms ease;
+  transition:
+    margin 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    background 140ms ease,
+    box-shadow 140ms ease,
+    color 140ms ease,
+    opacity 140ms ease,
+    transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .accountRow:last-child {
@@ -643,26 +649,48 @@ summary:focus-visible {
   background: rgba(0, 113, 227, 0.16);
 }
 
+.accountRow.dragPressed {
+  background: rgba(255, 255, 255, 0.96);
+  transform: scale(0.996);
+}
+
+.accountRow.dragOrigin {
+  background: rgba(0, 113, 227, 0.045);
+  box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.12);
+  outline: none;
+}
+
+.accountRow.dragOrigin > * {
+  opacity: 0;
+}
+
+.accountRow.dropBefore {
+  margin-top: 12px;
+}
+
+.accountRow.dropAfter {
+  margin-bottom: 12px;
+}
+
 .accountRow.dropBefore::before,
 .accountRow.dropAfter::after {
   position: absolute;
   z-index: 2;
-  right: 8px;
-  left: 12px;
-  height: 3px;
+  right: 10px;
+  left: 18px;
+  height: 2px;
   border-radius: 999px;
   background: var(--accent);
-  box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.12);
   content: "";
   pointer-events: none;
 }
 
 .accountRow.dropBefore::before {
-  top: -3px;
+  top: -7px;
 }
 
 .accountRow.dropAfter::after {
-  bottom: -3px;
+  bottom: -5px;
 }
 
 .accountRail {
@@ -692,8 +720,30 @@ summary:focus-visible {
 }
 
 .dragHandle {
-  flex: 0 0 auto;
+  display: inline-flex;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 30px;
+  margin: -7px 0 -7px -5px;
+  border-radius: 8px;
   color: var(--soft);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: background 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.dragHandle:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.dragHandle:active {
+  color: var(--accent);
+  cursor: grabbing;
+  transform: scale(0.94);
 }
 
 .searchMatchIcon {
@@ -821,6 +871,93 @@ summary:focus-visible {
   line-height: 18px;
   padding: 0 7px;
   text-align: center;
+}
+
+.shell.accountDragging {
+  user-select: none;
+}
+
+.shell.accountDragging .accountList,
+.shell.accountDragging .dragHandle {
+  cursor: grabbing;
+}
+
+.accountDragPreview {
+  --account-drag-scale: 1.012;
+  position: fixed;
+  z-index: 1000;
+  top: 0;
+  left: 0;
+  display: flex;
+  box-sizing: border-box;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(0, 113, 227, 0.2);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 16px 40px rgba(18, 42, 74, 0.18), 0 2px 8px rgba(18, 42, 74, 0.08);
+  color: var(--text);
+  pointer-events: none;
+  transform-origin: center;
+  will-change: transform;
+  backdrop-filter: saturate(180%) blur(18px);
+}
+
+.accountDragPreview::before {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+  content: "";
+}
+
+.accountDragPreviewHandle {
+  display: inline-flex;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+}
+
+.accountDragPreview strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountDragPreview code {
+  flex: 0 0 auto;
+  min-width: 76px;
+  border: 1px solid rgba(0, 113, 227, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--accent);
+  padding: 0 7px;
+  font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 18px;
+  text-align: center;
+}
+
+.visuallyHidden {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .detail {
@@ -1968,6 +2105,19 @@ button:disabled {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .accountDragPreview {
+    --account-drag-scale: 1;
+  }
+
+  .accountGroup,
+  .accountGroupHeader,
+  .accountRow,
+  .dragHandle {
+    transition: none !important;
   }
 }
 
