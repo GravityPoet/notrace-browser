@@ -2129,6 +2129,7 @@ function EditorDialog({
   const modalRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   const busyRef = useRef(busy);
+  const [creatingGroup, setCreatingGroup] = useState(false);
   const previouslyFocusedRef = useRef<HTMLElement | null>(
     returnFocusElement ??
       (typeof document !== "undefined" && document.activeElement instanceof HTMLElement
@@ -2306,6 +2307,7 @@ function EditorDialog({
               aria-pressed={isActive}
               onClick={() => {
                 if (dialog.kind === "create") {
+                  setCreatingGroup(false);
                   onChange({ ...dialog, group: option.value });
                   return;
                 }
@@ -2317,6 +2319,38 @@ function EditorDialog({
             </button>
           );
         })}
+        {dialog.kind === "create" ? (
+          <button
+            aria-controls="cloak-new-group-name"
+            aria-expanded={creatingGroup}
+            className="groupOption groupOptionCreate"
+            disabled={busy}
+            title="输入一个新的分组名称"
+            type="button"
+            onClick={() => {
+              setCreatingGroup(true);
+              if (dialog.group) onChange({ ...dialog, group: "" });
+            }}
+          >
+            <Plus aria-hidden="true" size={13} />
+            <span>新建分组</span>
+          </button>
+        ) : null}
+        {dialog.kind === "create" && creatingGroup ? (
+          <label className="groupCreateEditor" htmlFor="cloak-new-group-name">
+            <span>新分组名称</span>
+            <input
+              aria-label="新分组名称"
+              autoComplete="off"
+              autoFocus
+              id="cloak-new-group-name"
+              placeholder="例如：client-a"
+              value={dialog.group}
+              onChange={(event) => onChange({ ...dialog, group: event.currentTarget.value })}
+            />
+            <small>创建账号时会一并创建并自动选中该分组。</small>
+          </label>
+        ) : null}
       </div>
     ) : null;
   return (
