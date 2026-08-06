@@ -294,11 +294,13 @@ describe("Cloak Picker dialog regressions", () => {
     expect(document.querySelector('[role="status"]')?.textContent).toContain("已移至第 2 位");
   });
 
-  it("shows one controlled pointer preview, keeps a source slot, and commits the drop", async () => {
+  it("moves the placeholder with the pointer, accepts a row gap, and commits the drop", async () => {
     const alpha = accountRow("demo-alpha@example.test");
     const beta = accountRow("demo-beta");
+    const group = beta.closest<HTMLElement>("[data-account-group]");
     const handle = alpha.querySelector<HTMLElement>(".dragHandle");
     expect(handle).not.toBeNull();
+    expect(group).not.toBeNull();
     vi.spyOn(alpha, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 280, 50));
     vi.spyOn(beta, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 70, 280, 50));
     vi.mocked(document.elementFromPoint).mockReturnValue(beta);
@@ -309,9 +311,17 @@ describe("Cloak Picker dialog regressions", () => {
 
     expect(document.querySelectorAll(".accountDragPreview")).toHaveLength(1);
     expect(alpha.classList.contains("dragOrigin")).toBe(true);
-    expect(beta.classList.contains("dropAfter")).toBe(true);
+    expect(alpha.hidden).toBe(true);
+    expect(document.querySelectorAll(".accountDropPlaceholder")).toHaveLength(1);
 
-    await dispatchPointer(alpha, "pointerup", 22, 108);
+    // Releasing over the space between rows must retain the nearest insertion
+    // slot instead of clearing the destination and silently cancelling.
+    vi.mocked(document.elementFromPoint).mockReturnValue(group);
+    await dispatchPointer(alpha, "pointermove", 22, 128);
+    await settle(30);
+    expect(document.querySelectorAll(".accountDropPlaceholder")).toHaveLength(1);
+
+    await dispatchPointer(alpha, "pointerup", 22, 128);
     await settle(30);
 
     expect(document.querySelector(".accountDragPreview")).toBeNull();

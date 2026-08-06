@@ -655,42 +655,30 @@ summary:focus-visible {
 }
 
 .accountRow.dragOrigin {
-  background: rgba(0, 113, 227, 0.045);
-  box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.12);
-  outline: none;
+  display: none;
 }
 
-.accountRow.dragOrigin > * {
-  opacity: 0;
-}
-
-.accountRow.dropBefore {
-  margin-top: 12px;
-}
-
-.accountRow.dropAfter {
-  margin-bottom: 12px;
-}
-
-.accountRow.dropBefore::before,
-.accountRow.dropAfter::after {
-  position: absolute;
-  z-index: 2;
-  right: 10px;
-  left: 18px;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--accent);
-  content: "";
+.accountDropPlaceholder {
+  position: relative;
+  width: calc(100% - 16px);
+  height: 50px;
+  margin: 0 0 4px 16px;
+  border: 1px solid rgba(0, 113, 227, 0.18);
+  border-radius: 10px;
+  background: rgba(0, 113, 227, 0.035);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.38);
   pointer-events: none;
 }
 
-.accountRow.dropBefore::before {
-  top: -7px;
-}
-
-.accountRow.dropAfter::after {
-  bottom: -5px;
+.accountDropPlaceholder::before {
+  position: absolute;
+  top: 9px;
+  bottom: 9px;
+  left: -1px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+  content: "";
 }
 
 .accountRail {
@@ -880,6 +868,10 @@ summary:focus-visible {
 .shell.accountDragging .accountList,
 .shell.accountDragging .dragHandle {
   cursor: grabbing;
+}
+
+.shell.accountDragging .accountRow {
+  will-change: transform;
 }
 
 .accountDragPreview {

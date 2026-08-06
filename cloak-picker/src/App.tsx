@@ -25,7 +25,9 @@ import {
   X,
 } from "lucide-react";
 import {
+  Fragment,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -342,6 +344,7 @@ export default function App() {
   const [draggingAccountName, setDraggingAccountName] = useState<string>("");
   const [pressedAccountName, setPressedAccountName] = useState<string>("");
   const [accountDropTarget, setAccountDropTarget] = useState<AccountDropTarget | null>(null);
+  const [accountDropGroup, setAccountDropGroup] = useState("");
   const [accountReorderAnnouncement, setAccountReorderAnnouncement] = useState("");
   const [draggingGroupLabel, setDraggingGroupLabel] = useState<string>("");
   const [dropTargetGroup, setDropTargetGroup] = useState<string>("");
@@ -386,6 +389,8 @@ export default function App() {
   const accountDragPreviewRef = useRef<HTMLDivElement | null>(null);
   const accountDragFrameRef = useRef<number | null>(null);
   const accountDragSuppressClickRef = useRef(false);
+  const accountRowPositionsRef = useRef<Map<string, number>>(new Map());
+  const accountRowAnimationsRef = useRef<Map<string, Animation>>(new Map());
   const workspaceRef = useRef<HTMLElement | null>(null);
   const accountListRef = useRef<HTMLDivElement | null>(null);
   const resizingPaneRef = useRef(false);
@@ -593,6 +598,35 @@ export default function App() {
     writeStoredStringArray(accountOrderStorageKey, accountOrder);
   }, [accountOrder]);
 
+  useLayoutEffect(() => {
+    const previousPositions = accountRowPositionsRef.current;
+    accountRowPositionsRef.current = new Map();
+    if (!draggingAccountName || previousPositions.size === 0) return;
+    if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+
+    const rows = accountListRef.current?.querySelectorAll<HTMLElement>(".accountRow[data-account-name]");
+    rows?.forEach((row) => {
+      const name = row.dataset.accountName ?? "";
+      if (!name || name === draggingAccountName || typeof row.animate !== "function") return;
+      const previousTop = previousPositions.get(name);
+      if (previousTop === undefined) return;
+      const deltaY = previousTop - row.getBoundingClientRect().top;
+      if (Math.abs(deltaY) < 0.5) return;
+      const animation = row.animate(
+        [{ transform: `translate3d(0, ${deltaY}px, 0)` }, { transform: "translate3d(0, 0, 0)" }],
+        { duration: 170, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
+      );
+      accountRowAnimationsRef.current.set(name, animation);
+      animation.addEventListener("finish", () => {
+        if (accountRowAnimationsRef.current.get(name) === animation) {
+          accountRowAnimationsRef.current.delete(name);
+        }
+      }, { once: true });
+    });
+  }, [accountDropGroup, accountDropTarget, draggingAccountName]);
+
   useEffect(() => {
     if (!draggingAccountName) return;
     scheduleAccountDragPreview();
@@ -613,6 +647,8 @@ export default function App() {
     if (drag?.captureElement.hasPointerCapture(drag.pointerId)) {
       drag.captureElement.releasePointerCapture(drag.pointerId);
     }
+    accountRowAnimationsRef.current.forEach((animation) => animation.cancel());
+    accountRowAnimationsRef.current.clear();
     accountPointerDragRef.current = null;
   }, []);
 
@@ -905,13 +941,41 @@ export default function App() {
     return true;
   }
 
-  function updateAccountDropDestination(target: AccountDropTarget | null, groupLabel: string) {
+  function captureAccountRowPositions() {
+    const rows = accountListRef.current?.querySelectorAll<HTMLElement>(".accountRow[data-account-name]");
+    const positions = new Map<string, number>();
+    rows?.forEach((row) => {
+      const name = row.dataset.accountName ?? "";
+      if (name) positions.set(name, row.getBoundingClientRect().top);
+    });
+    accountRowAnimationsRef.current.forEach((animation) => animation.cancel());
+    accountRowAnimationsRef.current.clear();
+    accountRowPositionsRef.current = positions;
+  }
+
+  function updateAccountDropDestination(
+    target: AccountDropTarget | null,
+    groupLabel: string,
+    animateLayout = true,
+  ) {
+    const currentTarget = accountDropTargetRef.current;
+    if (
+      currentTarget?.name === target?.name
+      && currentTarget?.edge === target?.edge
+      && accountDropTargetGroupRef.current === groupLabel
+    ) {
+      return;
+    }
+    if (animateLayout) captureAccountRowPositions();
     accountDropTargetRef.current = target;
     accountDropTargetGroupRef.current = groupLabel;
+    setAccountDropGroup((current) => (current === groupLabel ? current : groupLabel));
     setAccountDropTarget((current) =>
       current?.name === target?.name && current?.edge === target?.edge ? current : target,
     );
-    setDropTargetGroup((current) => (current === groupLabel ? current : groupLabel));
+    const sourceGroup = accountPointerDragRef.current?.sourceGroup ?? "";
+    const highlightedGroup = groupLabel && groupLabel !== sourceGroup ? groupLabel : "";
+    setDropTargetGroup((current) => (current === highlightedGroup ? current : highlightedGroup));
   }
 
   function scheduleAccountDragPreview() {
@@ -920,7 +984,10 @@ export default function App() {
       accountDragFrameRef.current = null;
       const drag = accountPointerDragRef.current;
       const preview = accountDragPreviewRef.current;
-      if (!drag?.active || !preview) return;
+      if (!drag?.active) return;
+      scrollAccountListForPointer(drag.latestY);
+      updateAccountPointerDestination(drag.latestX, drag.latestY, drag);
+      if (!preview) return;
       const x = Math.round(drag.latestX - drag.grabOffsetX);
       const y = Math.round(drag.latestY - drag.grabOffsetY);
       preview.style.transform = `translate3d(${x}px, ${y}px, 0) scale(var(--account-drag-scale, 1.012))`;
@@ -952,7 +1019,7 @@ export default function App() {
       active: false,
       captureElement: event.currentTarget,
     };
-    updateAccountDropDestination(null, "");
+    updateAccountDropDestination(null, "", false);
     setPressedAccountName(account.name);
     setSelectedName(account.name);
   }
@@ -973,31 +1040,66 @@ export default function App() {
 
   function updateAccountPointerDestination(clientX: number, clientY: number, source: AccountPointerDrag) {
     const hit = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
-    const accountElement = hit?.closest<HTMLElement>(".accountRow[data-account-name]");
-    if (accountElement) {
-      const targetName = accountElement.dataset.accountName ?? "";
-      const targetAccount = accounts.find((account) => account.name === targetName);
-      if (!targetAccount || targetName === source.accountName) {
-        updateAccountDropDestination(null, "");
-        return;
-      }
-      const targetGroup = accountGroupLabel(targetAccount);
-      const bounds = accountElement.getBoundingClientRect();
-      const edge: AccountDropTarget["edge"] = clientY >= bounds.top + bounds.height / 2 ? "after" : "before";
-      updateAccountDropDestination(
-        { name: targetName, edge },
-        targetGroup === source.sourceGroup ? "" : targetGroup,
-      );
+    const groupFilter = hit?.closest<HTMLElement>("[data-group-label]");
+    const filterGroup = groupFilter?.dataset.groupLabel ?? "";
+    if (filterGroup) {
+      updateAccountDropDestination(null, filterGroup);
       return;
     }
 
-    const groupElement = hit?.closest<HTMLElement>("[data-account-group], [data-group-label]");
-    const targetGroup = groupElement?.dataset.accountGroup ?? groupElement?.dataset.groupLabel ?? "";
-    if (targetGroup && targetGroup !== source.sourceGroup) {
-      updateAccountDropDestination(null, targetGroup);
+    let groupElement = hit?.closest<HTMLElement>(".accountGroup[data-account-group]") ?? null;
+    if (!groupElement) {
+      const list = accountListRef.current;
+      const listBounds = list?.getBoundingClientRect();
+      if (
+        list
+        && listBounds
+        && clientX >= listBounds.left
+        && clientX <= listBounds.right
+        && clientY >= listBounds.top
+        && clientY <= listBounds.bottom
+      ) {
+        let nearestDistance = Number.POSITIVE_INFINITY;
+        list.querySelectorAll<HTMLElement>(".accountGroup[data-account-group]").forEach((candidate) => {
+          const bounds = candidate.getBoundingClientRect();
+          const distance = clientY < bounds.top
+            ? bounds.top - clientY
+            : clientY > bounds.bottom
+              ? clientY - bounds.bottom
+              : 0;
+          if (distance < nearestDistance) {
+            nearestDistance = distance;
+            groupElement = candidate;
+          }
+        });
+      }
+    }
+
+    const targetGroup = groupElement?.dataset.accountGroup ?? "";
+    if (!groupElement || !targetGroup) {
+      updateAccountDropDestination(null, "");
       return;
     }
-    updateAccountDropDestination(null, "");
+
+    const rows = Array.from(
+      groupElement.querySelectorAll<HTMLElement>(".accountRow[data-account-name]"),
+    ).filter((row) => row.dataset.accountName !== source.accountName);
+    const targetRow = rows.find((row) => {
+      const bounds = row.getBoundingClientRect();
+      return clientY < bounds.top + bounds.height / 2;
+    });
+    if (targetRow) {
+      updateAccountDropDestination(
+        { name: targetRow.dataset.accountName ?? "", edge: "before" },
+        targetGroup,
+      );
+      return;
+    }
+    const lastRow = rows[rows.length - 1];
+    updateAccountDropDestination(
+      lastRow ? { name: lastRow.dataset.accountName ?? "", edge: "after" } : null,
+      targetGroup,
+    );
   }
 
   function moveAccountPointerDrag(event: PointerEvent<HTMLButtonElement>) {
@@ -1013,12 +1115,11 @@ export default function App() {
       setAccountSearch("");
       setPressedAccountName("");
       setDraggingAccountName(drag.accountName);
+      updateAccountPointerDestination(event.clientX, event.clientY, drag);
     }
 
     event.preventDefault();
     event.stopPropagation();
-    scrollAccountListForPointer(event.clientY);
-    updateAccountPointerDestination(event.clientX, event.clientY, drag);
     scheduleAccountDragPreview();
   }
 
@@ -1066,14 +1167,22 @@ export default function App() {
       window.cancelAnimationFrame(accountDragFrameRef.current);
       accountDragFrameRef.current = null;
     }
+    accountRowAnimationsRef.current.forEach((animation) => animation.cancel());
+    accountRowAnimationsRef.current.clear();
+    accountRowPositionsRef.current = new Map();
     setPressedAccountName("");
     setDraggingAccountName("");
-    updateAccountDropDestination(null, "");
+    updateAccountDropDestination(null, "", false);
   }
 
   function finishAccountPointerDrag(event: PointerEvent<HTMLButtonElement>, cancelled: boolean) {
     const drag = accountPointerDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    if (drag.active && !cancelled) {
+      drag.latestX = event.clientX;
+      drag.latestY = event.clientY;
+      updateAccountPointerDestination(event.clientX, event.clientY, drag);
+    }
     const target = accountDropTargetRef.current;
     const targetGroup = accountDropTargetGroupRef.current;
     accountPointerDragRef.current = null;
@@ -1087,9 +1196,10 @@ export default function App() {
         accountDragSuppressClickRef.current = false;
       }, 0);
     }
-    clearAccountPointerDrag();
     if (drag.active && !cancelled) {
-      void commitAccountPointerDrop(drag.accountName, target, targetGroup);
+      void commitAccountPointerDrop(drag.accountName, target, targetGroup).finally(clearAccountPointerDrag);
+    } else {
+      clearAccountPointerDrag();
     }
   }
 
@@ -1803,6 +1913,9 @@ export default function App() {
                   collapsed={selectedGroup === allGroupsValue && collapsedGroups.includes(group.label)}
                   canCollapse={selectedGroup === allGroupsValue}
                   dropTarget={dropTargetGroup === group.label}
+                  dropPlaceholderAtEnd={Boolean(
+                    draggingAccountName && accountDropGroup === group.label && !accountDropTarget,
+                  )}
                   group={group}
                   key={group.label}
                   onFinishAccountDrag={finishAccountPointerDrag}
@@ -2206,11 +2319,16 @@ export default function App() {
   );
 }
 
+function AccountDropPlaceholder() {
+  return <div aria-hidden="true" className="accountDropPlaceholder" />;
+}
+
 function AccountGroupSection({
   accountDropTarget,
   canCollapse,
   collapsed,
   draggingAccountName,
+  dropPlaceholderAtEnd,
   dropTarget,
   group,
   locatedName,
@@ -2231,6 +2349,7 @@ function AccountGroupSection({
   canCollapse: boolean;
   collapsed: boolean;
   draggingAccountName: string;
+  dropPlaceholderAtEnd: boolean;
   dropTarget: boolean;
   group: AccountGroup;
   locatedName: string;
@@ -2276,77 +2395,90 @@ function AccountGroupSection({
           <span className="accountGroupCount">{group.accounts.length}</span>
         </div>
       )}
-      {collapsed
-        ? null
-        : group.accounts.map((account) => {
+      {collapsed ? null : (
+        <>
+          {group.accounts.map((account) => {
             const isLocated = account.name === locatedName;
+            const showPlaceholderBefore = !searching
+              && accountDropTarget?.name === account.name
+              && accountDropTarget.edge === "before";
+            const showPlaceholderAfter = !searching
+              && accountDropTarget?.name === account.name
+              && accountDropTarget.edge === "after";
             return (
-              <button
-                aria-current={isLocated ? "true" : undefined}
-                aria-keyshortcuts={!searching && !account.trashed ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
-                className={`accountRow ${searching ? "searchResult" : ""} ${account.name === selectedName ? "selected" : ""} ${isLocated ? "searchLocated" : ""} ${account.name === pressedAccountName ? "dragPressed" : ""} ${account.name === draggingAccountName ? "dragOrigin" : ""} ${!searching && accountDropTarget?.name === account.name ? (accountDropTarget.edge === "before" ? "dropBefore" : "dropAfter") : ""}`}
-                data-account-group={searching ? undefined : group.label}
-                data-account-name={searching ? undefined : account.name}
-                key={account.name}
-                title={`${account.name}${isLocated ? "｜当前搜索匹配" : ""}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${searching || account.trashed ? "" : "｜拖动左侧手柄排序或移动分组；⌥↑ / ⌥↓ 微调"}`}
-                onClick={() => onSelectAccount(account.name)}
-                onContextMenu={(event) => onOpenAccountContextMenu(event, account)}
-                onDoubleClick={(event) => {
-                  const target = event.target;
-                  if (target instanceof Element && target.closest(".dragHandle")) return;
-                  if (account.trashed) {
-                    void onRestoreAccount(account);
-                  } else {
-                    void onLaunchAccount(account);
-                  }
-                }}
-                onKeyDown={searching ? undefined : (event) => onMoveAccountFromKeyboard(event, account)}
-                onLostPointerCapture={searching ? undefined : (event) => onFinishAccountDrag(event, true)}
-                onPointerCancel={searching ? undefined : (event) => onFinishAccountDrag(event, true)}
-                onPointerDown={searching ? undefined : (event) => onStartAccountDrag(event, account)}
-                onPointerMove={searching ? undefined : onMoveAccountDrag}
-                onPointerUp={searching ? undefined : (event) => onFinishAccountDrag(event, false)}
-              >
-                <span className="accountRail" />
-                <span className="accountMain">
-                  <span className="accountTitle">
-                    {searching ? null : isLocated ? (
-                      <Search className="searchMatchIcon" size={14} />
-                    ) : (
-                      <span className="dragHandle" title="拖动调整顺序或移动分组">
-                        <GripVertical size={14} />
-                      </span>
-                    )}
-                    <strong title={account.name}>{middleTruncate(account.name, 34)}</strong>
-                    {searching ? (
-                      <span
-                        className={`accountLocationTag ${account.trashed ? "trashed" : "active"}`}
-                        title={`${account.trashed ? "回收站" : "活跃"} · ${accountGroupLabel(account)}`}
-                      >
-                        {account.trashed ? "回收站" : "活跃"} · {accountGroupLabel(account)}
-                      </span>
-                    ) : null}
-                    {account.marked ? (
-                      <span
-                        className={`accountMark ${account.mark_note ? "withNote" : ""}`}
-                        style={markColorStyle(account.mark_color)}
-                        title={account.mark_note
-                          ? `${account.mark_note}（${markColorLabel(account.mark_color)}）`
-                          : `已标记（${markColorLabel(account.mark_color)}）`}
-                        aria-label={account.mark_note
-                          ? `标记：${account.mark_note}，颜色：${markColorLabel(account.mark_color)}`
-                          : `已标记，颜色：${markColorLabel(account.mark_color)}`}
-                      >
-                        <span className="markDot" aria-hidden="true" />
-                        {account.mark_note ? <span className="markNote">{middleTruncate(account.mark_note, 16)}</span> : null}
-                      </span>
-                    ) : null}
-                    <code>{formatCreatedDate(account.created_at)}</code>
+              <Fragment key={account.name}>
+                {showPlaceholderBefore ? <AccountDropPlaceholder /> : null}
+                <button
+                  aria-current={isLocated ? "true" : undefined}
+                  aria-keyshortcuts={!searching && !account.trashed ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
+                  className={`accountRow ${searching ? "searchResult" : ""} ${account.name === selectedName ? "selected" : ""} ${isLocated ? "searchLocated" : ""} ${account.name === pressedAccountName ? "dragPressed" : ""} ${account.name === draggingAccountName ? "dragOrigin" : ""}`}
+                  data-account-group={searching ? undefined : group.label}
+                  data-account-name={searching ? undefined : account.name}
+                  hidden={!searching && account.name === draggingAccountName}
+                  title={`${account.name}${isLocated ? "｜当前搜索匹配" : ""}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${searching || account.trashed ? "" : "｜拖动左侧手柄排序或移动分组；⌥↑ / ⌥↓ 微调"}`}
+                  onClick={() => onSelectAccount(account.name)}
+                  onContextMenu={(event) => onOpenAccountContextMenu(event, account)}
+                  onDoubleClick={(event) => {
+                    const target = event.target;
+                    if (target instanceof Element && target.closest(".dragHandle")) return;
+                    if (account.trashed) {
+                      void onRestoreAccount(account);
+                    } else {
+                      void onLaunchAccount(account);
+                    }
+                  }}
+                  onKeyDown={searching ? undefined : (event) => onMoveAccountFromKeyboard(event, account)}
+                  onLostPointerCapture={searching ? undefined : (event) => onFinishAccountDrag(event, true)}
+                  onPointerCancel={searching ? undefined : (event) => onFinishAccountDrag(event, true)}
+                  onPointerDown={searching ? undefined : (event) => onStartAccountDrag(event, account)}
+                  onPointerMove={searching ? undefined : onMoveAccountDrag}
+                  onPointerUp={searching ? undefined : (event) => onFinishAccountDrag(event, false)}
+                >
+                  <span className="accountRail" />
+                  <span className="accountMain">
+                    <span className="accountTitle">
+                      {searching ? null : isLocated ? (
+                        <Search className="searchMatchIcon" size={14} />
+                      ) : (
+                        <span className="dragHandle" title="拖动调整顺序或移动分组">
+                          <GripVertical size={14} />
+                        </span>
+                      )}
+                      <strong title={account.name}>{middleTruncate(account.name, 34)}</strong>
+                      {searching ? (
+                        <span
+                          className={`accountLocationTag ${account.trashed ? "trashed" : "active"}`}
+                          title={`${account.trashed ? "回收站" : "活跃"} · ${accountGroupLabel(account)}`}
+                        >
+                          {account.trashed ? "回收站" : "活跃"} · {accountGroupLabel(account)}
+                        </span>
+                      ) : null}
+                      {account.marked ? (
+                        <span
+                          className={`accountMark ${account.mark_note ? "withNote" : ""}`}
+                          style={markColorStyle(account.mark_color)}
+                          title={account.mark_note
+                            ? `${account.mark_note}（${markColorLabel(account.mark_color)}）`
+                            : `已标记（${markColorLabel(account.mark_color)}）`}
+                          aria-label={account.mark_note
+                            ? `标记：${account.mark_note}，颜色：${markColorLabel(account.mark_color)}`
+                            : `已标记，颜色：${markColorLabel(account.mark_color)}`}
+                        >
+                          <span className="markDot" aria-hidden="true" />
+                          {account.mark_note ? <span className="markNote">{middleTruncate(account.mark_note, 16)}</span> : null}
+                        </span>
+                      ) : null}
+                      <code>{formatCreatedDate(account.created_at)}</code>
+                    </span>
                   </span>
-                </span>
-              </button>
+                </button>
+                {showPlaceholderAfter ? <AccountDropPlaceholder /> : null}
+              </Fragment>
             );
           })}
+          {dropPlaceholderAtEnd ? <AccountDropPlaceholder /> : null}
+        </>
+      )}
     </section>
   );
 }
