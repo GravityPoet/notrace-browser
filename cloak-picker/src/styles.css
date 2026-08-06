@@ -1928,6 +1928,15 @@ button:disabled {
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
+.field input[aria-invalid="true"] {
+  border-color: #d92d20;
+  background: #fff8f7;
+}
+
+.field input[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 3px rgba(217, 45, 32, 0.14);
+}
+
 .modalActions {
   justify-content: flex-end;
   min-width: 0;

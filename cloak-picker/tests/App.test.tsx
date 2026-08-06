@@ -215,11 +215,31 @@ describe("Cloak Picker dialog regressions", () => {
     expect(document.activeElement).toBe(groupNameInput);
     await inputText(groupNameInput as HTMLInputElement, "client-a");
 
-    await click(buttonWithText("创建", dialog ?? document));
+    await click(buttonWithText("创建账号", dialog ?? document));
     await settle(220);
 
     expect(mockCommandCountForTest("create_account")).toBe(1);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("explains that the account name is required instead of ignoring create", async () => {
+    await click(buttonWithText("新建"));
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    await click(buttonWithText("新建分组", dialog ?? document));
+    const groupNameInput = dialog?.querySelector<HTMLInputElement>('input[aria-label="新分组名称"]');
+    expect(groupNameInput).not.toBeNull();
+    await inputText(groupNameInput as HTMLInputElement, "注册邮箱");
+
+    await click(buttonWithText("创建账号", dialog ?? document));
+    await settle(30);
+
+    const accountNameInput = dialog?.querySelector<HTMLInputElement>(".field input");
+    expect(dialog?.querySelector('[role="alert"]')?.textContent).toBe("请输入账号名称。");
+    expect(accountNameInput?.getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(accountNameInput);
+    expect(mockCommandCountForTest("create_account")).toBe(0);
   });
 
   it("applies the built-in Plus mark with one click", async () => {
