@@ -200,6 +200,28 @@ describe("Cloak Picker dialog regressions", () => {
     expect(document.activeElement).toBe(origin);
   });
 
+  it("creates an account in a newly named group from the create dialog", async () => {
+    await click(buttonWithText("新建"));
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    const accountNameInput = dialog?.querySelector<HTMLInputElement>(".field input");
+    expect(accountNameInput).not.toBeNull();
+    await inputText(accountNameInput as HTMLInputElement, "work-client");
+
+    await click(buttonWithText("新建分组", dialog ?? document));
+    const groupNameInput = dialog?.querySelector<HTMLInputElement>('input[aria-label="新分组名称"]');
+    expect(groupNameInput).not.toBeNull();
+    expect(document.activeElement).toBe(groupNameInput);
+    await inputText(groupNameInput as HTMLInputElement, "client-a");
+
+    await click(buttonWithText("创建", dialog ?? document));
+    await settle(220);
+
+    expect(mockCommandCountForTest("create_account")).toBe(1);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
   it("applies the built-in Plus mark with one click", async () => {
     const dialog = await openMarkDialog("demo-beta");
     expect(buttonWithText("Plus", dialog)).toBeTruthy();
