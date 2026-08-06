@@ -410,7 +410,10 @@ export default function App() {
     () => orderAccountGroups(groupAccounts(visibleAccounts), groupOrder),
     [groupOrder, visibleAccounts],
   );
-  const groupOptions = useMemo(() => buildGroupOptions(accounts, hiddenGroups), [accounts, hiddenGroups]);
+  const groupOptions = useMemo(
+    () => buildGroupOptions(accounts, groupOrder, hiddenGroups),
+    [accounts, groupOrder, hiddenGroups],
+  );
 
   async function refresh(preferredName?: string, view: AccountView = accountView) {
     setError("");
@@ -699,6 +702,7 @@ export default function App() {
         ]);
         if (group) {
           setHiddenGroups((current) => current.filter((label) => label !== group));
+          setGroupOrder((current) => [group, ...current.filter((label) => label !== group)]);
         }
         setDialog(null);
         setAccountView("active");
@@ -809,6 +813,24 @@ export default function App() {
     return selectedGroup === ungroupedLabel ? "" : selectedGroup;
   }
 
+  function createStandaloneGroup(rawValue: string): boolean {
+    const value = rawValue.trim();
+    if (!value) {
+      setDialogError("请输入分组名称。");
+      return false;
+    }
+    if ([allGroupsLabel, allGroupsValue, ungroupedLabel].includes(value)) {
+      setDialogError(`“${value}”是系统保留名称，请换一个分组名称。`);
+      return false;
+    }
+    setHiddenGroups((current) => current.filter((label) => label !== value));
+    setGroupOrder((current) => [value, ...current.filter((label) => label !== value)]);
+    setAccountView("active");
+    setSelectedGroup(value);
+    setDialogError("");
+    return true;
+  }
+
   async function assignAccountGroup(account: Account, value: string | null, closeDialog: boolean) {
     const nextGroup = value?.trim() || null;
     const currentGroup = account.group?.trim() || null;
@@ -826,6 +848,7 @@ export default function App() {
     if (!updated) return;
     if (nextGroup) {
       setHiddenGroups((current) => current.filter((label) => label !== nextGroup));
+      setGroupOrder((current) => [nextGroup, ...current.filter((label) => label !== nextGroup)]);
     }
     if (closeDialog) setDialog(null);
     await refresh(updated.name);
@@ -1942,6 +1965,7 @@ export default function App() {
           onConfirmDeleteGroup={(groupLabel) => void confirmDeleteGroup(groupLabel)}
           onConfirmPermanentDelete={confirmPermanentDeleteAccount}
           groupOptions={groupOptions}
+          onCreateGroup={createStandaloneGroup}
           onQuickGroup={(account, value) => void assignAccountGroup(account, value || null, true)}
           onQuickMark={(account, value, color) => void saveAccountMark(account, value, color)}
           onSubmit={submitDialog}
@@ -2112,6 +2136,7 @@ function EditorDialog({
   onConfirmDeleteGroup,
   onConfirmPermanentDelete,
   groupOptions,
+  onCreateGroup,
   onQuickGroup,
   onQuickMark,
   onSubmit,
@@ -2126,6 +2151,7 @@ function EditorDialog({
   onConfirmDeleteGroup: (groupLabel: string) => void;
   onConfirmPermanentDelete: (account: Account) => void;
   groupOptions: GroupOption[];
+  onCreateGroup: (value: string) => boolean;
   onQuickGroup: (account: Account, value: string) => void;
   onQuickMark: (account: Account, value: string, color: MarkColor) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
@@ -2341,19 +2367,31 @@ function EditorDialog({
           </button>
         ) : null}
         {dialog.kind === "create" && creatingGroup ? (
-          <label className="groupCreateEditor" htmlFor="cloak-new-group-name">
-            <span>新分组名称</span>
-            <input
-              aria-label="新分组名称"
-              autoComplete="off"
-              autoFocus
-              id="cloak-new-group-name"
-              placeholder="例如：client-a"
-              value={dialog.group}
-              onChange={(event) => onChange({ ...dialog, group: event.currentTarget.value })}
-            />
-            <small>创建账号时会一并创建并自动选中该分组。</small>
-          </label>
+          <div className="groupCreateEditor">
+            <label htmlFor="cloak-new-group-name">新分组名称</label>
+            <div className="groupCreateControls">
+              <input
+                aria-label="新分组名称"
+                autoComplete="off"
+                autoFocus
+                id="cloak-new-group-name"
+                placeholder="例如：client-a"
+                value={dialog.group}
+                onChange={(event) => onChange({ ...dialog, group: event.currentTarget.value })}
+              />
+              <button
+                className="secondaryButton"
+                disabled={!dialog.group.trim()}
+                type="button"
+                onClick={() => {
+                  if (onCreateGroup(dialog.group)) setCreatingGroup(false);
+                }}
+              >
+                创建分组
+              </button>
+            </div>
+            <small>可先创建空分组；创建账号时也会自动保存并选中该分组。</small>
+          </div>
         ) : null}
       </div>
     ) : null;
@@ -2845,13 +2883,19 @@ function groupAccounts(accounts: Account[]): AccountGroup[] {
   return groups;
 }
 
-function buildGroupOptions(accounts: Account[], hiddenGroups: string[]): GroupOption[] {
+function buildGroupOptions(accounts: Account[], groupOrder: string[], hiddenGroups: string[]): GroupOption[] {
   const options: GroupOption[] = [{ label: ungroupedLabel, value: "" }];
   const seen = new Set<string>([ungroupedLabel]);
   const hidden = new Set(hiddenGroups);
   for (const account of accounts) {
     const label = account.group?.trim();
     if (!label || seen.has(label)) continue;
+    seen.add(label);
+    options.push({ label, value: label });
+  }
+  for (const rawLabel of groupOrder) {
+    const label = rawLabel.trim();
+    if (!label || label === allGroupsLabel || label === allGroupsValue || seen.has(label) || hidden.has(label)) continue;
     seen.add(label);
     options.push({ label, value: label });
   }
@@ -2876,6 +2920,11 @@ function buildGroupFilters(accounts: Account[], groupOrder: string[], hiddenGrou
   const groups = groupAccounts(accounts);
   const counts = new Map(groups.map((group) => [group.label, group.accounts.length]));
   const hidden = new Set(hiddenGroups);
+  for (const rawLabel of groupOrder) {
+    const label = rawLabel.trim();
+    if (!label || label === allGroupsLabel || label === allGroupsValue || hidden.has(label)) continue;
+    if (!counts.has(label)) counts.set(label, 0);
+  }
   for (const label of commonGroups) {
     if (!counts.has(label) && !hidden.has(label)) counts.set(label, 0);
   }

@@ -1617,10 +1617,18 @@ button:disabled {
   padding-top: 2px;
 }
 
-.groupCreateEditor > span {
+.groupCreateEditor > label {
   color: var(--muted);
   font-size: 11px;
   font-weight: 650;
+}
+
+.groupCreateControls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
 }
 
 .groupCreateEditor input {
@@ -1639,6 +1647,11 @@ button:disabled {
 .groupCreateEditor input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.groupCreateControls .secondaryButton {
+  min-height: 34px;
+  white-space: nowrap;
 }
 
 .groupCreateEditor small {
