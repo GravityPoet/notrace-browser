@@ -685,7 +685,11 @@ export default function App() {
 
     const value = dialog.value.trim();
     if (dialog.kind === "create") {
-      if (!value) return;
+      if (!value) {
+        setDialogError("请输入账号名称。");
+        document.getElementById("cloak-account-name")?.focus();
+        return;
+      }
       const group = dialog.group.trim() || null;
       const account = await run(() => call<Account>("create_account", { name: value, group }));
       if (account) {
@@ -2384,7 +2388,15 @@ function EditorDialog({
         <label className="field">
           <span>{config.label}</span>
           <input
+            aria-describedby={
+              dialog.kind === "create" && error && !dialog.value.trim()
+                ? "cloak-account-name-error"
+                : undefined
+            }
+            aria-invalid={dialog.kind === "create" && Boolean(error) && !dialog.value.trim() ? true : undefined}
+            aria-required={dialog.kind === "create" ? true : undefined}
             autoFocus
+            id={dialog.kind === "create" ? "cloak-account-name" : undefined}
             maxLength={dialog.kind === "mark" ? maxMarkLength : undefined}
             value={dialog.value}
             placeholder={config.placeholder}
@@ -2392,7 +2404,15 @@ function EditorDialog({
           />
         </label>
         {dialog.kind === "create" ? groupPicker : null}
-        {error ? <p className="modalError">{error}</p> : null}
+        {error ? (
+          <p
+            className="modalError"
+            id={dialog.kind === "create" && !dialog.value.trim() ? "cloak-account-name-error" : undefined}
+            role="alert"
+          >
+            {error}
+          </p>
+        ) : null}
         <div className="modalActions">
           <button className="secondaryButton" type="button" onClick={onClose}>
             取消
@@ -2589,7 +2609,7 @@ function dialogConfig(
 } {
   switch (dialog.kind) {
     case "create":
-      return { title: "新建账号", label: "名称", placeholder: "work_01", action: "创建" };
+      return { title: "新建账号", label: "名称（必填）", placeholder: "例如：work_01", action: "创建账号" };
     case "rename": {
       const accountName = middleTruncate(dialog.account.name, 28);
       return { title: `重命名「${accountName}」`, label: "新名称", placeholder: dialog.account.name, action: "保存" };
