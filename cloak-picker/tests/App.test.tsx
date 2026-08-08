@@ -178,6 +178,21 @@ describe("Cloak Picker dialog regressions", () => {
       .filter(Boolean);
   }
 
+  function groupFilter(label: string): HTMLElement {
+    const group = document.querySelector<HTMLElement>(`.groupFilterButton[data-group-label="${label}"]`);
+    if (!group) throw new Error(`group filter not found: ${label}`);
+    return group;
+  }
+
+  function mockGroupFilterGeometry() {
+    const filter = document.querySelector<HTMLElement>(".groupFilter");
+    if (!filter) throw new Error("group filter not found");
+    vi.spyOn(filter, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 340, 50));
+    vi.spyOn(groupFilter("codex"), "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 100, 30));
+    vi.spyOn(groupFilter("antigravity"), "getBoundingClientRect").mockReturnValue(new DOMRect(120, 10, 100, 30));
+    vi.spyOn(groupFilter("claude"), "getBoundingClientRect").mockReturnValue(new DOMRect(230, 10, 100, 30));
+  }
+
   async function openMarkDialog(name: string) {
     await openContextMenu(accountRow(name));
     const menu = document.querySelector<HTMLElement>('[role="menu"]');
@@ -303,14 +318,15 @@ describe("Cloak Picker dialog regressions", () => {
   });
 
   it("keeps a manually arranged group order when moving an account into a group", async () => {
-    const claudeGroup = document.querySelector<HTMLElement>('[data-group-label="claude"]');
-    const codexGroup = document.querySelector<HTMLElement>('[data-group-label="codex"]');
-    expect(claudeGroup).not.toBeNull();
-    expect(codexGroup).not.toBeNull();
+    const claudeGroup = groupFilter("claude");
+    const codexGroup = groupFilter("codex");
+    mockGroupFilterGeometry();
     vi.mocked(document.elementFromPoint).mockReturnValue(codexGroup);
-    await dispatchPointer(claudeGroup as HTMLElement, "pointerdown", 10, 10);
-    await dispatchPointer(claudeGroup as HTMLElement, "pointermove", 20, 10);
-    await dispatchPointer(claudeGroup as HTMLElement, "pointerup", 20, 10);
+    const handle = claudeGroup.querySelector<HTMLElement>(".groupDragHandle");
+    expect(handle).not.toBeNull();
+    await dispatchPointer(handle as HTMLElement, "pointerdown", 280, 25);
+    await dispatchPointer(handle as HTMLElement, "pointermove", 30, 25);
+    await dispatchPointer(handle as HTMLElement, "pointerup", 30, 25);
     await settle(30);
 
     const initialGroupOrder = groupFilterLabels();
@@ -324,6 +340,74 @@ describe("Cloak Picker dialog regressions", () => {
 
     expect(mockCommandCountForTest("set_group")).toBe(1);
     expect(groupFilterLabels()).toEqual(initialGroupOrder);
+  });
+
+  it("starts group dragging only from the handle and only after deliberate movement", async () => {
+    const codexGroup = groupFilter("codex");
+    const claudeGroup = groupFilter("claude");
+    const handle = codexGroup.querySelector<HTMLElement>(".groupDragHandle");
+    expect(handle).not.toBeNull();
+    mockGroupFilterGeometry();
+    vi.mocked(document.elementFromPoint).mockReturnValue(claudeGroup);
+
+    await dispatchPointer(codexGroup, "pointerdown", 20, 25);
+    await dispatchPointer(codexGroup, "pointermove", 300, 25);
+    await dispatchPointer(codexGroup, "pointerup", 300, 25);
+    expect(groupFilterLabels()).toEqual(["codex", "antigravity", "claude"]);
+
+    await dispatchPointer(handle as HTMLElement, "pointerdown", 20, 25);
+    expect(codexGroup.classList.contains("pressed")).toBe(true);
+    expect(document.querySelector(".groupDragPreview")).toBeNull();
+    await dispatchPointer(handle as HTMLElement, "pointermove", 25, 25);
+    expect(document.querySelector(".groupDragPreview")).toBeNull();
+    expect(groupFilterLabels()).toEqual(["codex", "antigravity", "claude"]);
+
+    await dispatchPointer(handle as HTMLElement, "pointercancel", 25, 25);
+  });
+
+  it("lets group chips glide into every insertion slot, including after the last group", async () => {
+    const codexGroup = groupFilter("codex");
+    const claudeGroup = groupFilter("claude");
+    const handle = codexGroup.querySelector<HTMLElement>(".groupDragHandle");
+    expect(handle).not.toBeNull();
+    mockGroupFilterGeometry();
+    vi.mocked(document.elementFromPoint).mockReturnValue(claudeGroup);
+
+    await dispatchPointer(handle as HTMLElement, "pointerdown", 20, 25);
+    await dispatchPointer(handle as HTMLElement, "pointermove", 315, 25);
+    await settle(30);
+
+    expect(document.querySelector(".groupDragPreview")).not.toBeNull();
+    expect(codexGroup.classList.contains("dragOrigin")).toBe(true);
+    expect(claudeGroup.dataset.dropEdge).toBe("after");
+    expect(groupFilterLabels()).toEqual(["antigravity", "claude", "codex"]);
+
+    // Live reordering moves the hidden source placeholder under the pointer.
+    // Releasing without another pointer move must keep the last valid slot,
+    // rather than resolving again against the layout caused by that slot.
+    vi.mocked(document.elementFromPoint).mockReturnValue(document.querySelector<HTMLElement>(".groupFilter"));
+    vi.mocked(codexGroup.getBoundingClientRect).mockReturnValue(new DOMRect(230, 10, 100, 30));
+    vi.mocked(groupFilter("antigravity").getBoundingClientRect).mockReturnValue(new DOMRect(230, 50, 100, 30));
+    vi.mocked(claudeGroup.getBoundingClientRect).mockReturnValue(new DOMRect(10, 50, 100, 30));
+    await dispatchPointer(handle as HTMLElement, "pointerup", 315, 25);
+    await settle(30);
+    expect(document.querySelector(".groupDragPreview")).toBeNull();
+    expect(groupFilterLabels()).toEqual(["antigravity", "claude", "codex"]);
+    expect(window.localStorage.getItem("cloak-picker.groupOrder.v1")).toBe(
+      '["antigravity","claude","codex"]',
+    );
+  });
+
+  it("offers a keyboard alternative for arranging groups", async () => {
+    const codexButton = groupFilter("codex").querySelector<HTMLButtonElement>(".groupFilterSelect");
+    expect(codexButton).not.toBeNull();
+    expect(codexButton?.getAttribute("aria-keyshortcuts")).toBe("Alt+ArrowLeft Alt+ArrowRight");
+
+    await pressKeyOn(codexButton as HTMLButtonElement, "ArrowRight", false, true);
+    await settle(30);
+
+    expect(groupFilterLabels()).toEqual(["antigravity", "codex", "claude"]);
+    expect(document.querySelector('[role="status"]')?.textContent).toContain("codex 分组已移至第 2 位");
   });
 
   it("reorders accounts without the native drag ghost and keeps a keyboard alternative", async () => {

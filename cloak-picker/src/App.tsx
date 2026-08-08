@@ -178,6 +178,27 @@ type AccountDropTarget = {
   edge: "before" | "after";
 };
 
+type GroupDropTarget = {
+  label: string;
+  edge: "before" | "after";
+};
+
+type GroupPointerDrag = {
+  label: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  latestX: number;
+  latestY: number;
+  grabOffsetX: number;
+  grabOffsetY: number;
+  width: number;
+  height: number;
+  active: boolean;
+  initialOrder: string[];
+  captureElement: HTMLElement;
+};
+
 type AccountPointerDrag = {
   accountName: string;
   sourceGroup: string;
@@ -199,6 +220,9 @@ const contextMenuHeight = 44;
 const accountContextMenuWidth = 184;
 const accountContextMenuMaxHeight = 320;
 const contextMenuViewportPadding = 8;
+const groupDragActivationDistance = 8;
+const groupDragAutoScrollEdge = 24;
+const groupDragAutoScrollStep = 9;
 const accountDragActivationDistance = 8;
 const accountDragAutoScrollEdge = 44;
 const accountDragAutoScrollStep = 14;
@@ -346,7 +370,9 @@ export default function App() {
   const [accountDropTarget, setAccountDropTarget] = useState<AccountDropTarget | null>(null);
   const [accountDropGroup, setAccountDropGroup] = useState("");
   const [accountReorderAnnouncement, setAccountReorderAnnouncement] = useState("");
+  const [pressedGroupLabel, setPressedGroupLabel] = useState("");
   const [draggingGroupLabel, setDraggingGroupLabel] = useState<string>("");
+  const [groupDropTarget, setGroupDropTarget] = useState<GroupDropTarget | null>(null);
   const [dropTargetGroup, setDropTargetGroup] = useState<string>("");
   const [groupOrder, setGroupOrder] = useState<string[]>(() => readStoredStringArray(groupOrderStorageKey));
   const [accountOrder, setAccountOrder] = useState<string[]>(() => readStoredStringArray(accountOrderStorageKey));
@@ -380,9 +406,13 @@ export default function App() {
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [groupContextMenu, setGroupContextMenu] = useState<GroupContextMenuState | null>(null);
   const [accountContextMenu, setAccountContextMenu] = useState<AccountContextMenuState | null>(null);
-  const draggingGroupLabelRef = useRef("");
-  const groupDragStartRef = useRef<{ label: string; x: number; y: number } | null>(null);
-  const groupDragMovedRef = useRef(false);
+  const groupPointerDragRef = useRef<GroupPointerDrag | null>(null);
+  const groupDropTargetRef = useRef<GroupDropTarget | null>(null);
+  const groupDragPreviewRef = useRef<HTMLDivElement | null>(null);
+  const groupDragFrameRef = useRef<number | null>(null);
+  const groupDragSuppressClickRef = useRef(false);
+  const groupFilterPositionsRef = useRef<Map<string, { left: number; top: number }>>(new Map());
+  const groupFilterAnimationsRef = useRef<Map<string, Animation>>(new Map());
   const accountPointerDragRef = useRef<AccountPointerDrag | null>(null);
   const accountDropTargetRef = useRef<AccountDropTarget | null>(null);
   const accountDropTargetGroupRef = useRef("");
@@ -392,6 +422,7 @@ export default function App() {
   const accountRowPositionsRef = useRef<Map<string, number>>(new Map());
   const accountRowAnimationsRef = useRef<Map<string, Animation>>(new Map());
   const workspaceRef = useRef<HTMLElement | null>(null);
+  const groupFilterRef = useRef<HTMLDivElement | null>(null);
   const accountListRef = useRef<HTMLDivElement | null>(null);
   const resizingPaneRef = useRef(false);
   const dialogTriggerRef = useRef<HTMLElement | null>(null);
@@ -594,6 +625,37 @@ export default function App() {
     writeStoredStringArray(groupOrderStorageKey, groupOrder);
   }, [groupOrder]);
 
+  useLayoutEffect(() => {
+    const previousPositions = groupFilterPositionsRef.current;
+    groupFilterPositionsRef.current = new Map();
+    if (previousPositions.size === 0) return;
+    if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+
+    const groups = groupFilterRef.current?.querySelectorAll<HTMLElement>(".groupFilterButton[data-group-label]");
+    groups?.forEach((group) => {
+      const label = group.dataset.groupLabel ?? "";
+      if (!label || label === draggingGroupLabel || typeof group.animate !== "function") return;
+      const previous = previousPositions.get(label);
+      if (!previous) return;
+      const bounds = group.getBoundingClientRect();
+      const deltaX = previous.left - bounds.left;
+      const deltaY = previous.top - bounds.top;
+      if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) return;
+      const animation = group.animate(
+        [{ transform: `translate3d(${deltaX}px, ${deltaY}px, 0)` }, { transform: "translate3d(0, 0, 0)" }],
+        { duration: 180, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
+      );
+      groupFilterAnimationsRef.current.set(label, animation);
+      animation.addEventListener("finish", () => {
+        if (groupFilterAnimationsRef.current.get(label) === animation) {
+          groupFilterAnimationsRef.current.delete(label);
+        }
+      }, { once: true });
+    });
+  }, [draggingGroupLabel, groupOrder]);
+
   useEffect(() => {
     writeStoredStringArray(accountOrderStorageKey, accountOrder);
   }, [accountOrder]);
@@ -638,6 +700,31 @@ export default function App() {
     window.addEventListener("keydown", cancelOnEscape);
     return () => window.removeEventListener("keydown", cancelOnEscape);
   }, [draggingAccountName]);
+
+  useEffect(() => {
+    if (!draggingGroupLabel) return;
+    scheduleGroupDragPreview();
+    function cancelOnEscape(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      cancelGroupPointerDrag();
+    }
+    window.addEventListener("keydown", cancelOnEscape);
+    return () => window.removeEventListener("keydown", cancelOnEscape);
+  }, [draggingGroupLabel]);
+
+  useEffect(() => () => {
+    if (groupDragFrameRef.current !== null) {
+      window.cancelAnimationFrame(groupDragFrameRef.current);
+    }
+    const drag = groupPointerDragRef.current;
+    if (drag?.captureElement.hasPointerCapture(drag.pointerId)) {
+      drag.captureElement.releasePointerCapture(drag.pointerId);
+    }
+    groupFilterAnimationsRef.current.forEach((animation) => animation.cancel());
+    groupFilterAnimationsRef.current.clear();
+    groupPointerDragRef.current = null;
+  }, []);
 
   useEffect(() => () => {
     if (accountDragFrameRef.current !== null) {
@@ -1294,57 +1381,247 @@ export default function App() {
     });
   }
 
+  function captureGroupFilterPositions() {
+    const positions = new Map<string, { left: number; top: number }>();
+    groupFilterRef.current
+      ?.querySelectorAll<HTMLElement>(".groupFilterButton[data-group-label]")
+      .forEach((group) => {
+        const label = group.dataset.groupLabel ?? "";
+        if (!label) return;
+        const bounds = group.getBoundingClientRect();
+        positions.set(label, { left: bounds.left, top: bounds.top });
+      });
+    groupFilterAnimationsRef.current.forEach((animation) => animation.cancel());
+    groupFilterAnimationsRef.current.clear();
+    groupFilterPositionsRef.current = positions;
+  }
+
+  function resolveGroupDropTarget(clientX: number, clientY: number, sourceLabel: string): GroupDropTarget | null {
+    const filter = groupFilterRef.current;
+    if (!filter) return null;
+    const filterBounds = filter.getBoundingClientRect();
+    if (
+      clientX < filterBounds.left - 12
+      || clientX > filterBounds.right + 12
+      || clientY < filterBounds.top - 12
+      || clientY > filterBounds.bottom + 12
+    ) {
+      return groupDropTargetRef.current;
+    }
+
+    const candidates = Array.from(
+      filter.querySelectorAll<HTMLElement>(".groupFilterButton[data-group-label]"),
+    ).filter((group) => group.dataset.groupLabel && group.dataset.groupLabel !== sourceLabel);
+    if (candidates.length === 0) return null;
+
+    const hit = (document.elementFromPoint(clientX, clientY) as HTMLElement | null)
+      ?.closest<HTMLElement>(".groupFilterButton[data-group-label]");
+    let target = hit && hit.dataset.groupLabel !== sourceLabel ? hit : null;
+    if (!target) {
+      let nearestDistance = Number.POSITIVE_INFINITY;
+      for (const candidate of candidates) {
+        const bounds = candidate.getBoundingClientRect();
+        const deltaX = clientX - (bounds.left + bounds.width / 2);
+        const deltaY = clientY - (bounds.top + bounds.height / 2);
+        const distance = deltaX * deltaX + deltaY * deltaY;
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          target = candidate;
+        }
+      }
+    }
+    const label = target?.dataset.groupLabel ?? "";
+    if (!target || !label) return null;
+    const bounds = target.getBoundingClientRect();
+    return {
+      label,
+      edge: clientX >= bounds.left + bounds.width / 2 ? "after" : "before",
+    };
+  }
+
+  function updateGroupDropDestination(target: GroupDropTarget | null) {
+    const drag = groupPointerDragRef.current;
+    if (!drag?.active) return;
+    const current = groupDropTargetRef.current;
+    if (current?.label === target?.label && current?.edge === target?.edge) return;
+    captureGroupFilterPositions();
+    groupDropTargetRef.current = target;
+    setGroupDropTarget(target);
+    if (!target) return;
+    setGroupOrder((currentOrder) =>
+      reorderGroupLabels(currentOrder, groupFilters, drag.label, target.label, target.edge),
+    );
+  }
+
+  function updateGroupPointerDestination(clientX: number, clientY: number, drag: GroupPointerDrag) {
+    updateGroupDropDestination(resolveGroupDropTarget(clientX, clientY, drag.label));
+  }
+
+  function scrollGroupFilterForPointer(clientY: number) {
+    const filter = groupFilterRef.current;
+    if (!filter) return;
+    const bounds = filter.getBoundingClientRect();
+    if (clientY < bounds.top - 8 || clientY > bounds.bottom + 8) return;
+    if (clientY < bounds.top + groupDragAutoScrollEdge) {
+      const strength = 1 - Math.max(clientY - bounds.top, 0) / groupDragAutoScrollEdge;
+      filter.scrollTop -= Math.ceil(groupDragAutoScrollStep * strength);
+    } else if (clientY > bounds.bottom - groupDragAutoScrollEdge) {
+      const strength = 1 - Math.max(bounds.bottom - clientY, 0) / groupDragAutoScrollEdge;
+      filter.scrollTop += Math.ceil(groupDragAutoScrollStep * strength);
+    }
+  }
+
+  function scheduleGroupDragPreview() {
+    if (groupDragFrameRef.current !== null) return;
+    groupDragFrameRef.current = window.requestAnimationFrame(() => {
+      groupDragFrameRef.current = null;
+      const drag = groupPointerDragRef.current;
+      const preview = groupDragPreviewRef.current;
+      if (!drag?.active) return;
+      scrollGroupFilterForPointer(drag.latestY);
+      updateGroupPointerDestination(drag.latestX, drag.latestY, drag);
+      if (!preview) return;
+      const x = Math.round(drag.latestX - drag.grabOffsetX);
+      const y = Math.round(drag.latestY - drag.grabOffsetY);
+      preview.style.transform = `translate3d(${x}px, ${y}px, 0) scale(var(--group-drag-scale, 1.018))`;
+    });
+  }
+
   function startGroupPointerDrag(event: PointerEvent<HTMLElement>, group: GroupFilter) {
-    if (group.value === allGroupsValue) return;
-    if (event.button !== 0) return;
-    draggingGroupLabelRef.current = group.label;
-    groupDragStartRef.current = { label: group.label, x: event.clientX, y: event.clientY };
-    groupDragMovedRef.current = false;
-    setDraggingGroupLabel(group.label);
-    setDropTargetGroup(group.label);
-    event.currentTarget.setPointerCapture(event.pointerId);
+    if (group.value === allGroupsValue || event.button !== 0 || event.isPrimary === false) return;
+    const groupElement = event.currentTarget.closest<HTMLElement>(".groupFilterButton[data-group-label]");
+    const captureElement = groupFilterRef.current;
+    if (!groupElement || !captureElement) return;
+    const bounds = groupElement.getBoundingClientRect();
+    event.preventDefault();
+    event.stopPropagation();
+    groupElement.querySelector<HTMLButtonElement>(".groupFilterSelect")?.focus({ preventScroll: true });
+    captureElement.setPointerCapture(event.pointerId);
+    const initialOrder = orderGroupLabels(
+      groupFilters.filter((item) => item.value !== allGroupsValue).map((item) => item.label),
+      groupOrder,
+    );
+    groupPointerDragRef.current = {
+      label: group.label,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      latestX: event.clientX,
+      latestY: event.clientY,
+      grabOffsetX: event.clientX - bounds.left,
+      grabOffsetY: event.clientY - bounds.top,
+      width: bounds.width,
+      height: bounds.height,
+      active: false,
+      initialOrder,
+      captureElement,
+    };
+    groupDropTargetRef.current = null;
+    setGroupDropTarget(null);
+    setPressedGroupLabel(group.label);
   }
 
   function moveGroupPointerDrag(event: PointerEvent<HTMLElement>) {
-    const source = draggingGroupLabelRef.current;
-    if (!source) return;
+    const drag = groupPointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    drag.latestX = event.clientX;
+    drag.latestY = event.clientY;
+    if (!drag.active) {
+      const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+      if (distance < groupDragActivationDistance) return;
+      drag.active = true;
+      setAccountSearch("");
+      setPressedGroupLabel("");
+      setDraggingGroupLabel(drag.label);
+      updateGroupPointerDestination(event.clientX, event.clientY, drag);
+    }
     event.preventDefault();
-    const start = groupDragStartRef.current;
-    if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4) {
-      groupDragMovedRef.current = true;
-    }
-    const element = document.elementFromPoint(event.clientX, event.clientY);
-    const target = element?.closest("[data-group-label]") as HTMLElement | null;
-    const targetLabel = target?.dataset.groupLabel ?? "";
-    if (!targetLabel || targetLabel === allGroupsLabel) return;
-    setDropTargetGroup(targetLabel);
-    if (targetLabel !== source) {
-      setGroupOrder((current) => reorderGroupLabels(current, groupFilters, source, targetLabel));
-    }
+    event.stopPropagation();
+    scheduleGroupDragPreview();
   }
 
-  function endGroupPointerDrag(event: PointerEvent<HTMLElement>) {
-    const start = groupDragStartRef.current;
-    const moved = groupDragMovedRef.current;
-    if (draggingGroupLabelRef.current && event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
+  function clearGroupPointerDrag() {
+    if (groupDragFrameRef.current !== null) {
+      window.cancelAnimationFrame(groupDragFrameRef.current);
+      groupDragFrameRef.current = null;
     }
-    draggingGroupLabelRef.current = "";
-    groupDragStartRef.current = null;
+    groupDropTargetRef.current = null;
+    setPressedGroupLabel("");
     setDraggingGroupLabel("");
-    setDropTargetGroup("");
-    if (start && !moved) {
-      setAccountSearch("");
-      setSelectedGroup(start.label);
+    setGroupDropTarget(null);
+  }
+
+  function finishGroupPointerDrag(event: PointerEvent<HTMLElement>, cancelled: boolean) {
+    const drag = groupPointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const releaseMoved = event.clientX !== drag.latestX || event.clientY !== drag.latestY;
+    if (drag.active && !cancelled && (releaseMoved || !groupDropTargetRef.current)) {
+      drag.latestX = event.clientX;
+      drag.latestY = event.clientY;
+      updateGroupPointerDestination(event.clientX, event.clientY, drag);
     }
-    window.setTimeout(() => {
-      groupDragMovedRef.current = false;
-    }, 0);
+    groupPointerDragRef.current = null;
+    if (drag.captureElement.hasPointerCapture(event.pointerId)) {
+      drag.captureElement.releasePointerCapture(event.pointerId);
+    }
+    if (drag.active) {
+      event.preventDefault();
+      event.stopPropagation();
+      groupDragSuppressClickRef.current = true;
+      window.setTimeout(() => {
+        groupDragSuppressClickRef.current = false;
+      }, 0);
+      if (cancelled) {
+        captureGroupFilterPositions();
+        setGroupOrder(drag.initialOrder);
+      } else {
+        setAccountReorderAnnouncement(`${drag.label} 分组顺序已调整`);
+      }
+    }
+    clearGroupPointerDrag();
+  }
+
+  function cancelGroupPointerDrag() {
+    const drag = groupPointerDragRef.current;
+    groupPointerDragRef.current = null;
+    if (drag?.captureElement.hasPointerCapture(drag.pointerId)) {
+      drag.captureElement.releasePointerCapture(drag.pointerId);
+    }
+    if (drag?.active) {
+      captureGroupFilterPositions();
+      setGroupOrder(drag.initialOrder);
+    }
+    clearGroupPointerDrag();
+  }
+
+  function moveGroupFromKeyboard(event: KeyboardEvent<HTMLButtonElement>, group: GroupFilter) {
+    if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const labels = orderGroupLabels(
+      groupFilters.filter((item) => item.value !== allGroupsValue).map((item) => item.label),
+      groupOrder,
+    );
+    const sourceIndex = labels.indexOf(group.label);
+    const direction = event.key === "ArrowLeft" ? -1 : 1;
+    const targetIndex = sourceIndex + direction;
+    if (sourceIndex < 0 || targetIndex < 0 || targetIndex >= labels.length) {
+      setAccountReorderAnnouncement(`${group.label} 分组已在${direction < 0 ? "最前" : "最后"}`);
+      return;
+    }
+    captureGroupFilterPositions();
+    const nextOrder = [...labels];
+    nextOrder.splice(sourceIndex, 1);
+    nextOrder.splice(targetIndex, 0, group.label);
+    setGroupOrder(nextOrder);
+    setAccountSearch("");
+    setSelectedGroup(group.value);
+    setAccountReorderAnnouncement(`${group.label} 分组已移至第 ${targetIndex + 1} 位`);
   }
 
   function handleGroupFilterClick(group: GroupFilter) {
-    if (groupDragMovedRef.current) {
-      groupDragMovedRef.current = false;
+    if (groupDragSuppressClickRef.current) {
+      groupDragSuppressClickRef.current = false;
       return;
     }
     setAccountSearch("");
@@ -1696,6 +1973,17 @@ export default function App() {
   const workspaceStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties & {
     "--sidebar-width": string;
   };
+  const draggingGroup = draggingGroupLabel
+    ? groupFilters.find((group) => group.label === draggingGroupLabel) ?? null
+    : null;
+  const activeGroupDrag = groupPointerDragRef.current;
+  const groupDragPreviewStyle = activeGroupDrag?.active
+    ? {
+        width: activeGroupDrag.width,
+        height: activeGroupDrag.height,
+        transform: `translate3d(${Math.round(activeGroupDrag.latestX - activeGroupDrag.grabOffsetX)}px, ${Math.round(activeGroupDrag.latestY - activeGroupDrag.grabOffsetY)}px, 0) scale(var(--group-drag-scale, 1.018))`,
+      }
+    : undefined;
   const draggingAccount = draggingAccountName
     ? accounts.find((account) => account.name === draggingAccountName) ?? null
     : null;
@@ -1708,7 +1996,7 @@ export default function App() {
       }
     : undefined;
   return (
-    <main className={`shell ${draggingAccountName ? "accountDragging" : ""}`}>
+    <main className={`shell ${draggingAccountName ? "accountDragging" : ""} ${draggingGroupLabel ? "groupDragging" : ""}`}>
       <header className="topbar">
         <div className="brand">
           <span className="mark" />
@@ -1817,21 +2105,27 @@ export default function App() {
             </button>
           </div>
 
-          <div className="groupFilter" aria-label="分组筛选">
+          <div
+            className="groupFilter"
+            aria-label="分组筛选"
+            ref={groupFilterRef}
+            onLostPointerCapture={(event) => finishGroupPointerDrag(event, true)}
+            onPointerCancel={(event) => finishGroupPointerDrag(event, true)}
+            onPointerMove={moveGroupPointerDrag}
+            onPointerUp={(event) => finishGroupPointerDrag(event, false)}
+          >
             {groupFilters.map((group) => {
               const isAll = group.value === allGroupsValue;
               const isActive = selectedGroup === group.value;
               const canDeleteGroup = !isAll && group.label !== ungroupedLabel;
+              const reorderEdge = groupDropTarget?.label === group.label ? groupDropTarget.edge : undefined;
               return (
                 <div
-                  className={`groupFilterButton ${isActive ? "active" : ""} ${draggingGroupLabel === group.label ? "dragging" : ""} ${dropTargetGroup === group.label ? "dropTarget" : ""}`}
+                  className={`groupFilterButton ${isActive ? "active" : ""} ${pressedGroupLabel === group.label ? "pressed" : ""} ${draggingGroupLabel === group.label ? "dragOrigin" : ""} ${dropTargetGroup === group.label ? "dropTarget" : ""} ${reorderEdge ? "reorderTarget" : ""}`}
+                  data-drop-edge={reorderEdge}
                   data-group-label={isAll ? undefined : group.label}
                   key={group.value}
-                  title={isAll ? "再次点击可折叠或展开全部分组" : "按住拖动可调整分组顺序"}
-                  onPointerCancel={endGroupPointerDrag}
-                  onPointerDown={(event) => startGroupPointerDrag(event, group)}
-                  onPointerMove={moveGroupPointerDrag}
-                  onPointerUp={endGroupPointerDrag}
+                  title={isAll ? "再次点击可折叠或展开全部分组" : "点击查看分组；拖动手柄调整顺序"}
                   onContextMenu={(event) => {
                     if (!canDeleteGroup) return;
                     event.preventDefault();
@@ -1851,13 +2145,17 @@ export default function App() {
                     className="groupFilterSelect"
                     type="button"
                     aria-pressed={isActive}
-                    title={isAll ? "再次点击可折叠或展开全部分组" : "点击查看该分组；按住拖动调整顺序"}
+                    aria-keyshortcuts={isAll ? undefined : "Alt+ArrowLeft Alt+ArrowRight"}
+                    title={isAll ? "再次点击可折叠或展开全部分组" : "点击查看；拖动左侧手柄排序；⌥← / ⌥→ 微调"}
                     onClick={() => handleGroupFilterClick(group)}
+                    onKeyDown={(event) => moveGroupFromKeyboard(event, group)}
                   >
                     {isAll ? null : (
                       <span
                         className="groupDragHandle"
+                        aria-hidden="true"
                         title="拖动调整分组顺序"
+                        onPointerDown={(event) => startGroupPointerDrag(event, group)}
                       >
                         <GripVertical size={12} />
                       </span>
@@ -2127,6 +2425,22 @@ export default function App() {
           )}
         </section>
       </section>
+
+      {draggingGroup && activeGroupDrag?.active && groupDragPreviewStyle ? (
+        <div
+          aria-hidden="true"
+          className="groupDragPreview"
+          ref={groupDragPreviewRef}
+          style={groupDragPreviewStyle}
+        >
+          <span className="groupDragPreviewHandle">
+            <GripVertical size={12} />
+          </span>
+          <Folder className="groupIcon" size={12} />
+          <strong>{middleTruncate(draggingGroup.label, 28)}</strong>
+          <small>{draggingGroup.count}</small>
+        </div>
+      ) : null}
 
       {draggingAccount && activeAccountDrag?.active && accountDragPreviewStyle ? (
         <div
@@ -3304,14 +3618,22 @@ function appendNewGroup(currentOrder: string[], filters: GroupFilter[], label: s
   return [...orderGroupLabels(existingLabels, currentOrder), label];
 }
 
-function reorderGroupLabels(currentOrder: string[], filters: GroupFilter[], source: string, target: string): string[] {
+function reorderGroupLabels(
+  currentOrder: string[],
+  filters: GroupFilter[],
+  source: string,
+  target: string,
+  edge: GroupDropTarget["edge"],
+): string[] {
   if (!source || source === target || target === allGroupsLabel) return currentOrder;
-  const labels = orderGroupLabels(
+  const effectiveOrder = orderGroupLabels(
     filters.filter((group) => group.value !== allGroupsValue).map((group) => group.label),
     currentOrder,
-  ).filter((label) => label !== source);
+  );
+  const labels = effectiveOrder.filter((label) => label !== source);
   const targetIndex = labels.indexOf(target);
-  labels.splice(targetIndex >= 0 ? targetIndex : labels.length, 0, source);
+  labels.splice(targetIndex >= 0 ? targetIndex + (edge === "after" ? 1 : 0) : labels.length, 0, source);
+  if (labels.every((label, index) => label === effectiveOrder[index])) return currentOrder;
   return labels;
 }
 

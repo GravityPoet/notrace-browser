@@ -383,6 +383,7 @@ summary:focus-visible {
 }
 
 .groupFilterButton {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -397,19 +398,12 @@ summary:focus-visible {
   padding: 0 3px 0 0;
   font-size: 12px;
   font-weight: 650;
-  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+  transform-origin: center;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, transform 100ms ease;
 }
 
-.groupFilterButton[data-group-label],
 .groupFilterButton[data-group-label] .groupFilterSelect {
-  cursor: grab;
-  touch-action: none;
-  user-select: none;
-}
-
-.groupFilterButton[data-group-label]:active,
-.groupFilterButton[data-group-label] .groupFilterSelect:active {
-  cursor: grabbing;
+  cursor: pointer;
 }
 
 .groupFilterSelect {
@@ -441,6 +435,8 @@ summary:focus-visible {
   border-radius: 999px;
   color: var(--soft);
   cursor: grab;
+  touch-action: none;
+  user-select: none;
   transition: background 140ms ease, color 140ms ease;
 }
 
@@ -481,12 +477,14 @@ summary:focus-visible {
   color: var(--accent);
 }
 
-.groupFilterButton.dragging {
-  border-color: rgba(0, 113, 227, 0.38);
+.groupFilterButton.pressed {
+  border-color: rgba(0, 113, 227, 0.3);
   background: rgba(255, 255, 255, 0.98);
-  color: var(--accent);
-  box-shadow: 0 7px 18px rgba(0, 113, 227, 0.12);
-  transform: scale(1.015);
+  transform: scale(0.985);
+}
+
+.groupFilterButton.dragOrigin {
+  visibility: hidden;
 }
 
 .groupFilterButton.dropTarget {
@@ -498,6 +496,80 @@ summary:focus-visible {
 
 .groupFilterButton.dropTarget .groupDragHandle {
   color: var(--accent);
+}
+
+.groupFilterButton.reorderTarget::after {
+  position: absolute;
+  z-index: 2;
+  top: 4px;
+  bottom: 4px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.1);
+  content: "";
+  pointer-events: none;
+}
+
+.groupFilterButton.reorderTarget[data-drop-edge="before"]::after {
+  left: -4px;
+}
+
+.groupFilterButton.reorderTarget[data-drop-edge="after"]::after {
+  right: -4px;
+}
+
+.shell.groupDragging .groupFilterButton {
+  will-change: transform;
+}
+
+.groupDragPreview {
+  --group-drag-scale: 1.018;
+  position: fixed;
+  z-index: 1001;
+  top: 0;
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  gap: 5px;
+  border: 1px solid rgba(0, 113, 227, 0.34);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--accent);
+  padding: 0 11px 0 7px;
+  box-shadow: 0 10px 24px rgba(0, 67, 138, 0.18), 0 2px 8px rgba(0, 0, 0, 0.08);
+  pointer-events: none;
+  transform-origin: center;
+  will-change: transform;
+  backdrop-filter: saturate(180%) blur(18px);
+}
+
+.groupDragPreviewHandle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 14px;
+  color: var(--accent);
+}
+
+.groupDragPreview strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.groupDragPreview small {
+  flex: 0 0 auto;
+  min-width: 18px;
+  font-size: 10px;
+  line-height: 16px;
+  opacity: 0.78;
+  text-align: center;
 }
 
 .accountList {
@@ -2101,10 +2173,16 @@ button:disabled {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .groupDragPreview {
+    --group-drag-scale: 1;
+  }
+
   .accountDragPreview {
     --account-drag-scale: 1;
   }
 
+  .groupFilterButton,
+  .groupDragHandle,
   .accountGroup,
   .accountGroupHeader,
   .accountRow,
