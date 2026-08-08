@@ -63,9 +63,10 @@ async function click(element: HTMLElement) {
   });
 }
 
-async function inputText(element: HTMLInputElement, value: string) {
+async function inputText(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => {
-    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const valueSetter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
     valueSetter?.call(element, value);
     element.dispatchEvent(new Event("input", { bubbles: true }));
   });
@@ -265,8 +266,22 @@ describe("Cloak Picker dialog regressions", () => {
     expect(document.activeElement).toBe(origin);
   });
 
-  it("offers group and label management from one compact homepage control", async () => {
+  it("keeps account-list refresh and management beside the account heading", async () => {
+    const sidebarHeader = document.querySelector<HTMLElement>(".sidebarHeader");
     const manageButton = buttonWithText("管理");
+    const refreshButton = document.querySelector<HTMLButtonElement>('button[aria-label="重新读取账号列表"]');
+    expect(sidebarHeader).not.toBeNull();
+    expect(manageButton.closest(".sidebarHeader")).toBe(sidebarHeader);
+    expect(manageButton.closest(".topActions")).toBeNull();
+    expect(refreshButton?.closest(".sidebarHeader")).toBe(sidebarHeader);
+    expect(refreshButton?.title).toBe("重新读取账号列表");
+    expect(document.querySelector('.topActions button[aria-label="重新读取账号列表"]')).toBeNull();
+
+    await click(refreshButton as HTMLButtonElement);
+    await settle(200);
+    expect(mockCommandCountForTest("list_accounts")).toBe(1);
+    expect(mockCommandCountForTest("list_trashed_accounts")).toBe(1);
+
     expect(manageButton.getAttribute("aria-haspopup")).toBe("menu");
     await click(manageButton);
 
@@ -285,6 +300,49 @@ describe("Cloak Picker dialog regressions", () => {
 
     const codexRow = dialog?.querySelector('[aria-label="重命名分组 codex"]')?.closest(".manageRow");
     expect(codexRow?.textContent).toContain("3 个账号");
+  });
+
+  it("writes, finds, edits, and clears a multiline note from an account context menu", async () => {
+    await openContextMenu(accountRow("demo-beta"));
+    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="demo-beta 账号菜单"]');
+    expect(menu).not.toBeNull();
+    await click(buttonWithText("写备注", menu ?? document));
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    const textarea = dialog?.querySelector<HTMLTextAreaElement>("textarea");
+    expect(dialog?.textContent).toContain("备注只保存在这个账号的本地目录中");
+    expect(textarea).not.toBeNull();
+    await inputText(textarea as HTMLTextAreaElement, "客户偏好日语\n下次确认账单");
+    expect(dialog?.querySelector(".fieldCounter")?.textContent).toBe("13/1000");
+    await click(buttonWithText("保存备注", dialog ?? document));
+    await settle(200);
+
+    expect(mockCommandCountForTest("set_note")).toBe(1);
+    expect(accountRow("demo-beta").querySelector(".accountNoteIndicator")?.getAttribute("title")).toBe(
+      "客户偏好日语\n下次确认账单",
+    );
+    expect(document.querySelector(".detail")?.textContent).toContain("客户偏好日语");
+    expect(document.querySelector(".detail")?.textContent).toContain("下次确认账单");
+
+    const accountSearch = document.querySelector<HTMLInputElement>('input[type="search"]');
+    await inputText(accountSearch as HTMLInputElement, "确认账单");
+    await settle(30);
+    expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("1/1");
+    await inputText(accountSearch as HTMLInputElement, "");
+
+    await openContextMenu(accountRow("demo-beta"));
+    const editMenu = document.querySelector<HTMLElement>('[role="menu"][aria-label="demo-beta 账号菜单"]');
+    await click(buttonWithText("编辑备注", editMenu ?? document));
+    const editDialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    const editTextarea = editDialog?.querySelector<HTMLTextAreaElement>("textarea");
+    expect(editTextarea?.value).toBe("客户偏好日语\n下次确认账单");
+    await inputText(editTextarea as HTMLTextAreaElement, "");
+    await click(buttonWithText("清除备注", editDialog ?? document));
+    await settle(200);
+
+    expect(mockCommandCountForTest("set_note")).toBe(2);
+    expect(accountRow("demo-beta").querySelector(".accountNoteIndicator")).toBeNull();
+    expect(document.querySelector(".detail")?.textContent).toContain("备注未填写");
   });
 
   it("also exposes group rename directly from the group context menu", async () => {
@@ -732,7 +790,7 @@ describe("Cloak Picker dialog regressions", () => {
 
   it("keeps legacy archived accounts in the trash workflow", async () => {
     const accountSearch = document.querySelector<HTMLInputElement>('input[type="search"]');
-    expect(accountSearch?.placeholder).toBe("搜索所有账号、分组或标记");
+    expect(accountSearch?.placeholder).toBe("搜索所有账号、分组、标记或备注");
     expect(accountSearch?.closest(".topbar")).not.toBeNull();
     expect(document.querySelector('.sidebar input[type="search"]')).toBeNull();
 
@@ -1033,7 +1091,7 @@ describe("Cloak Picker cross-account and failure-state regressions", () => {
 
   it("says the list is stale instead of silently showing yesterday's accounts", async () => {
     failNextMockCommandForTest("list_accounts");
-    await click(document.querySelector<HTMLButtonElement>('button[aria-label="刷新"]')!);
+    await click(document.querySelector<HTMLButtonElement>('button[aria-label="重新读取账号列表"]')!);
     await settle(300);
 
     // The rows on screen are the last good ones, which is right — but saying

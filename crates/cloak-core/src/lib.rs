@@ -41,6 +41,7 @@ const EXTENSION_MIME_REQUEST_HANDLING_FLAG: &str = "extension-mime-request-handl
 const GEO_CACHE_TTL_SECS: u64 = 300;
 const GEO_ATTEMPT_TIMEOUT_SECS: u64 = 4;
 const GEO_LOOKUP_ATTEMPTS: usize = 2;
+const MAX_ACCOUNT_NOTE_CHARS: usize = 1000;
 
 /// Apple Silicon GPU renderer pool — base chips only, coherent with 8-core hardwareConcurrency.
 /// Pro/Max/Ultra variants excluded to avoid "M4 Max + 8 cores" inconsistency.
@@ -146,6 +147,8 @@ pub enum CloakError {
     InvalidAccountMark,
     #[error("account mark color is invalid; use green, blue, or red")]
     InvalidAccountMarkColor,
+    #[error("account note is invalid; use at most 1000 characters")]
+    InvalidAccountNote,
     #[error("CloakBrowser binary not found")]
     BrowserMissing,
     #[error("companion extension not found: {0}")]
@@ -219,6 +222,8 @@ pub struct Account {
     pub marked: bool,
     pub mark_note: Option<String>,
     pub mark_color: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
     pub region: Option<String>,
     pub locale_enabled: bool,
     pub proxy_display: String,
@@ -509,6 +514,7 @@ pub fn read_account(config: &CloakConfig, name: &str) -> Result<Account> {
     let mark_note = read_first_line(&mark_path)?;
     let mark_color = read_first_line(&profile_path.join(".cloak-mark-color"))?
         .filter(|value| valid_mark_color(value));
+    let note = read_account_note(&profile_path.join(".cloak-note"))?;
     let region = read_first_line(&profile_path.join(".cloak-region"))?;
     let locale_enabled = profile_path.join(".cloak-locale").exists();
     let proxy_raw = read_first_line(&profile_path.join(".cloak-proxy"))?;
@@ -538,6 +544,7 @@ pub fn read_account(config: &CloakConfig, name: &str) -> Result<Account> {
         marked,
         mark_note,
         mark_color,
+        note,
         region: region.filter(|s| !s.is_empty()),
         locale_enabled,
         proxy_display,
@@ -717,6 +724,30 @@ pub fn set_group(config: &CloakConfig, name: &str, value: Option<&str>) -> Resul
     let path = profile.join(".cloak-group");
     match value.map(str::trim).filter(|v| !v.is_empty()) {
         Some(raw) => write_secret_atomic(&path, raw)?,
+        None => remove_if_present(&path)?,
+    }
+    read_account(config, name)
+}
+
+pub fn set_note(config: &CloakConfig, name: &str, value: Option<&str>) -> Result<Account> {
+    let profile = ensure_profile(config, name)?;
+    let path = profile.join(".cloak-note");
+    let normalized = value
+        .map(|raw| raw.replace("\r\n", "\n").replace('\r', "\n"))
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty());
+
+    match normalized {
+        Some(note) => {
+            if note.chars().count() > MAX_ACCOUNT_NOTE_CHARS
+                || note.chars().any(|character| {
+                    character.is_control() && character != '\n' && character != '\t'
+                })
+            {
+                return Err(CloakError::InvalidAccountNote);
+            }
+            write_secret_atomic(&path, &note)?;
+        }
         None => remove_if_present(&path)?,
     }
     read_account(config, name)
@@ -2804,6 +2835,14 @@ fn read_first_line(path: &Path) -> Result<Option<String>> {
         .filter(|s| !s.is_empty()))
 }
 
+fn read_account_note(path: &Path) -> Result<Option<String>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let note = fs::read_to_string(path)?.trim().to_string();
+    Ok((!note.is_empty()).then_some(note))
+}
+
 fn enforce_profile_preferences(profile_path: &Path) -> Result<()> {
     let prefs_path = profile_path.join("Default").join("Preferences");
     let mut root = if prefs_path.exists() {
@@ -3491,6 +3530,57 @@ mod tests {
         let cleared = set_group(&config, "work2", None).unwrap();
         assert_eq!(cleared.group, None);
         assert!(!config.profile_dir("work2").join(".cloak-group").exists());
+    }
+
+    #[test]
+    fn account_note_persists_clears_and_survives_account_lifecycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = CloakConfig {
+            repo_root: dir.path().to_path_buf(),
+            account_base: dir.path().join("accounts"),
+            extension_source: dir.path().join("extension"),
+            cloakbrowser_root: dir.path().join("browser"),
+        };
+        fs::create_dir_all(&config.extension_source).unwrap();
+
+        create_account(&config, "work").unwrap();
+        let noted = set_note(&config, "work", Some("  客户偏好日语\n下次确认账单  ")).unwrap();
+        assert_eq!(noted.note.as_deref(), Some("客户偏好日语\n下次确认账单"));
+        assert!(config.profile_dir("work").join(".cloak-note").exists());
+
+        let renamed = rename_account(&config, "work", "work2").unwrap();
+        assert_eq!(renamed.note.as_deref(), Some("客户偏好日语\n下次确认账单"));
+        let trashed = set_account_trashed(&config, "work2", true).unwrap();
+        assert_eq!(trashed.note.as_deref(), Some("客户偏好日语\n下次确认账单"));
+        let restored = set_account_trashed(&config, "work2", false).unwrap();
+        assert_eq!(restored.note.as_deref(), Some("客户偏好日语\n下次确认账单"));
+
+        let cleared = set_note(&config, "work2", None).unwrap();
+        assert_eq!(cleared.note, None);
+        assert!(!config.profile_dir("work2").join(".cloak-note").exists());
+    }
+
+    #[test]
+    fn account_note_rejects_overlong_and_unsafe_control_characters() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = CloakConfig {
+            repo_root: dir.path().to_path_buf(),
+            account_base: dir.path().join("accounts"),
+            extension_source: dir.path().join("extension"),
+            cloakbrowser_root: dir.path().join("browser"),
+        };
+        fs::create_dir_all(&config.extension_source).unwrap();
+        create_account(&config, "work").unwrap();
+
+        let overlong = "a".repeat(MAX_ACCOUNT_NOTE_CHARS + 1);
+        assert!(matches!(
+            set_note(&config, "work", Some(&overlong)),
+            Err(CloakError::InvalidAccountNote)
+        ));
+        assert!(matches!(
+            set_note(&config, "work", Some("safe\u{0000}unsafe")),
+            Err(CloakError::InvalidAccountNote)
+        ));
     }
 
     #[test]

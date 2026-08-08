@@ -11,6 +11,7 @@ import {
   Globe2,
   KeyRound,
   Loader2,
+  MessageSquareText,
   Network,
   Pencil,
   Play,
@@ -56,6 +57,7 @@ type Account = {
   marked: boolean;
   mark_note: string | null;
   mark_color: MarkColor | null;
+  note: string | null;
   region: string | null;
   locale_enabled: boolean;
   proxy_display: string;
@@ -160,6 +162,7 @@ type DialogState =
   | { kind: "region"; account: Account; value: string }
   | { kind: "group"; account: Account; value: string }
   | { kind: "mark"; account: Account; value: string; color: MarkColor }
+  | { kind: "note"; account: Account; value: string }
   | { kind: "delete"; account: Account }
   | { kind: "permanentDelete"; account: Account }
   | { kind: "deleteGroup"; groupLabel: string; count: number; returnToManage?: boolean };
@@ -235,6 +238,7 @@ const accountDragAutoScrollStep = 14;
 
 const emptyAccounts: Account[] = [];
 const mockMarkOverrides = new Map<string, { marked: boolean; note: string | null; color: MarkColor | null }>();
+const mockNoteOverrides = new Map<string, string | null>();
 const mockGroupOverrides = new Map<string, string | null>();
 const mockCommandCounts = new Map<string, number>();
 const mockCommandFailures = new Map<string, number>();
@@ -243,6 +247,7 @@ let mockChallengeAuditCancelled = false;
 
 export function resetMockCommandsForTest() {
   mockMarkOverrides.clear();
+  mockNoteOverrides.clear();
   mockGroupOverrides.clear();
   mockCommandCounts.clear();
   mockCommandFailures.clear();
@@ -277,6 +282,7 @@ const colorAwareMarkPresetsStorageKey = "cloak-picker.markPresets.v2";
 const markPresetsStorageKey = "cloak-picker.markPresets.v3";
 const defaultMarkPresets = ["Plus", "自用"] as const;
 const maxMarkLength = 24;
+const maxNoteLength = 1000;
 const maxGroupLength = 40;
 const defaultSidebarWidth = 326;
 const minSidebarWidth = 260;
@@ -443,6 +449,7 @@ export default function App() {
   const dialogTriggerRef = useRef<HTMLElement | null>(null);
   const manageButtonRef = useRef<HTMLButtonElement | null>(null);
   const markSaveInFlightRef = useRef(false);
+  const noteSaveInFlightRef = useRef(false);
 
   const accounts = accountView === "trash" ? trashedAccounts : activeAccounts;
   const allAccounts = useMemo(
@@ -966,6 +973,11 @@ export default function App() {
       return;
     }
 
+    if (dialog.kind === "note") {
+      await saveAccountNote(dialog.account, value);
+      return;
+    }
+
     if (dialog.kind === "mark") {
       await saveAccountMark(dialog.account, value, dialog.color);
       return;
@@ -1017,6 +1029,31 @@ export default function App() {
       }
     } finally {
       markSaveInFlightRef.current = false;
+    }
+  }
+
+  async function saveAccountNote(account: Account, rawValue: string) {
+    if (noteSaveInFlightRef.current) return;
+    const value = rawValue.trim();
+    if (value === (account.note?.trim() || "")) {
+      setDialog(null);
+      return;
+    }
+
+    noteSaveInFlightRef.current = true;
+    try {
+      const updated = await run(() =>
+        call<Account>("set_note", {
+          name: account.name,
+          value: value || null,
+        }),
+      );
+      if (updated) {
+        setDialog(null);
+        await refresh(updated.name);
+      }
+    } finally {
+      noteSaveInFlightRef.current = false;
     }
   }
 
@@ -1462,6 +1499,11 @@ export default function App() {
       },
       trigger,
     );
+  }
+
+  function noteAccountFromContextMenu(account: Account, trigger: HTMLElement) {
+    setAccountContextMenu(null);
+    openDialog({ kind: "note", account, value: account.note ?? "" }, trigger);
   }
 
   async function clearAccountMarkFromContextMenu(account: Account) {
@@ -2133,7 +2175,7 @@ export default function App() {
               aria-describedby={hasAccountSearch ? "account-search-result-status" : undefined}
               aria-label="搜索账号"
               autoComplete="off"
-              placeholder="搜索所有账号、分组或标记"
+              placeholder="搜索所有账号、分组、标记或备注"
               spellCheck={false}
               type="search"
               value={accountSearch}
@@ -2189,58 +2231,6 @@ export default function App() {
           </div>
         </div>
         <div className="topActions">
-          <IconButton label="刷新" disabled={busy} onClick={() => void run(() => refresh())}>
-            <RefreshCw size={15} />
-          </IconButton>
-          <div className="manageMenuWrap">
-            <button
-              aria-expanded={manageMenuOpen}
-              aria-haspopup="menu"
-              className={`secondaryButton manageButton ${manageMenuOpen ? "active" : ""}`}
-              disabled={busy}
-              ref={manageButtonRef}
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                setGroupContextMenu(null);
-                setAccountContextMenu(null);
-                setManageMenuOpen((current) => !current);
-              }}
-            >
-              <Settings2 aria-hidden="true" size={14} />
-              管理
-              <ChevronDown aria-hidden="true" className="manageChevron" size={11} />
-            </button>
-            {manageMenuOpen ? (
-              <div
-                aria-label="管理选项"
-                className="contextMenu manageMenu"
-                role="menu"
-                onClick={(event) => event.stopPropagation()}
-                onContextMenu={(event) => event.preventDefault()}
-              >
-                <button
-                  autoFocus
-                  className="contextMenuItem"
-                  role="menuitem"
-                  type="button"
-                  onClick={() => openManageDialog("groups", manageButtonRef.current)}
-                >
-                  <Folder aria-hidden="true" size={14} />
-                  <span className="contextMenuItemLabel">管理分组</span>
-                </button>
-                <button
-                  className="contextMenuItem"
-                  role="menuitem"
-                  type="button"
-                  onClick={() => openManageDialog("marks", manageButtonRef.current)}
-                >
-                  <Tags aria-hidden="true" size={14} />
-                  <span className="contextMenuItemLabel">管理标签</span>
-                </button>
-              </div>
-            ) : null}
-          </div>
           <button className="primaryButton" disabled={busy} onClick={(event) => openCreateDialog(event.currentTarget)}>
             <Plus size={15} />
             新建
@@ -2252,7 +2242,60 @@ export default function App() {
         <aside className="sidebar">
           <div className="sidebarHeader">
             <span>账号</span>
-            {busy ? <Loader2 className="spin" size={14} /> : null}
+            <div className="sidebarHeaderActions">
+              <IconButton label="重新读取账号列表" disabled={busy} onClick={() => void run(() => refresh())}>
+                <RefreshCw aria-hidden="true" className={busy ? "spin" : undefined} size={13} />
+              </IconButton>
+              <div className="manageMenuWrap sidebarManageMenuWrap">
+                <button
+                  aria-expanded={manageMenuOpen}
+                  aria-haspopup="menu"
+                  className={`sidebarManageButton manageButton ${manageMenuOpen ? "active" : ""}`}
+                  disabled={busy}
+                  ref={manageButtonRef}
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setGroupContextMenu(null);
+                    setAccountContextMenu(null);
+                    setManageMenuOpen((current) => !current);
+                  }}
+                >
+                  <Settings2 aria-hidden="true" size={13} />
+                  管理
+                  <ChevronDown aria-hidden="true" className="manageChevron" size={10} />
+                </button>
+                {manageMenuOpen ? (
+                  <div
+                    aria-label="管理选项"
+                    className="contextMenu manageMenu"
+                    role="menu"
+                    onClick={(event) => event.stopPropagation()}
+                    onContextMenu={(event) => event.preventDefault()}
+                  >
+                    <button
+                      autoFocus
+                      className="contextMenuItem"
+                      role="menuitem"
+                      type="button"
+                      onClick={() => openManageDialog("groups", manageButtonRef.current)}
+                    >
+                      <Folder aria-hidden="true" size={14} />
+                      <span className="contextMenuItemLabel">管理分组</span>
+                    </button>
+                    <button
+                      className="contextMenuItem"
+                      role="menuitem"
+                      type="button"
+                      onClick={() => openManageDialog("marks", manageButtonRef.current)}
+                    >
+                      <Tags aria-hidden="true" size={14} />
+                      <span className="contextMenuItemLabel">管理标签</span>
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
           </div>
           <div className="viewSwitch" role="tablist" aria-label="账号视图">
             <button
@@ -2489,6 +2532,12 @@ export default function App() {
                   <InspectorGroup title="身份">
                     <InfoRow icon={<KeyRound size={15} />} label="指纹" value={selected.seed} mono />
                     <InfoRow icon={<Folder size={15} />} label="分组" value={accountGroupLabel(selected)} />
+                    <InfoRow
+                      icon={<MessageSquareText size={15} />}
+                      label="备注"
+                      value={selected.note ?? "未填写"}
+                      multiline={Boolean(selected.note)}
+                    />
                     <InfoRow icon={<CalendarClock size={15} />} label="创建时间" value={formatCreatedAt(selected.created_at)} />
                     {selected.trashed ? (
                       <InfoRow icon={<Trash2 size={15} />} label="删除时间" value={formatCreatedAt(selected.deleted_at ?? 0)} />
@@ -2735,6 +2784,18 @@ export default function App() {
             type="button"
             role="menuitem"
             onClick={() =>
+              noteAccountFromContextMenu(accountContextMenu.account, accountContextMenu.returnFocusElement)
+            }
+          >
+            <MessageSquareText aria-hidden="true" size={14} />
+            <span className="contextMenuItemLabel">{accountContextMenu.account.note ? "编辑备注" : "写备注"}</span>
+          </button>
+          <button
+            className="contextMenuItem"
+            disabled={busy}
+            type="button"
+            role="menuitem"
+            onClick={() =>
               markAccountFromContextMenu(accountContextMenu.account, accountContextMenu.returnFocusElement)
             }
           >
@@ -2932,7 +2993,7 @@ function AccountGroupSection({
                   data-account-group={searching ? undefined : accountGroupLabel(account)}
                   data-account-name={searching ? undefined : account.name}
                   hidden={!searching && account.name === draggingAccountName}
-                  title={`${account.name}${isLocated ? "｜当前搜索匹配" : ""}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${searching || account.trashed ? "" : "｜拖动左侧手柄排序或移动分组；⌥↑ / ⌥↓ 微调"}`}
+                  title={`${account.name}${isLocated ? "｜当前搜索匹配" : ""}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${account.note ? `｜备注：${account.note.replace(/\s+/g, " ")}` : ""}${searching || account.trashed ? "" : "｜拖动左侧手柄排序或移动分组；⌥↑ / ⌥↓ 微调"}`}
                   onClick={() => onSelectAccount(account.name)}
                   onContextMenu={(event) => onOpenAccountContextMenu(event, account)}
                   onDoubleClick={(event) => {
@@ -2964,6 +3025,11 @@ function AccountGroupSection({
                         </span>
                       )}
                       <strong title={account.name}>{middleTruncate(account.name, 34)}</strong>
+                      {account.note ? (
+                        <span className="accountNoteIndicator" title={account.note} aria-label={`备注：${account.note}`}>
+                          <MessageSquareText aria-hidden="true" size={13} />
+                        </span>
+                      ) : null}
                       {searching || chronological ? (
                         <span
                           className={`accountLocationTag ${account.trashed ? "trashed" : "active"}`}
@@ -3430,25 +3496,39 @@ function EditorDialog({
         ) : null}
         <label className="field">
           <span>{config.label}</span>
-          <input
-            aria-describedby={
-              dialog.kind === "create" && error && !dialog.value.trim()
-                ? "cloak-account-name-error"
-                : undefined
-            }
-            aria-invalid={dialog.kind === "create" && Boolean(error) && !dialog.value.trim() ? true : undefined}
-            aria-required={["create", "createGroup", "renameGroup"].includes(dialog.kind) ? true : undefined}
-            autoFocus
-            id={dialog.kind === "create" ? "cloak-account-name" : undefined}
-            maxLength={dialog.kind === "mark"
-              ? maxMarkLength
-              : dialog.kind === "createGroup" || dialog.kind === "renameGroup"
-                ? maxGroupLength
-                : undefined}
-            value={dialog.value}
-            placeholder={config.placeholder}
-            onChange={(event) => onChange({ ...dialog, value: event.currentTarget.value })}
-          />
+          {dialog.kind === "note" ? (
+            <>
+              <textarea
+                autoFocus
+                maxLength={maxNoteLength}
+                placeholder={config.placeholder}
+                rows={7}
+                value={dialog.value}
+                onChange={(event) => onChange({ ...dialog, value: event.currentTarget.value })}
+              />
+              <small className="fieldCounter">{dialog.value.length}/{maxNoteLength}</small>
+            </>
+          ) : (
+            <input
+              aria-describedby={
+                dialog.kind === "create" && error && !dialog.value.trim()
+                  ? "cloak-account-name-error"
+                  : undefined
+              }
+              aria-invalid={dialog.kind === "create" && Boolean(error) && !dialog.value.trim() ? true : undefined}
+              aria-required={["create", "createGroup", "renameGroup"].includes(dialog.kind) ? true : undefined}
+              autoFocus
+              id={dialog.kind === "create" ? "cloak-account-name" : undefined}
+              maxLength={dialog.kind === "mark"
+                ? maxMarkLength
+                : dialog.kind === "createGroup" || dialog.kind === "renameGroup"
+                  ? maxGroupLength
+                  : undefined}
+              value={dialog.value}
+              placeholder={config.placeholder}
+              onChange={(event) => onChange({ ...dialog, value: event.currentTarget.value })}
+            />
+          )}
         </label>
         {dialog.kind === "create" ? groupPicker : null}
         {error ? (
@@ -3893,6 +3973,16 @@ function dialogConfig(
       const accountName = middleTruncate(dialog.account.name, 28);
       return { title: `分组「${accountName}」`, label: "分组名称", placeholder: "codex / antigravity / claude", action: dialog.account.group ? "保存 / 清除" : "保存" };
     }
+    case "note": {
+      const accountName = middleTruncate(dialog.account.name, 28);
+      return {
+        title: `${dialog.account.note ? "编辑" : "写"}备注「${accountName}」`,
+        label: "备注内容",
+        placeholder: "记录用途、登录状态、客户偏好或下次要处理的事项…",
+        action: !dialog.value.trim() && dialog.account.note ? "清除备注" : "保存备注",
+        description: "支持多行，最多 1000 个字符；备注只保存在这个账号的本地目录中。",
+      };
+    }
     case "mark": {
       const accountName = middleTruncate(dialog.account.name, 28);
       return {
@@ -3967,14 +4057,26 @@ function InspectorGroup({ title, children }: { title: string; children: ReactNod
   );
 }
 
-function InfoRow({ icon, label, value, mono }: { icon?: ReactNode; label: string; value: string; mono?: boolean }) {
+function InfoRow({
+  icon,
+  label,
+  value,
+  mono,
+  multiline,
+}: {
+  icon?: ReactNode;
+  label: string;
+  value: string;
+  mono?: boolean;
+  multiline?: boolean;
+}) {
   return (
     <div className="infoRow">
       <span className="infoLabel">
         {icon}
         {label}
       </span>
-      <span className={`infoValue ${mono ? "mono" : ""}`} title={value}>
+      <span className={`infoValue ${mono ? "mono" : ""} ${multiline ? "multiline" : ""}`} title={value}>
         {value}
       </span>
     </div>
@@ -4011,7 +4113,7 @@ function normalizeAccountSearch(value: string) {
 
 function accountSearchRank(account: Account, normalizedSearch: string): number | null {
   const name = normalizeAccountSearch(account.name);
-  const metadata = [account.group ?? "", account.mark_note ?? ""].map(normalizeAccountSearch);
+  const metadata = [account.group ?? "", account.mark_note ?? "", account.note ?? ""].map(normalizeAccountSearch);
   if (name === normalizedSearch) return 0;
   if (metadata.some((value) => value === normalizedSearch)) return 1;
   if (name.startsWith(normalizedSearch)) return 2;
@@ -4362,7 +4464,7 @@ function clampNumber(value: number, min: number, max: number) {
 }
 
 function accountContextMenuHeight(optionCount: number, marked: boolean) {
-  return Math.min(accountContextMenuMaxHeight, 70 + optionCount * 32 + 100 + (marked ? 32 : 0));
+  return Math.min(accountContextMenuMaxHeight, 70 + optionCount * 32 + 132 + (marked ? 32 : 0));
 }
 
 function placeContextMenu(x: number, y: number, width: number, height: number) {
@@ -4472,6 +4574,7 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
       marked: false,
       mark_note: null,
       mark_color: null,
+      note: null,
     } as T;
   }
   if (command === "rename_account") return { ...accounts[0], name: String(args?.newName ?? "renamed") } as T;
@@ -4483,6 +4586,13 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
     mockGroupOverrides.set(name, group);
     const account = accounts.find((item) => item.name === name) ?? accounts[0];
     return { ...account, name, group } as T;
+  }
+  if (command === "set_note") {
+    const name = String(args?.name ?? accounts[0].name);
+    const note = (args?.value as string | null | undefined) ?? null;
+    mockNoteOverrides.set(name, note);
+    const account = accounts.find((item) => item.name === name) ?? accounts[0];
+    return { ...account, name, note } as T;
   }
   if (command === "set_mark") {
     const name = String(args?.name ?? accounts[0].name);
@@ -4511,6 +4621,7 @@ function mockAccounts(): Account[] {
       marked: true,
       mark_note: null,
       mark_color: null,
+      note: "主账号；客户偏好日语。",
       region: null,
       locale_enabled: false,
       proxy_display: "关",
@@ -4528,6 +4639,7 @@ function mockAccounts(): Account[] {
       marked: false,
       mark_note: null,
       mark_color: null,
+      note: null,
       region: "JP",
       locale_enabled: true,
       proxy_display: "关",
@@ -4545,6 +4657,7 @@ function mockAccounts(): Account[] {
       marked: true,
       mark_note: "待检查",
       mark_color: "green",
+      note: null,
       region: "US",
       locale_enabled: false,
       proxy_display: "socks5://proxy.example.net:1080（经本机 SOCKS5 中继）",
@@ -4562,6 +4675,7 @@ function mockAccounts(): Account[] {
       marked: false,
       mark_note: null,
       mark_color: null,
+      note: null,
       region: null,
       locale_enabled: false,
       proxy_display: "关",
@@ -4579,6 +4693,7 @@ function mockAccounts(): Account[] {
       marked: false,
       mark_note: null,
       mark_color: null,
+      note: null,
       region: "NL",
       locale_enabled: false,
       proxy_display: "关",
@@ -4591,14 +4706,17 @@ function mockAccounts(): Account[] {
       : account.group;
     const mark = mockMarkOverrides.get(account.name);
     const withGroup = group === account.group ? account : { ...account, group };
+    const withNote = mockNoteOverrides.has(account.name)
+      ? { ...withGroup, note: mockNoteOverrides.get(account.name) ?? null }
+      : withGroup;
     return mark
       ? {
-          ...withGroup,
+          ...withNote,
           marked: mark.marked,
           mark_note: mark.marked ? mark.note : null,
           mark_color: mark.marked ? mark.color : null,
         }
-      : withGroup;
+      : withNote;
   });
 }
 
@@ -4740,6 +4858,9 @@ function errorMessage(caught: unknown) {
   }
   if (raw.includes("account mark is invalid")) {
     return "标记内容无效：请使用不超过 24 个字符的单行文字。";
+  }
+  if (raw.includes("account note is invalid")) {
+    return "备注内容无效：最多 1000 个字符，请移除不可见控制字符。";
   }
   if (raw.toLocaleLowerCase().includes("launch cancelled")) {
     return "启动已取消";
