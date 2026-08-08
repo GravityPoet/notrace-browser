@@ -136,6 +136,25 @@ summary:focus-visible {
   flex: 0 0 200px;
 }
 
+.manageMenuWrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.manageButton.active {
+  border-color: rgba(0, 113, 227, 0.28);
+  background: #ffffff;
+  color: var(--accent);
+}
+
+.manageChevron {
+  transition: transform 140ms ease;
+}
+
+.manageButton.active .manageChevron {
+  transform: rotate(180deg);
+}
+
 .workspace {
   display: grid;
   grid-template-columns: var(--sidebar-width, 326px) 8px minmax(0, 1fr);
@@ -593,6 +612,10 @@ summary:focus-visible {
   padding-top: 8px;
 }
 
+.accountGroup.chronological {
+  padding-top: 8px;
+}
+
 .accountGroup.dropTarget {
   background: rgba(0, 113, 227, 0.045);
 }
@@ -809,6 +832,11 @@ summary:focus-visible {
 .searchMatchIcon {
   flex: 0 0 auto;
   color: var(--accent);
+}
+
+.trashRowIcon {
+  flex: 0 0 14px;
+  color: var(--soft);
 }
 
 .accountTitle strong {
@@ -1609,6 +1637,16 @@ button:disabled {
   backdrop-filter: saturate(180%) blur(18px);
 }
 
+.contextMenu.manageMenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  left: auto;
+  z-index: 40;
+  width: 160px;
+  transform: none;
+}
+
 .accountContextMenu {
   width: 184px;
   max-height: min(320px, calc(100vh - 16px));
@@ -1704,6 +1742,263 @@ button:disabled {
   background: var(--panel);
   padding: 18px;
   box-shadow: 0 24px 72px rgba(14, 20, 26, 0.22);
+}
+
+.manageModal {
+  gap: 12px;
+  width: min(560px, calc(100vw - 36px));
+  min-height: min(510px, calc(100vh - 36px));
+}
+
+.manageHeader {
+  display: grid;
+  gap: 3px;
+  padding-right: 34px;
+}
+
+.manageHeader h2,
+.manageHeader p {
+  margin: 0;
+}
+
+.manageHeader p {
+  font-size: 12px;
+}
+
+.manageTabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  border-radius: 9px;
+  background: var(--surface);
+  padding: 3px;
+}
+
+.manageTabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+
+.manageTabs button:hover {
+  color: var(--text);
+}
+
+.manageTabs button.active {
+  background: #ffffff;
+  color: var(--accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.manageSection {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+}
+
+.manageSectionHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.manageSectionHeader > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.manageSectionHeader strong {
+  font-size: 13px;
+  font-weight: 670;
+}
+
+.manageSectionHeader span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.manageList {
+  min-height: 0;
+  max-height: min(304px, calc(100vh - 245px));
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+
+.manageRow {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--border);
+  transition: background 140ms ease;
+}
+
+.manageRow:last-child {
+  border-bottom: 0;
+}
+
+.manageRow:hover,
+.manageRow.editing {
+  background: #ffffff;
+}
+
+.manageRowIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.manageRowIcon.label {
+  background: rgba(26, 143, 75, 0.1);
+  color: #14723d;
+}
+
+.manageRowMain {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.manageRowMain strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manageRowMain small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.manageRowActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.manageRowAction {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 120ms ease;
+}
+
+.manageRowAction:hover:not(:disabled) {
+  border-color: rgba(0, 113, 227, 0.18);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.manageRowAction:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.manageRowAction.confirm {
+  color: #14723d;
+}
+
+.manageRowAction.confirm:hover:not(:disabled) {
+  border-color: rgba(20, 114, 61, 0.18);
+  background: rgba(26, 143, 75, 0.1);
+  color: #0f6334;
+}
+
+.manageRowAction.danger {
+  color: #b42318;
+}
+
+.manageRowAction.danger:hover:not(:disabled) {
+  border-color: rgba(217, 45, 32, 0.16);
+  background: var(--danger-soft);
+  color: #a51f14;
+}
+
+.manageRowAction:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.manageBuiltInBadge {
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 620;
+}
+
+.manageAddRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.manageAddRow input,
+.manageInlineInput {
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: #ffffff;
+  color: var(--text);
+  padding: 0 9px;
+  font-size: 12px;
+  outline: none;
+}
+
+.manageAddRow input:focus,
+.manageInlineInput:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.manageInlineInput {
+  width: 100%;
+}
+
+.manageInlineError {
+  margin: 0 !important;
+  color: #b42318 !important;
+  font-size: 11px !important;
+  font-weight: 570;
+}
+
+.manageModalActions {
+  margin-top: auto;
+  padding-top: 2px;
 }
 
 .modal h2 {
@@ -2186,7 +2481,11 @@ button:disabled {
   .accountGroup,
   .accountGroupHeader,
   .accountRow,
-  .dragHandle {
+  .dragHandle,
+  .manageChevron,
+  .manageTabs button,
+  .manageRow,
+  .manageRowAction {
     transition: none !important;
   }
 }

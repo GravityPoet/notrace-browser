@@ -17,10 +17,12 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Settings2,
   ShieldAlert,
   ShieldCheck,
   Store,
   Tag,
+  Tags,
   Trash2,
   X,
 } from "lucide-react";
@@ -46,6 +48,7 @@ type Account = {
   name: string;
   profile_path: string;
   created_at: number;
+  deleted_at: number | null;
   archived: boolean;
   trashed: boolean;
   seed: string;
@@ -149,14 +152,17 @@ type ChallengeAuditStatus = {
 
 type DialogState =
   | { kind: "create"; value: string; group: string }
+  | { kind: "createGroup"; value: string; returnToManage?: boolean }
   | { kind: "rename"; account: Account; value: string }
+  | { kind: "renameGroup"; groupLabel: string; count: number; value: string; returnToManage?: boolean }
+  | { kind: "manage"; section: "groups" | "marks" }
   | { kind: "proxy"; account: Account; value: string }
   | { kind: "region"; account: Account; value: string }
   | { kind: "group"; account: Account; value: string }
   | { kind: "mark"; account: Account; value: string; color: MarkColor }
   | { kind: "delete"; account: Account }
   | { kind: "permanentDelete"; account: Account }
-  | { kind: "deleteGroup"; groupLabel: string; count: number };
+  | { kind: "deleteGroup"; groupLabel: string; count: number; returnToManage?: boolean };
 
 type GroupContextMenuState = {
   groupLabel: string;
@@ -216,7 +222,7 @@ type AccountPointerDrag = {
 };
 
 const contextMenuWidth = 140;
-const contextMenuHeight = 44;
+const contextMenuHeight = 68;
 const accountContextMenuWidth = 184;
 const accountContextMenuMaxHeight = 320;
 const contextMenuViewportPadding = 8;
@@ -229,6 +235,7 @@ const accountDragAutoScrollStep = 14;
 
 const emptyAccounts: Account[] = [];
 const mockMarkOverrides = new Map<string, { marked: boolean; note: string | null; color: MarkColor | null }>();
+const mockGroupOverrides = new Map<string, string | null>();
 const mockCommandCounts = new Map<string, number>();
 const mockCommandFailures = new Map<string, number>();
 const mockCancelledLaunches = new Set<string>();
@@ -236,6 +243,7 @@ let mockChallengeAuditCancelled = false;
 
 export function resetMockCommandsForTest() {
   mockMarkOverrides.clear();
+  mockGroupOverrides.clear();
   mockCommandCounts.clear();
   mockCommandFailures.clear();
   mockCancelledLaunches.clear();
@@ -269,6 +277,7 @@ const colorAwareMarkPresetsStorageKey = "cloak-picker.markPresets.v2";
 const markPresetsStorageKey = "cloak-picker.markPresets.v3";
 const defaultMarkPresets = ["Plus", "自用"] as const;
 const maxMarkLength = 24;
+const maxGroupLength = 40;
 const defaultSidebarWidth = 326;
 const minSidebarWidth = 260;
 const minDetailWidth = 360;
@@ -358,6 +367,11 @@ type GroupFilter = GroupOption & {
   count: number;
 };
 
+type ManagedGroup = {
+  label: string;
+  count: number;
+};
+
 export default function App() {
   const [activeAccounts, setActiveAccounts] = useState<Account[]>(emptyAccounts);
   const [trashedAccounts, setTrashedAccounts] = useState<Account[]>(emptyAccounts);
@@ -404,6 +418,7 @@ export default function App() {
   const [loadError, setLoadError] = useState<string>("");
   const [plan, setPlan] = useState<LaunchPlan | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  const [manageMenuOpen, setManageMenuOpen] = useState(false);
   const [groupContextMenu, setGroupContextMenu] = useState<GroupContextMenuState | null>(null);
   const [accountContextMenu, setAccountContextMenu] = useState<AccountContextMenuState | null>(null);
   const groupPointerDragRef = useRef<GroupPointerDrag | null>(null);
@@ -426,6 +441,7 @@ export default function App() {
   const accountListRef = useRef<HTMLDivElement | null>(null);
   const resizingPaneRef = useRef(false);
   const dialogTriggerRef = useRef<HTMLElement | null>(null);
+  const manageButtonRef = useRef<HTMLButtonElement | null>(null);
   const markSaveInFlightRef = useRef(false);
 
   const accounts = accountView === "trash" ? trashedAccounts : activeAccounts;
@@ -433,7 +449,10 @@ export default function App() {
     () => [...activeAccounts, ...trashedAccounts].sort(compareAccountsByCreatedAt),
     [activeAccounts, trashedAccounts],
   );
-  const orderedAccounts = useMemo(() => orderAccounts(accounts, accountOrder), [accounts, accountOrder]);
+  const orderedAccounts = useMemo(
+    () => orderAccountsForView(accounts, accountOrder, accountView),
+    [accountOrder, accountView, accounts],
+  );
   const allOrderedAccounts = useMemo(() => orderAccounts(allAccounts, accountOrder), [allAccounts, accountOrder]);
   const normalizedAccountSearch = normalizeAccountSearch(accountSearch);
   const hasAccountSearch = normalizedAccountSearch.length > 0;
@@ -468,13 +487,21 @@ export default function App() {
   const selectedNameRef = useRef<string>("");
   selectedNameRef.current = selected?.name ?? "";
   const launchInFlightRef = useRef<Set<string>>(new Set());
-  const groupedAccounts = useMemo(
-    () => orderAccountGroups(groupAccounts(visibleAccounts), groupOrder),
-    [groupOrder, visibleAccounts],
-  );
+  const groupedAccounts = useMemo(() => {
+    if (accountView === "trash") {
+      return visibleAccounts.length > 0
+        ? [{ label: "回收站", accounts: visibleAccounts }]
+        : [];
+    }
+    return orderAccountGroups(groupAccounts(visibleAccounts), groupOrder);
+  }, [accountView, groupOrder, visibleAccounts]);
   const groupOptions = useMemo(
     () => buildGroupOptions(accounts, groupOrder, hiddenGroups),
     [accounts, groupOrder, hiddenGroups],
+  );
+  const managedGroups = useMemo(
+    () => buildManagedGroups(activeAccounts, trashedAccounts, groupOrder, hiddenGroups),
+    [activeAccounts, groupOrder, hiddenGroups, trashedAccounts],
   );
 
   async function refresh(preferredName?: string, view: AccountView = accountView) {
@@ -497,7 +524,7 @@ export default function App() {
     setTrashedAccounts(nextTrashedAccounts);
     const nextViewAccounts = view === "trash" ? nextTrashedAccounts : nextActiveAccounts;
     const selectionPool = nextViewAccounts;
-    const orderedNext = orderAccounts(selectionPool, accountOrder);
+    const orderedNext = orderAccountsForView(selectionPool, accountOrder, view);
     setSelectedName((current) => {
       if (preferredName && selectionPool.some((account) => account.name === preferredName)) return preferredName;
       if (current && selectionPool.some((account) => account.name === current)) return current;
@@ -790,20 +817,24 @@ export default function App() {
   }, [webStoreStatus]);
 
   useEffect(() => {
-    if (!groupContextMenu && !accountContextMenu) return;
+    if (!groupContextMenu && !accountContextMenu && !manageMenuOpen) return;
     const close = () => {
       setGroupContextMenu(null);
       setAccountContextMenu(null);
+      setManageMenuOpen(false);
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") close();
     };
     window.addEventListener("click", close);
     window.addEventListener("contextmenu", close);
-    window.addEventListener("keydown", close);
+    window.addEventListener("keydown", closeOnEscape);
     return () => {
       window.removeEventListener("click", close);
       window.removeEventListener("contextmenu", close);
-      window.removeEventListener("keydown", close);
+      window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [groupContextMenu, accountContextMenu]);
+  }, [accountContextMenu, groupContextMenu, manageMenuOpen]);
 
   useEffect(() => {
     if (!selected) {
@@ -859,7 +890,21 @@ export default function App() {
       return;
     }
 
+    if (dialog.kind === "manage") return;
+
     const value = dialog.value.trim();
+    if (dialog.kind === "createGroup") {
+      if (createStandaloneGroup(value)) {
+        setDialog(dialog.returnToManage ? { kind: "manage", section: "groups" } : null);
+      }
+      return;
+    }
+
+    if (dialog.kind === "renameGroup") {
+      await renameGroup(dialog.groupLabel, value, dialog.returnToManage);
+      return;
+    }
+
     if (dialog.kind === "create") {
       if (!value) {
         setDialogError("请输入账号名称。");
@@ -981,6 +1026,13 @@ export default function App() {
     openDialog({ kind: "create", value: "", group: defaultCreateGroupValue() }, trigger);
   }
 
+  function openManageDialog(section: "groups" | "marks", trigger?: HTMLElement | null) {
+    setManageMenuOpen(false);
+    setGroupContextMenu(null);
+    setAccountContextMenu(null);
+    openDialog({ kind: "manage", section }, trigger ?? manageButtonRef.current);
+  }
+
   function defaultCreateGroupValue() {
     if (accountView !== "active" || selectedGroup === allGroupsValue) return "";
     return selectedGroup === ungroupedLabel ? "" : selectedGroup;
@@ -988,12 +1040,13 @@ export default function App() {
 
   function createStandaloneGroup(rawValue: string): boolean {
     const value = rawValue.trim();
-    if (!value) {
-      setDialogError("请输入分组名称。");
+    const validationError = groupNameError(value);
+    if (validationError) {
+      setDialogError(validationError);
       return false;
     }
-    if ([allGroupsLabel, allGroupsValue, ungroupedLabel].includes(value)) {
-      setDialogError(`“${value}”是系统保留名称，请换一个分组名称。`);
+    if (managedGroups.some((group) => group.label === value)) {
+      setDialogError(`分组“${value}”已经存在。`);
       return false;
     }
     setHiddenGroups((current) => current.filter((label) => label !== value));
@@ -1002,6 +1055,74 @@ export default function App() {
     setSelectedGroup(value);
     setDialogError("");
     return true;
+  }
+
+  async function renameGroup(groupLabel: string, rawValue: string, returnToManage = false) {
+    const value = rawValue.trim();
+    if (value === groupLabel) {
+      setDialog(returnToManage ? { kind: "manage", section: "groups" } : null);
+      return;
+    }
+    const validationError = groupNameError(value);
+    if (validationError) {
+      setDialogError(validationError);
+      return;
+    }
+    if (managedGroups.some((group) => group.label === value && group.label !== groupLabel)) {
+      setDialogError(`分组“${value}”已经存在，请换一个名称。`);
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    setDialogError("");
+    try {
+      const [freshActiveAccounts, freshTrashedAccounts] = await Promise.all([
+        call<Account[]>("list_accounts"),
+        call<Account[]>("list_trashed_accounts"),
+      ]);
+      const accountsToRename = [...freshActiveAccounts, ...freshTrashedAccounts].filter(
+        (account) => accountGroupLabel(account) === groupLabel,
+      );
+      const renamedAccounts: Account[] = [];
+      try {
+        for (const account of accountsToRename) {
+          await call<Account>("set_group", { name: account.name, value });
+          renamedAccounts.push(account);
+        }
+      } catch (caught) {
+        const rollback = await Promise.allSettled(
+          renamedAccounts.map((account) =>
+            call<Account>("set_group", { name: account.name, value: groupLabel }),
+          ),
+        );
+        if (rollback.some((result) => result.status === "rejected")) {
+          throw new Error(`${errorMessage(caught)}；部分账号回滚失败，请刷新后重试。`);
+        }
+        throw caught;
+      }
+
+      setGroupOrder((current) => renameGroupInOrder(
+        current,
+        managedGroups.map((group) => group.label),
+        groupLabel,
+        value,
+      ));
+      setHiddenGroups((current) => {
+        const next = current.filter((label) => label !== groupLabel && label !== value);
+        return [...next, groupLabel];
+      });
+      setCollapsedGroups((current) => renameStringInArray(current, groupLabel, value));
+      if (selectedGroup === groupLabel) setSelectedGroup(value);
+      setDialog(returnToManage ? { kind: "manage", section: "groups" } : null);
+      await refresh(selectedName, accountView);
+    } catch (caught) {
+      const message = errorMessage(caught);
+      setDialogError(message);
+      setError(message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function assignAccountGroup(account: Account, value: string | null, closeDialog: boolean): Promise<boolean> {
@@ -1872,9 +1993,9 @@ export default function App() {
     }
   }
 
-  async function confirmDeleteGroup(groupLabel: string) {
+  async function confirmDeleteGroup(groupLabel: string, returnToManage = false) {
     if (!groupLabel || groupLabel === allGroupsLabel || groupLabel === ungroupedLabel) {
-      setDialog(null);
+      setDialog(returnToManage ? { kind: "manage", section: "groups" } : null);
       return;
     }
     setBusy(true);
@@ -1900,7 +2021,7 @@ export default function App() {
       setGroupOrder((current) => current.filter((label) => label !== groupLabel));
       setCollapsedGroups((current) => current.filter((label) => label !== groupLabel));
       if (selectedGroup === groupLabel) setSelectedGroup(allGroupsValue);
-      setDialog(null);
+      setDialog(returnToManage ? { kind: "manage", section: "groups" } : null);
       await refresh(selectedName, accountView);
     } catch (caught) {
       const message = errorMessage(caught);
@@ -2071,6 +2192,55 @@ export default function App() {
           <IconButton label="刷新" disabled={busy} onClick={() => void run(() => refresh())}>
             <RefreshCw size={15} />
           </IconButton>
+          <div className="manageMenuWrap">
+            <button
+              aria-expanded={manageMenuOpen}
+              aria-haspopup="menu"
+              className={`secondaryButton manageButton ${manageMenuOpen ? "active" : ""}`}
+              disabled={busy}
+              ref={manageButtonRef}
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setGroupContextMenu(null);
+                setAccountContextMenu(null);
+                setManageMenuOpen((current) => !current);
+              }}
+            >
+              <Settings2 aria-hidden="true" size={14} />
+              管理
+              <ChevronDown aria-hidden="true" className="manageChevron" size={11} />
+            </button>
+            {manageMenuOpen ? (
+              <div
+                aria-label="管理选项"
+                className="contextMenu manageMenu"
+                role="menu"
+                onClick={(event) => event.stopPropagation()}
+                onContextMenu={(event) => event.preventDefault()}
+              >
+                <button
+                  autoFocus
+                  className="contextMenuItem"
+                  role="menuitem"
+                  type="button"
+                  onClick={() => openManageDialog("groups", manageButtonRef.current)}
+                >
+                  <Folder aria-hidden="true" size={14} />
+                  <span className="contextMenuItemLabel">管理分组</span>
+                </button>
+                <button
+                  className="contextMenuItem"
+                  role="menuitem"
+                  type="button"
+                  onClick={() => openManageDialog("marks", manageButtonRef.current)}
+                >
+                  <Tags aria-hidden="true" size={14} />
+                  <span className="contextMenuItemLabel">管理标签</span>
+                </button>
+              </div>
+            ) : null}
+          </div>
           <button className="primaryButton" disabled={busy} onClick={(event) => openCreateDialog(event.currentTarget)}>
             <Plus size={15} />
             新建
@@ -2206,10 +2376,11 @@ export default function App() {
               groupedAccounts.map((group) => (
                 <AccountGroupSection
                   accountDropTarget={accountDropTarget}
+                  chronological={accountView === "trash"}
                   draggingAccountName={draggingAccountName}
                   pressedAccountName={pressedAccountName}
-                  collapsed={selectedGroup === allGroupsValue && collapsedGroups.includes(group.label)}
-                  canCollapse={selectedGroup === allGroupsValue}
+                  collapsed={accountView === "active" && selectedGroup === allGroupsValue && collapsedGroups.includes(group.label)}
+                  canCollapse={accountView === "active" && selectedGroup === allGroupsValue}
                   dropTarget={dropTargetGroup === group.label}
                   dropPlaceholderAtEnd={Boolean(
                     draggingAccountName && accountDropGroup === group.label && !accountDropTarget,
@@ -2319,6 +2490,9 @@ export default function App() {
                     <InfoRow icon={<KeyRound size={15} />} label="指纹" value={selected.seed} mono />
                     <InfoRow icon={<Folder size={15} />} label="分组" value={accountGroupLabel(selected)} />
                     <InfoRow icon={<CalendarClock size={15} />} label="创建时间" value={formatCreatedAt(selected.created_at)} />
+                    {selected.trashed ? (
+                      <InfoRow icon={<Trash2 size={15} />} label="删除时间" value={formatCreatedAt(selected.deleted_at ?? 0)} />
+                    ) : null}
                     <InfoRow icon={selected.trashed ? <Trash2 size={15} /> : <ShieldCheck size={15} />} label="状态" value={statusLabel} />
                     <InfoRow label="账号目录" value={selected.profile_path} mono />
                   </InspectorGroup>
@@ -2481,6 +2655,24 @@ export default function App() {
           onContextMenu={(event) => event.preventDefault()}
         >
           <button
+            className="contextMenuItem"
+            disabled={busy}
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              openDialog({
+                kind: "renameGroup",
+                groupLabel: groupContextMenu.groupLabel,
+                count: groupContextMenu.count,
+                value: groupContextMenu.groupLabel,
+              }, groupContextMenu.returnFocusElement);
+              setGroupContextMenu(null);
+            }}
+          >
+            <Pencil size={14} />
+            重命名分组
+          </button>
+          <button
             className="contextMenuItem danger"
             disabled={busy}
             type="button"
@@ -2617,12 +2809,19 @@ export default function App() {
           }}
           onClose={() => {
             setDialogError("");
-            setDialog(null);
+            setDialog(
+              dialog.kind === "createGroup" || dialog.kind === "renameGroup" || dialog.kind === "deleteGroup"
+                ? dialog.returnToManage
+                  ? { kind: "manage", section: "groups" }
+                  : null
+                : null,
+            );
           }}
           onConfirmDelete={confirmDeleteAccount}
-          onConfirmDeleteGroup={(groupLabel) => void confirmDeleteGroup(groupLabel)}
+          onConfirmDeleteGroup={(groupLabel, returnToManage) => void confirmDeleteGroup(groupLabel, returnToManage)}
           onConfirmPermanentDelete={confirmPermanentDeleteAccount}
           groupOptions={groupOptions}
+          managedGroups={managedGroups}
           onCreateGroup={createStandaloneGroup}
           onQuickGroup={(account, value) => void assignAccountGroup(account, value || null, true)}
           onQuickMark={(account, value, color) => void saveAccountMark(account, value, color)}
@@ -2640,6 +2839,7 @@ function AccountDropPlaceholder() {
 function AccountGroupSection({
   accountDropTarget,
   canCollapse,
+  chronological,
   collapsed,
   draggingAccountName,
   dropPlaceholderAtEnd,
@@ -2661,6 +2861,7 @@ function AccountGroupSection({
 }: {
   accountDropTarget: AccountDropTarget | null;
   canCollapse: boolean;
+  chronological: boolean;
   collapsed: boolean;
   draggingAccountName: string;
   dropPlaceholderAtEnd: boolean;
@@ -2682,10 +2883,10 @@ function AccountGroupSection({
 }) {
   return (
     <section
-      className={`accountGroup ${searching ? "searching" : ""} ${dropTarget ? "dropTarget" : ""} ${collapsed ? "collapsed" : ""}`}
-      data-account-group={searching ? undefined : group.label}
+      className={`accountGroup ${searching ? "searching" : ""} ${chronological ? "chronological" : ""} ${dropTarget ? "dropTarget" : ""} ${collapsed ? "collapsed" : ""}`}
+      data-account-group={searching || chronological ? undefined : group.label}
     >
-      {searching ? null : (
+      {searching || chronological ? null : (
         <div className="accountGroupHeader">
           <button
             className="accountGroupName"
@@ -2714,9 +2915,11 @@ function AccountGroupSection({
           {group.accounts.map((account) => {
             const isLocated = account.name === locatedName;
             const showPlaceholderBefore = !searching
+              && !chronological
               && accountDropTarget?.name === account.name
               && accountDropTarget.edge === "before";
             const showPlaceholderAfter = !searching
+              && !chronological
               && accountDropTarget?.name === account.name
               && accountDropTarget.edge === "after";
             return (
@@ -2725,8 +2928,8 @@ function AccountGroupSection({
                 <button
                   aria-current={isLocated ? "true" : undefined}
                   aria-keyshortcuts={!searching && !account.trashed ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
-                  className={`accountRow ${searching ? "searchResult" : ""} ${account.name === selectedName ? "selected" : ""} ${isLocated ? "searchLocated" : ""} ${account.name === pressedAccountName ? "dragPressed" : ""} ${account.name === draggingAccountName ? "dragOrigin" : ""}`}
-                  data-account-group={searching ? undefined : group.label}
+                  className={`accountRow ${searching ? "searchResult" : ""} ${chronological ? "chronological" : ""} ${account.name === selectedName ? "selected" : ""} ${isLocated ? "searchLocated" : ""} ${account.name === pressedAccountName ? "dragPressed" : ""} ${account.name === draggingAccountName ? "dragOrigin" : ""}`}
+                  data-account-group={searching ? undefined : accountGroupLabel(account)}
                   data-account-name={searching ? undefined : account.name}
                   hidden={!searching && account.name === draggingAccountName}
                   title={`${account.name}${isLocated ? "｜当前搜索匹配" : ""}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${searching || account.trashed ? "" : "｜拖动左侧手柄排序或移动分组；⌥↑ / ⌥↓ 微调"}`}
@@ -2753,13 +2956,15 @@ function AccountGroupSection({
                     <span className="accountTitle">
                       {searching ? null : isLocated ? (
                         <Search className="searchMatchIcon" size={14} />
+                      ) : account.trashed ? (
+                        <Trash2 className="trashRowIcon" size={14} />
                       ) : (
                         <span className="dragHandle" title="拖动调整顺序或移动分组">
                           <GripVertical size={14} />
                         </span>
                       )}
                       <strong title={account.name}>{middleTruncate(account.name, 34)}</strong>
-                      {searching ? (
+                      {searching || chronological ? (
                         <span
                           className={`accountLocationTag ${account.trashed ? "trashed" : "active"}`}
                           title={`${account.trashed ? "回收站" : "活跃"} · ${accountGroupLabel(account)}`}
@@ -2782,7 +2987,9 @@ function AccountGroupSection({
                           {account.mark_note ? <span className="markNote">{middleTruncate(account.mark_note, 16)}</span> : null}
                         </span>
                       ) : null}
-                      <code>{formatCreatedDate(account.created_at)}</code>
+                      <code title={account.trashed ? "删除日期" : "创建日期"}>
+                        {formatCreatedDate(account.trashed ? account.deleted_at ?? 0 : account.created_at)}
+                      </code>
                     </span>
                   </span>
                 </button>
@@ -2790,7 +2997,7 @@ function AccountGroupSection({
               </Fragment>
             );
           })}
-          {dropPlaceholderAtEnd ? <AccountDropPlaceholder /> : null}
+          {dropPlaceholderAtEnd && !chronological ? <AccountDropPlaceholder /> : null}
         </>
       )}
     </section>
@@ -2808,6 +3015,7 @@ function EditorDialog({
   onConfirmDeleteGroup,
   onConfirmPermanentDelete,
   groupOptions,
+  managedGroups,
   onCreateGroup,
   onQuickGroup,
   onQuickMark,
@@ -2820,9 +3028,10 @@ function EditorDialog({
   onChange: (next: DialogState | null) => void;
   onClose: () => void;
   onConfirmDelete: (account: Account) => void;
-  onConfirmDeleteGroup: (groupLabel: string) => void;
+  onConfirmDeleteGroup: (groupLabel: string, returnToManage?: boolean) => void;
   onConfirmPermanentDelete: (account: Account) => void;
   groupOptions: GroupOption[];
+  managedGroups: ManagedGroup[];
   onCreateGroup: (value: string) => boolean;
   onQuickGroup: (account: Account, value: string) => void;
   onQuickMark: (account: Account, value: string, color: MarkColor) => void;
@@ -2885,6 +3094,125 @@ function EditorDialog({
       });
     };
   }, []);
+
+  if (dialog.kind === "manage") {
+    return (
+      <div className="modalBackdrop">
+        <section
+          aria-labelledby={dialogTitleId}
+          aria-modal="true"
+          className="modal manageModal"
+          ref={(node) => {
+            modalRef.current = node;
+          }}
+          role="dialog"
+          tabIndex={-1}
+        >
+          <button className="modalClose" type="button" aria-label="关闭" onClick={onClose}>
+            <X size={15} />
+          </button>
+          <div className="manageHeader">
+            <h2 id={dialogTitleId}>管理</h2>
+            <p>集中维护首页使用的分组和常用标签。</p>
+          </div>
+          <div className="manageTabs" role="tablist" aria-label="管理类型">
+            <button
+              aria-controls="cloak-manage-groups"
+              aria-selected={dialog.section === "groups"}
+              autoFocus={dialog.section === "groups"}
+              className={dialog.section === "groups" ? "active" : ""}
+              role="tab"
+              type="button"
+              onClick={() => onChange({ kind: "manage", section: "groups" })}
+            >
+              <Folder aria-hidden="true" size={14} />
+              分组
+            </button>
+            <button
+              aria-controls="cloak-manage-marks"
+              aria-selected={dialog.section === "marks"}
+              autoFocus={dialog.section === "marks"}
+              className={dialog.section === "marks" ? "active" : ""}
+              role="tab"
+              type="button"
+              onClick={() => onChange({ kind: "manage", section: "marks" })}
+            >
+              <Tags aria-hidden="true" size={14} />
+              标签
+            </button>
+          </div>
+          {dialog.section === "groups" ? (
+            <section aria-label="分组管理" className="manageSection" id="cloak-manage-groups" role="tabpanel">
+              <div className="manageSectionHeader">
+                <div>
+                  <strong>分组</strong>
+                  <span>重命名会同步更新活跃账号和回收站账号，并保留当前位置。</span>
+                </div>
+                <button
+                  className="primaryButton"
+                  disabled={busy}
+                  type="button"
+                  onClick={() => onChange({ kind: "createGroup", value: "", returnToManage: true })}
+                >
+                  <Plus aria-hidden="true" size={13} />
+                  新建分组
+                </button>
+              </div>
+              <div className="manageList">
+                {managedGroups.map((group) => (
+                  <div className="manageRow" key={group.label}>
+                    <span className="manageRowIcon" aria-hidden="true"><Folder size={14} /></span>
+                    <span className="manageRowMain">
+                      <strong title={group.label}>{middleTruncate(group.label, 34)}</strong>
+                      <small>{group.count > 0 ? `${group.count} 个账号` : "空分组"}</small>
+                    </span>
+                    <span className="manageRowActions">
+                      <button
+                        aria-label={`重命名分组 ${group.label}`}
+                        className="manageRowAction"
+                        disabled={busy}
+                        title="重命名"
+                        type="button"
+                        onClick={() => onChange({
+                          kind: "renameGroup",
+                          groupLabel: group.label,
+                          count: group.count,
+                          value: group.label,
+                          returnToManage: true,
+                        })}
+                      >
+                        <Pencil aria-hidden="true" size={13} />
+                      </button>
+                      <button
+                        aria-label={`删除分组 ${group.label}`}
+                        className="manageRowAction danger"
+                        disabled={busy}
+                        title="删除分组"
+                        type="button"
+                        onClick={() => onChange({
+                          kind: "deleteGroup",
+                          groupLabel: group.label,
+                          count: group.count,
+                          returnToManage: true,
+                        })}
+                      >
+                        <Trash2 aria-hidden="true" size={13} />
+                      </button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : (
+            <ManageMarkPresets busy={busy} />
+          )}
+          <div className="modalActions manageModalActions">
+            <button className="secondaryButton" type="button" onClick={onClose}>完成</button>
+          </div>
+        </section>
+      </div>
+    );
+  }
 
   if (dialog.kind === "delete") {
     return (
@@ -2983,7 +3311,12 @@ function EditorDialog({
             <button autoFocus className="secondaryButton" disabled={busy} type="button" onClick={onClose}>
               取消
             </button>
-            <button className="dangerButton" disabled={busy} type="button" onClick={() => onConfirmDeleteGroup(dialog.groupLabel)}>
+            <button
+              className="dangerButton"
+              disabled={busy}
+              type="button"
+              onClick={() => onConfirmDeleteGroup(dialog.groupLabel, dialog.returnToManage)}
+            >
               {busy ? "删除中..." : "删除分组"}
             </button>
           </div>
@@ -3104,10 +3437,14 @@ function EditorDialog({
                 : undefined
             }
             aria-invalid={dialog.kind === "create" && Boolean(error) && !dialog.value.trim() ? true : undefined}
-            aria-required={dialog.kind === "create" ? true : undefined}
+            aria-required={["create", "createGroup", "renameGroup"].includes(dialog.kind) ? true : undefined}
             autoFocus
             id={dialog.kind === "create" ? "cloak-account-name" : undefined}
-            maxLength={dialog.kind === "mark" ? maxMarkLength : undefined}
+            maxLength={dialog.kind === "mark"
+              ? maxMarkLength
+              : dialog.kind === "createGroup" || dialog.kind === "renameGroup"
+                ? maxGroupLength
+                : undefined}
             value={dialog.value}
             placeholder={config.placeholder}
             onChange={(event) => onChange({ ...dialog, value: event.currentTarget.value })}
@@ -3133,6 +3470,198 @@ function EditorDialog({
         </div>
       </form>
     </div>
+  );
+}
+
+function ManageMarkPresets({ busy }: { busy: boolean }) {
+  const [presets, setPresets] = useState<string[]>(readStoredMarkPresets);
+  const [newPreset, setNewPreset] = useState("");
+  const [editingPreset, setEditingPreset] = useState("");
+  const [editingValue, setEditingValue] = useState("");
+  const [presetError, setPresetError] = useState("");
+  const builtInLabels = new Set<string>(defaultMarkPresets);
+
+  function persistPresets(next: string[]) {
+    setPresets(next);
+    writeStoredMarkPresets(next);
+  }
+
+  function addPreset() {
+    const value = normalizeMarkPreset(newPreset);
+    if (!value) {
+      setPresetError(`请输入 1–${maxMarkLength} 个字符的标签。`);
+      return;
+    }
+    if (presets.includes(value)) {
+      setPresetError(`标签“${value}”已经存在。`);
+      return;
+    }
+    persistPresets([...presets, value]);
+    setNewPreset("");
+    setPresetError("");
+  }
+
+  function beginRenamePreset(value: string) {
+    setEditingPreset(value);
+    setEditingValue(value);
+    setPresetError("");
+  }
+
+  function renamePreset() {
+    const value = normalizeMarkPreset(editingValue);
+    if (!value) {
+      setPresetError(`请输入 1–${maxMarkLength} 个字符的标签。`);
+      return;
+    }
+    if (value !== editingPreset && presets.includes(value)) {
+      setPresetError(`标签“${value}”已经存在。`);
+      return;
+    }
+    persistPresets(presets.map((preset) => (preset === editingPreset ? value : preset)));
+    setEditingPreset("");
+    setEditingValue("");
+    setPresetError("");
+  }
+
+  function removePreset(value: string) {
+    persistPresets(presets.filter((preset) => preset !== value));
+    if (editingPreset === value) {
+      setEditingPreset("");
+      setEditingValue("");
+    }
+    setPresetError("");
+  }
+
+  return (
+    <section aria-label="标签管理" className="manageSection" id="cloak-manage-marks" role="tabpanel">
+      <div className="manageSectionHeader">
+        <div>
+          <strong>常用标签</strong>
+          <span>用于标记账号时的一键快捷项；删除快捷项不会改动账号已有标记。</span>
+        </div>
+      </div>
+      <form
+        className="manageAddRow"
+        onSubmit={(event) => {
+          event.preventDefault();
+          addPreset();
+        }}
+      >
+        <input
+          aria-label="新标签名称"
+          autoComplete="off"
+          disabled={busy}
+          maxLength={maxMarkLength}
+          placeholder="输入常用标签"
+          value={newPreset}
+          onChange={(event) => {
+            setNewPreset(event.currentTarget.value);
+            setPresetError("");
+          }}
+        />
+        <button className="primaryButton" disabled={busy || !newPreset.trim()} type="submit">
+          <Plus aria-hidden="true" size={13} />
+          新增标签
+        </button>
+      </form>
+      {presetError ? <p className="manageInlineError" role="alert">{presetError}</p> : null}
+      <div className="manageList">
+        {presets.map((preset) => {
+          const isBuiltIn = builtInLabels.has(preset);
+          const isEditing = editingPreset === preset;
+          return (
+            <div className={`manageRow ${isEditing ? "editing" : ""}`} key={preset}>
+              <span className="manageRowIcon label" aria-hidden="true"><Tag size={14} /></span>
+              {isEditing ? (
+                <input
+                  aria-label={`标签 ${preset} 的新名称`}
+                  autoFocus
+                  className="manageInlineInput"
+                  disabled={busy}
+                  maxLength={maxMarkLength}
+                  value={editingValue}
+                  onChange={(event) => {
+                    setEditingValue(event.currentTarget.value);
+                    setPresetError("");
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      renamePreset();
+                    } else if (event.key === "Escape") {
+                      event.stopPropagation();
+                      setEditingPreset("");
+                      setEditingValue("");
+                      setPresetError("");
+                    }
+                  }}
+                />
+              ) : (
+                <span className="manageRowMain">
+                  <strong title={preset}>{middleTruncate(preset, 34)}</strong>
+                  <small>{isBuiltIn ? "内置快捷项" : "自定义快捷项"}</small>
+                </span>
+              )}
+              <span className="manageRowActions">
+                {isEditing ? (
+                  <>
+                    <button
+                      aria-label={`保存标签 ${preset}`}
+                      className="manageRowAction confirm"
+                      disabled={busy || !editingValue.trim()}
+                      title="保存"
+                      type="button"
+                      onClick={renamePreset}
+                    >
+                      <Check aria-hidden="true" size={13} />
+                    </button>
+                    <button
+                      aria-label={`取消重命名标签 ${preset}`}
+                      className="manageRowAction"
+                      disabled={busy}
+                      title="取消"
+                      type="button"
+                      onClick={() => {
+                        setEditingPreset("");
+                        setEditingValue("");
+                        setPresetError("");
+                      }}
+                    >
+                      <X aria-hidden="true" size={13} />
+                    </button>
+                  </>
+                ) : isBuiltIn ? (
+                  <span className="manageBuiltInBadge">内置</span>
+                ) : (
+                  <>
+                    <button
+                      aria-label={`重命名标签 ${preset}`}
+                      className="manageRowAction"
+                      disabled={busy}
+                      title="重命名"
+                      type="button"
+                      onClick={() => beginRenamePreset(preset)}
+                    >
+                      <Pencil aria-hidden="true" size={13} />
+                    </button>
+                    <button
+                      aria-label={`删除标签 ${preset}`}
+                      className="manageRowAction danger"
+                      disabled={busy}
+                      title="删除快捷项，不改动账号标记"
+                      type="button"
+                      onClick={() => removePreset(preset)}
+                    >
+                      <Trash2 aria-hidden="true" size={13} />
+                    </button>
+                  </>
+                )}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -3309,7 +3838,7 @@ function MarkColorPicker({
 }
 
 function dialogConfig(
-  dialog: Exclude<DialogState, { kind: "delete" } | { kind: "permanentDelete" } | { kind: "deleteGroup" }>,
+  dialog: Exclude<DialogState, { kind: "delete" } | { kind: "permanentDelete" } | { kind: "deleteGroup" } | { kind: "manage" }>,
 ): {
   title: string;
   label: string;
@@ -3320,9 +3849,29 @@ function dialogConfig(
   switch (dialog.kind) {
     case "create":
       return { title: "新建账号", label: "名称（必填）", placeholder: "例如：work_01", action: "创建账号" };
+    case "createGroup":
+      return {
+        title: "新建分组",
+        label: "分组名称",
+        placeholder: "例如：client-a",
+        action: "创建分组",
+        description: "新分组会追加到当前分组顺序末尾，之后可直接拖动调整位置。",
+      };
     case "rename": {
       const accountName = middleTruncate(dialog.account.name, 28);
       return { title: `重命名「${accountName}」`, label: "新名称", placeholder: dialog.account.name, action: "保存" };
+    }
+    case "renameGroup": {
+      const groupLabel = middleTruncate(dialog.groupLabel, 28);
+      return {
+        title: `重命名分组「${groupLabel}」`,
+        label: "新分组名称",
+        placeholder: dialog.groupLabel,
+        action: "保存名称",
+        description: dialog.count > 0
+          ? `会同步更新该分组下 ${dialog.count} 个账号，分组顺序保持不变。`
+          : "空分组会原位改名，分组顺序保持不变。",
+      };
     }
     case "proxy": {
       const accountName = middleTruncate(dialog.account.name, 28);
@@ -3449,6 +3998,13 @@ function compareAccountsByCreatedAt(left: Account, right: Account) {
   return left.name.localeCompare(right.name);
 }
 
+function compareAccountsByDeletedAt(left: Account, right: Account) {
+  const leftDeletedAt = left.deleted_at ?? 0;
+  const rightDeletedAt = right.deleted_at ?? 0;
+  if (leftDeletedAt !== rightDeletedAt) return leftDeletedAt < rightDeletedAt ? 1 : -1;
+  return compareAccountsByCreatedAt(left, right);
+}
+
 function normalizeAccountSearch(value: string) {
   return value.normalize("NFKC").trim().toLocaleLowerCase();
 }
@@ -3478,6 +4034,12 @@ function orderAccounts(accounts: Account[], accountOrder: string[]): Account[] {
   return orderedAccountNames(accounts, accountOrder)
     .map((name) => accountsByName.get(name))
     .filter((account): account is Account => Boolean(account));
+}
+
+function orderAccountsForView(accounts: Account[], accountOrder: string[], view: AccountView): Account[] {
+  return view === "trash"
+    ? [...accounts].sort(compareAccountsByDeletedAt)
+    : orderAccounts(accounts, accountOrder);
 }
 
 /// Order to persist. Unlike orderedAccountNames this keeps entries it does not
@@ -3603,10 +4165,35 @@ function buildGroupFilters(accounts: Account[], groupOrder: string[], hiddenGrou
   return filters;
 }
 
+function buildManagedGroups(
+  activeAccounts: Account[],
+  trashedAccounts: Account[],
+  groupOrder: string[],
+  hiddenGroups: string[],
+): ManagedGroup[] {
+  const activeLabels = buildGroupFilters(activeAccounts, groupOrder, hiddenGroups)
+    .filter((group) => group.value !== allGroupsValue && group.label !== ungroupedLabel)
+    .map((group) => group.label);
+  const allGroups = buildGroupFilters([...activeAccounts, ...trashedAccounts], groupOrder, hiddenGroups)
+    .filter((group) => group.value !== allGroupsValue && group.label !== ungroupedLabel);
+  const counts = new Map(allGroups.map((group) => [group.label, group.count]));
+  const labels = orderGroupLabels(
+    allGroups.map((group) => group.label),
+    [...groupOrder, ...activeLabels],
+  );
+  return labels.map((label) => ({ label, count: counts.get(label) ?? 0 }));
+}
+
 function orderGroupLabels(labels: string[], groupOrder: string[]): string[] {
   const known = new Set(labels);
-  const ordered = groupOrder.filter((label) => known.has(label));
-  const remaining = labels.filter((label) => !ordered.includes(label));
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  for (const label of groupOrder) {
+    if (!known.has(label) || seen.has(label)) continue;
+    seen.add(label);
+    ordered.push(label);
+  }
+  const remaining = labels.filter((label) => !seen.has(label));
   return [...ordered, ...remaining];
 }
 
@@ -3616,6 +4203,23 @@ function appendNewGroup(currentOrder: string[], filters: GroupFilter[], label: s
     .map((group) => group.label);
   if (existingLabels.includes(label)) return currentOrder;
   return [...orderGroupLabels(existingLabels, currentOrder), label];
+}
+
+function renameGroupInOrder(
+  currentOrder: string[],
+  labels: string[],
+  source: string,
+  target: string,
+): string[] {
+  const seen = new Set<string>();
+  const renamed: string[] = [];
+  for (const label of orderGroupLabels(labels, currentOrder)) {
+    const nextLabel = label === source ? target : label;
+    if (seen.has(nextLabel)) continue;
+    seen.add(nextLabel);
+    renamed.push(nextLabel);
+  }
+  return renamed;
 }
 
 function reorderGroupLabels(
@@ -3639,6 +4243,28 @@ function reorderGroupLabels(
 
 function toggleStringInArray(values: string[], value: string): string[] {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
+}
+
+function renameStringInArray(values: string[], source: string, target: string): string[] {
+  const seen = new Set<string>();
+  const renamed: string[] = [];
+  for (const value of values) {
+    const nextValue = value === source ? target : value;
+    if (seen.has(nextValue)) continue;
+    seen.add(nextValue);
+    renamed.push(nextValue);
+  }
+  return renamed;
+}
+
+function groupNameError(value: string): string {
+  if (!value) return "请输入分组名称。";
+  if (value.length > maxGroupLength) return `分组名称不能超过 ${maxGroupLength} 个字符。`;
+  if (/[\u0000-\u001f\u007f]/.test(value)) return "分组名称不能包含换行或控制字符。";
+  if ([allGroupsLabel, allGroupsValue, ungroupedLabel].includes(value)) {
+    return `“${value}”是系统保留名称，请换一个分组名称。`;
+  }
+  return "";
 }
 
 function readStoredStringArray(key: string): string[] {
@@ -3852,7 +4478,11 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
   if (command === "restore_account") return { ...accounts[0], name: String(args?.name ?? accounts[0].name), archived: false, trashed: false } as T;
   if (command === "permanently_delete_account") return undefined as T;
   if (command === "set_group") {
-    return { ...accounts[0], name: String(args?.name ?? accounts[0].name), group: (args?.value as string | null | undefined) ?? null } as T;
+    const name = String(args?.name ?? accounts[0].name);
+    const group = (args?.value as string | null | undefined) ?? null;
+    mockGroupOverrides.set(name, group);
+    const account = accounts.find((item) => item.name === name) ?? accounts[0];
+    return { ...account, name, group } as T;
   }
   if (command === "set_mark") {
     const name = String(args?.name ?? accounts[0].name);
@@ -3873,6 +4503,7 @@ function mockAccounts(): Account[] {
       name: "demo-alpha@example.test",
       profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-alpha@example.test",
       created_at: 1_700_000_001_000_000,
+      deleted_at: null,
       archived: false,
       trashed: false,
       seed: "48366",
@@ -3889,6 +4520,7 @@ function mockAccounts(): Account[] {
       name: "demo-beta",
       profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-beta",
       created_at: 1_700_000_002_000_000,
+      deleted_at: null,
       archived: false,
       trashed: false,
       seed: "77296",
@@ -3905,6 +4537,7 @@ function mockAccounts(): Account[] {
       name: "demo-gamma",
       profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-gamma",
       created_at: 1_700_000_003_000_000,
+      deleted_at: 1_700_100_000_000_000,
       archived: true,
       trashed: true,
       seed: "68098",
@@ -3921,6 +4554,7 @@ function mockAccounts(): Account[] {
       name: "demo-gamma-copy",
       profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-gamma-copy",
       created_at: 1_700_000_003_500_000,
+      deleted_at: null,
       archived: false,
       trashed: false,
       seed: "40127",
@@ -3937,6 +4571,7 @@ function mockAccounts(): Account[] {
       name: "old-lab",
       profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/old-lab",
       created_at: 1_700_000_004_000_000,
+      deleted_at: 1_700_200_000_000_000,
       archived: false,
       trashed: true,
       seed: "51024",
@@ -3951,15 +4586,19 @@ function mockAccounts(): Account[] {
     },
   ];
   return accounts.map((account) => {
-    const override = mockMarkOverrides.get(account.name);
-    return override
+    const group = mockGroupOverrides.has(account.name)
+      ? mockGroupOverrides.get(account.name) ?? null
+      : account.group;
+    const mark = mockMarkOverrides.get(account.name);
+    const withGroup = group === account.group ? account : { ...account, group };
+    return mark
       ? {
-          ...account,
-          marked: override.marked,
-          mark_note: override.marked ? override.note : null,
-          mark_color: override.marked ? override.color : null,
+          ...withGroup,
+          marked: mark.marked,
+          mark_note: mark.marked ? mark.note : null,
+          mark_color: mark.marked ? mark.color : null,
         }
-      : account;
+      : withGroup;
   });
 }
 
