@@ -121,6 +121,7 @@ async function pressKeyOn(element: HTMLElement, key: string, shiftKey = false, a
 beforeEach(async () => {
   installMemoryStorage();
   window.localStorage.clear();
+  resetMockCommandsForTest();
   vi.spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(function getClientRects(
     this: HTMLElement,
   ) {
@@ -207,6 +208,16 @@ describe("Cloak Picker dialog regressions", () => {
     return dialog as HTMLElement;
   }
 
+  async function openManageDialog(section: "管理分组" | "管理标签" = "管理分组") {
+    await click(buttonWithText("管理"));
+    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="管理选项"]');
+    expect(menu).not.toBeNull();
+    await click(buttonWithText(section, menu ?? document));
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    return dialog as HTMLElement;
+  }
+
   it("labels the modal, traps focus in both directions, closes on Escape, and restores focus", async () => {
     const trigger = buttonWithText("代理");
     trigger.focus();
@@ -252,6 +263,106 @@ describe("Cloak Picker dialog regressions", () => {
     await pressKey("Escape");
     await settle(30);
     expect(document.activeElement).toBe(origin);
+  });
+
+  it("offers group and label management from one compact homepage control", async () => {
+    const manageButton = buttonWithText("管理");
+    expect(manageButton.getAttribute("aria-haspopup")).toBe("menu");
+    await click(manageButton);
+
+    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="管理选项"]');
+    expect(menu).not.toBeNull();
+    expect(buttonWithText("管理分组", menu ?? document)).toBeTruthy();
+    expect(buttonWithText("管理标签", menu ?? document)).toBeTruthy();
+
+    await click(buttonWithText("管理分组", menu ?? document));
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog?.textContent).toContain("集中维护首页使用的分组和常用标签");
+    expect(buttonWithText("分组", dialog ?? document).getAttribute("aria-selected")).toBe("true");
+    expect(buttonWithText("新建分组", dialog ?? document)).toBeTruthy();
+    expect(dialog?.querySelector('[aria-label="重命名分组 codex"]')).not.toBeNull();
+    expect(dialog?.querySelector('[aria-label="删除分组 codex"]')).not.toBeNull();
+
+    const codexRow = dialog?.querySelector('[aria-label="重命名分组 codex"]')?.closest(".manageRow");
+    expect(codexRow?.textContent).toContain("3 个账号");
+  });
+
+  it("also exposes group rename directly from the group context menu", async () => {
+    await openContextMenu(groupFilter("codex"));
+    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="codex 分组菜单"]');
+    expect(menu).not.toBeNull();
+    await click(buttonWithText("重命名分组", menu ?? document));
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog?.querySelector<HTMLInputElement>(".field input")?.value).toBe("codex");
+    expect(buttonWithText("保存名称", dialog ?? document)).toBeTruthy();
+  });
+
+  it("renames a group in place across active and deleted accounts", async () => {
+    const initialOrder = groupFilterLabels();
+    expect(initialOrder).toEqual(["codex", "antigravity", "claude"]);
+    const manageDialog = await openManageDialog();
+    await click(manageDialog.querySelector<HTMLButtonElement>('[aria-label="重命名分组 codex"]') as HTMLButtonElement);
+
+    const renameDialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    const input = renameDialog?.querySelector<HTMLInputElement>(".field input");
+    expect(input?.value).toBe("codex");
+    await inputText(input as HTMLInputElement, "客户邮箱");
+    await click(buttonWithText("保存名称", renameDialog ?? document));
+    await settle(520);
+
+    expect(mockCommandCountForTest("set_group")).toBe(3);
+    expect(groupFilterLabels()).toEqual(["客户邮箱", "antigravity", "claude"]);
+    expect(window.localStorage.getItem("cloak-picker.groupOrder.v1")).toBe(
+      '["客户邮箱","antigravity","claude"]',
+    );
+    const returnedManageDialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(returnedManageDialog?.querySelector('[aria-label="重命名分组 客户邮箱"]')).not.toBeNull();
+    expect(returnedManageDialog?.querySelectorAll(".manageRow")).toHaveLength(3);
+    await click(buttonWithText("完成", returnedManageDialog ?? document));
+
+    await click(buttonWithText("回收站"));
+    await settle(120);
+    const deletedAccount = Array.from(document.querySelectorAll<HTMLButtonElement>(".accountRow")).find(
+      (row) => row.textContent?.includes("demo-gamma"),
+    );
+    expect(deletedAccount?.querySelector(".accountLocationTag")?.textContent).toBe("回收站 · 客户邮箱");
+  });
+
+  it("rejects a duplicate group name before changing any account", async () => {
+    const manageDialog = await openManageDialog();
+    await click(manageDialog.querySelector<HTMLButtonElement>('[aria-label="重命名分组 codex"]') as HTMLButtonElement);
+    const renameDialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    const input = renameDialog?.querySelector<HTMLInputElement>(".field input");
+    await inputText(input as HTMLInputElement, "antigravity");
+    await click(buttonWithText("保存名称", renameDialog ?? document));
+    await settle(30);
+
+    expect(renameDialog?.querySelector('[role="alert"]')?.textContent).toContain("已经存在");
+    expect(mockCommandCountForTest("set_group")).toBe(0);
+    expect(groupFilterLabels()).toEqual(["codex", "antigravity", "claude"]);
+  });
+
+  it("adds, renames, and removes custom label shortcuts without editing accounts", async () => {
+    const dialog = await openManageDialog("管理标签");
+    expect(buttonWithText("标签", dialog).getAttribute("aria-selected")).toBe("true");
+    expect(dialog.textContent).toContain("删除快捷项不会改动账号已有标记");
+    expect(dialog.querySelector('[aria-label="删除标签 Plus"]')).toBeNull();
+
+    const newLabelInput = dialog.querySelector<HTMLInputElement>('input[aria-label="新标签名称"]');
+    await inputText(newLabelInput as HTMLInputElement, "工作");
+    await click(buttonWithText("新增标签", dialog));
+    expect(window.localStorage.getItem("cloak-picker.markPresets.v3")).toBe('["工作"]');
+
+    await click(dialog.querySelector<HTMLButtonElement>('[aria-label="重命名标签 工作"]') as HTMLButtonElement);
+    const renameInput = dialog.querySelector<HTMLInputElement>('[aria-label="标签 工作 的新名称"]');
+    await inputText(renameInput as HTMLInputElement, "待办");
+    await click(dialog.querySelector<HTMLButtonElement>('[aria-label="保存标签 工作"]') as HTMLButtonElement);
+    expect(window.localStorage.getItem("cloak-picker.markPresets.v3")).toBe('["待办"]');
+
+    await click(dialog.querySelector<HTMLButtonElement>('[aria-label="删除标签 待办"]') as HTMLButtonElement);
+    expect(window.localStorage.getItem("cloak-picker.markPresets.v3")).toBe("[]");
+    expect(mockCommandCountForTest("set_mark")).toBe(0);
   });
 
   it("creates an account in a newly named group from the create dialog", async () => {
@@ -642,6 +753,27 @@ describe("Cloak Picker dialog regressions", () => {
     );
   });
 
+  it("orders the recycle bin from newest deletion to oldest across original groups", async () => {
+    await click(buttonWithText("回收站"));
+    await settle(120);
+
+    const rows = Array.from(document.querySelectorAll<HTMLButtonElement>(".accountRow"));
+    expect(rows.map((row) => row.querySelector(".accountTitle strong")?.textContent)).toEqual([
+      "old-lab",
+      "demo-gamma",
+    ]);
+    expect(document.querySelectorAll(".accountGroup")).toHaveLength(1);
+    expect(document.querySelector(".accountGroup.chronological")).not.toBeNull();
+    expect(document.querySelector(".accountGroupHeader")).toBeNull();
+    expect(rows.map((row) => row.querySelector(".accountLocationTag")?.textContent)).toEqual([
+      "回收站 · 未分组",
+      "回收站 · codex",
+    ]);
+    expect(rows.every((row) => row.querySelector("code")?.title === "删除日期")).toBe(true);
+    expect(document.querySelector(".detail h1")?.textContent).toBe("old-lab");
+    expect(document.querySelector(".detail")?.textContent).toContain("删除时间");
+  });
+
   it("locates a matching account inside the complete left list", async () => {
     const codexGroup = document.querySelector<HTMLButtonElement>('[data-group-label="codex"] .groupFilterSelect');
     expect(codexGroup).not.toBeNull();
@@ -711,10 +843,10 @@ describe("Cloak Picker dialog regressions", () => {
     const accountRows = Array.from(document.querySelectorAll<HTMLButtonElement>(".accountRow"));
     expect(accountRows).toHaveLength(2);
     expect(accountRows.map((row) => row.querySelector(".accountTitle strong")?.textContent)).toEqual([
-      "demo-gamma",
       "old-lab",
+      "demo-gamma",
     ]);
-    expect(accountRows[0].classList.contains("selected")).toBe(true);
+    expect(accountRows[1].classList.contains("selected")).toBe(true);
     expect(document.querySelector(".detail h1")?.textContent).toBe("demo-gamma");
     expect(document.querySelector(".detail")?.textContent).toContain("已移入回收站");
     expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("1/2");

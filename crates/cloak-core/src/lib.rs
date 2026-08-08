@@ -210,6 +210,8 @@ pub struct Account {
     pub name: String,
     pub profile_path: PathBuf,
     pub created_at: u64,
+    #[serde(default)]
+    pub deleted_at: Option<u64>,
     pub archived: bool,
     pub trashed: bool,
     pub seed: String,
@@ -433,7 +435,14 @@ pub fn list_archived_accounts(config: &CloakConfig) -> Result<Vec<Account>> {
 }
 
 pub fn list_trashed_accounts(config: &CloakConfig) -> Result<Vec<Account>> {
-    list_accounts_by_trash_state(config, true)
+    let mut accounts = list_accounts_by_trash_state(config, true)?;
+    accounts.sort_by(|a, b| {
+        b.deleted_at
+            .cmp(&a.deleted_at)
+            .then_with(|| b.created_at.cmp(&a.created_at))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(accounts)
 }
 
 fn list_accounts_by_archive_state(config: &CloakConfig, archived: bool) -> Result<Vec<Account>> {
@@ -511,11 +520,17 @@ pub fn read_account(config: &CloakConfig, name: &str) -> Result<Account> {
     let created_at = account_created_at(&profile_path)?;
     let archived = profile_path.join(".cloak-archived").exists();
     let trashed = profile_path.join(".cloak-trashed").exists() || archived;
+    let deleted_at = if trashed {
+        account_deleted_at(&profile_path)?
+    } else {
+        None
+    };
 
     Ok(Account {
         name: name.to_string(),
         profile_path,
         created_at,
+        deleted_at,
         archived,
         trashed,
         seed,
@@ -1526,6 +1541,28 @@ fn account_created_at(profile_path: &Path) -> Result<u64> {
     let metadata = fs::metadata(profile_path)?;
     let created_at = metadata.created().or_else(|_| metadata.modified()).ok();
     Ok(created_at.map(system_time_micros).unwrap_or(0))
+}
+
+fn account_deleted_at(profile_path: &Path) -> Result<Option<u64>> {
+    if let Some(raw) = read_first_line(&profile_path.join(".cloak-deleted-at"))? {
+        if let Ok(deleted_at) = raw.parse::<u64>() {
+            if deleted_at > 0 {
+                return Ok(Some(deleted_at));
+            }
+        }
+    }
+
+    // Accounts archived before the trash workflow existed do not have an
+    // explicit deletion timestamp. Their marker modification time is the best
+    // non-destructive approximation available without rewriting profile data.
+    let fallback = [".cloak-trashed", ".cloak-archived"]
+        .iter()
+        .filter_map(|marker| fs::metadata(profile_path.join(marker)).ok())
+        .filter_map(|metadata| metadata.modified().ok())
+        .map(system_time_micros)
+        .max()
+        .filter(|deleted_at| *deleted_at > 0);
+    Ok(fallback)
 }
 
 fn pin_account_created_at(profile_path: &Path) -> Result<u64> {
@@ -3634,6 +3671,7 @@ mod tests {
         let trashed = list_trashed_accounts(&config).unwrap();
         assert_eq!(trashed.len(), 1);
         assert!(trashed[0].trashed);
+        assert!(trashed[0].deleted_at.is_some());
         assert_eq!(trashed[0].seed, account.seed);
         assert!(config.profile_dir("work").join(".cloak-trashed").exists());
         assert!(config
@@ -3643,9 +3681,68 @@ mod tests {
 
         let restored = set_account_trashed(&config, "work", false).unwrap();
         assert!(!restored.trashed);
+        assert_eq!(restored.deleted_at, None);
         assert_eq!(restored.seed, account.seed);
         assert_eq!(list_accounts(&config).unwrap().len(), 1);
         assert!(list_trashed_accounts(&config).unwrap().is_empty());
+    }
+
+    #[test]
+    fn trashed_accounts_are_listed_by_latest_deletion_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = CloakConfig {
+            repo_root: dir.path().to_path_buf(),
+            account_base: dir.path().join("accounts"),
+            extension_source: dir.path().join("extension"),
+            cloakbrowser_root: dir.path().join("browser"),
+        };
+        fs::create_dir_all(&config.extension_source).unwrap();
+
+        create_account(&config, "created-later").unwrap();
+        create_account(&config, "deleted-later").unwrap();
+        write_secret_atomic(
+            &config
+                .profile_dir("created-later")
+                .join(".cloak-created-at"),
+            "200",
+        )
+        .unwrap();
+        write_secret_atomic(
+            &config
+                .profile_dir("deleted-later")
+                .join(".cloak-created-at"),
+            "100",
+        )
+        .unwrap();
+        delete_account(&config, "created-later").unwrap();
+        delete_account(&config, "deleted-later").unwrap();
+        write_secret_atomic(
+            &config
+                .profile_dir("created-later")
+                .join(".cloak-deleted-at"),
+            "300",
+        )
+        .unwrap();
+        write_secret_atomic(
+            &config
+                .profile_dir("deleted-later")
+                .join(".cloak-deleted-at"),
+            "400",
+        )
+        .unwrap();
+
+        let accounts = list_trashed_accounts(&config)
+            .unwrap()
+            .into_iter()
+            .map(|account| (account.name, account.deleted_at))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            accounts,
+            vec![
+                ("deleted-later".to_string(), Some(400)),
+                ("created-later".to_string(), Some(300)),
+            ]
+        );
     }
 
     #[test]
