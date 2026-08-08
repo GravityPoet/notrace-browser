@@ -172,6 +172,12 @@ describe("Cloak Picker dialog regressions", () => {
     return row;
   }
 
+  function groupFilterLabels(): string[] {
+    return Array.from(document.querySelectorAll<HTMLElement>(".groupFilterButton[data-group-label]"))
+      .map((group) => group.dataset.groupLabel ?? "")
+      .filter(Boolean);
+  }
+
   async function openMarkDialog(name: string) {
     await openContextMenu(accountRow(name));
     const menu = document.querySelector<HTMLElement>('[role="menu"]');
@@ -234,6 +240,7 @@ describe("Cloak Picker dialog regressions", () => {
   });
 
   it("creates an account in a newly named group from the create dialog", async () => {
+    const initialGroupOrder = groupFilterLabels();
     await click(buttonWithText("新建"));
 
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
@@ -253,6 +260,25 @@ describe("Cloak Picker dialog regressions", () => {
 
     expect(mockCommandCountForTest("create_account")).toBe(1);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(groupFilterLabels()).toEqual([...initialGroupOrder, "client-a"]);
+  });
+
+  it("keeps the existing group order when creating an account inside a group", async () => {
+    const initialGroupOrder = groupFilterLabels();
+    await click(buttonWithText("新建"));
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    const accountNameInput = dialog?.querySelector<HTMLInputElement>(".field input");
+    expect(accountNameInput).not.toBeNull();
+    await inputText(accountNameInput as HTMLInputElement, "work-client");
+    await click(buttonWithText("antigravity", dialog ?? document));
+
+    await click(buttonWithText("创建账号", dialog ?? document));
+    await settle(220);
+
+    expect(mockCommandCountForTest("create_account")).toBe(1);
+    expect(groupFilterLabels()).toEqual(initialGroupOrder);
   });
 
   it("creates a standalone empty group without requiring an account name", async () => {
@@ -273,6 +299,31 @@ describe("Cloak Picker dialog regressions", () => {
     await click(buttonWithText("取消", dialog ?? document));
     const groupFilter = document.querySelector<HTMLElement>('[data-group-label="注册邮箱"]');
     expect(groupFilter?.querySelector("small")?.textContent).toBe("0");
+    expect(groupFilterLabels().at(-1)).toBe("注册邮箱");
+  });
+
+  it("keeps a manually arranged group order when moving an account into a group", async () => {
+    const claudeGroup = document.querySelector<HTMLElement>('[data-group-label="claude"]');
+    const codexGroup = document.querySelector<HTMLElement>('[data-group-label="codex"]');
+    expect(claudeGroup).not.toBeNull();
+    expect(codexGroup).not.toBeNull();
+    vi.mocked(document.elementFromPoint).mockReturnValue(codexGroup);
+    await dispatchPointer(claudeGroup as HTMLElement, "pointerdown", 10, 10);
+    await dispatchPointer(claudeGroup as HTMLElement, "pointermove", 20, 10);
+    await dispatchPointer(claudeGroup as HTMLElement, "pointerup", 20, 10);
+    await settle(30);
+
+    const initialGroupOrder = groupFilterLabels();
+    expect(initialGroupOrder).toEqual(["claude", "codex", "antigravity"]);
+    await openContextMenu(accountRow("demo-alpha@example.test"));
+
+    const menu = document.querySelector<HTMLElement>('[role="menu"]');
+    expect(menu).not.toBeNull();
+    await click(buttonWithText("antigravity", menu ?? document));
+    await settle(220);
+
+    expect(mockCommandCountForTest("set_group")).toBe(1);
+    expect(groupFilterLabels()).toEqual(initialGroupOrder);
   });
 
   it("reorders accounts without the native drag ghost and keeps a keyboard alternative", async () => {
