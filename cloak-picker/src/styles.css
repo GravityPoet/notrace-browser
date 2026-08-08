@@ -48,7 +48,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -58,6 +59,7 @@ button {
 
 button:focus-visible,
 input:focus-visible,
+textarea:focus-visible,
 summary:focus-visible {
   outline: 2px solid var(--accent-ring);
   outline-offset: 2px;
@@ -212,6 +214,8 @@ summary:focus-visible {
 }
 
 .sidebarHeader {
+  position: relative;
+  z-index: 5;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -222,6 +226,54 @@ summary:focus-visible {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: -0.12px;
+}
+
+.sidebarHeaderActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.sidebarHeader .iconButton {
+  width: 26px;
+  min-height: 26px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.sidebarHeader .iconButton:hover {
+  border-color: rgba(0, 113, 227, 0.18);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.sidebarManageButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 26px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: -0.12px;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.sidebarManageButton:hover,
+.sidebarManageButton.active {
+  border-color: rgba(0, 113, 227, 0.18);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--accent);
+}
+
+.sidebarManageMenuWrap .manageMenu {
+  top: calc(100% + 5px);
 }
 
 .viewSwitch {
@@ -887,6 +939,23 @@ summary:focus-visible {
   justify-content: center;
 }
 
+.accountNoteIndicator {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: var(--muted);
+}
+
+.accountRow:hover .accountNoteIndicator,
+.accountRow.selected .accountNoteIndicator {
+  background: rgba(0, 113, 227, 0.07);
+  color: var(--accent);
+}
+
 .accountMark.withNote {
   flex: 0 1 auto;
   min-width: 0;
@@ -1264,6 +1333,15 @@ h2 {
   line-height: 36px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.infoValue.multiline {
+  overflow: visible;
+  padding-top: 9px;
+  padding-bottom: 9px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .mono {
@@ -2420,19 +2498,31 @@ button:disabled {
   font-weight: 590;
 }
 
-.field input {
+.field input,
+.field textarea {
   width: 100%;
-  height: 34px;
   border: 1px solid var(--border-strong);
   border-radius: 6px;
   background: #fbfcff;
   color: var(--text);
-  padding: 0 10px;
   font-size: 13px;
   outline: none;
 }
 
-.field input:focus {
+.field input {
+  height: 34px;
+  padding: 0 10px;
+}
+
+.field textarea {
+  min-height: 132px;
+  resize: vertical;
+  padding: 9px 10px;
+  line-height: 1.5;
+}
+
+.field input:focus,
+.field textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
@@ -2444,6 +2534,14 @@ button:disabled {
 
 .field input[aria-invalid="true"]:focus {
   box-shadow: 0 0 0 3px rgba(217, 45, 32, 0.14);
+}
+
+.fieldCounter {
+  justify-self: end;
+  margin-top: -3px;
+  color: var(--soft);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 
 .modalActions {
