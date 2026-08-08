@@ -788,7 +788,7 @@ export default function App() {
         ]);
         if (group) {
           setHiddenGroups((current) => current.filter((label) => label !== group));
-          setGroupOrder((current) => [group, ...current.filter((label) => label !== group)]);
+          setGroupOrder((current) => appendNewGroup(current, groupFilters, group));
         }
         setDialog(null);
         setAccountView("active");
@@ -910,7 +910,7 @@ export default function App() {
       return false;
     }
     setHiddenGroups((current) => current.filter((label) => label !== value));
-    setGroupOrder((current) => [value, ...current.filter((label) => label !== value)]);
+    setGroupOrder((current) => appendNewGroup(current, groupFilters, value));
     setAccountView("active");
     setSelectedGroup(value);
     setDialogError("");
@@ -934,7 +934,7 @@ export default function App() {
     if (!updated) return false;
     if (nextGroup) {
       setHiddenGroups((current) => current.filter((label) => label !== nextGroup));
-      setGroupOrder((current) => [nextGroup, ...current.filter((label) => label !== nextGroup)]);
+      setGroupOrder((current) => appendNewGroup(current, groupFilters, nextGroup));
     }
     if (closeDialog) setDialog(null);
     await refresh(updated.name);
@@ -3294,6 +3294,14 @@ function orderGroupLabels(labels: string[], groupOrder: string[]): string[] {
   const ordered = groupOrder.filter((label) => known.has(label));
   const remaining = labels.filter((label) => !ordered.includes(label));
   return [...ordered, ...remaining];
+}
+
+function appendNewGroup(currentOrder: string[], filters: GroupFilter[], label: string): string[] {
+  const existingLabels = filters
+    .filter((group) => group.value !== allGroupsValue)
+    .map((group) => group.label);
+  if (existingLabels.includes(label)) return currentOrder;
+  return [...orderGroupLabels(existingLabels, currentOrder), label];
 }
 
 function reorderGroupLabels(currentOrder: string[], filters: GroupFilter[], source: string, target: string): string[] {
