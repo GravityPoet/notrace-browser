@@ -2884,6 +2884,7 @@ export default function App() {
           groupOptions={groupOptions}
           managedGroups={managedGroups}
           onCreateGroup={createStandaloneGroup}
+          onGroupOrderChange={setGroupOrder}
           onQuickGroup={(account, value) => void assignAccountGroup(account, value || null, true)}
           onQuickMark={(account, value, color) => void saveAccountMark(account, value, color)}
           onSubmit={submitDialog}
@@ -3083,6 +3084,7 @@ function EditorDialog({
   groupOptions,
   managedGroups,
   onCreateGroup,
+  onGroupOrderChange,
   onQuickGroup,
   onQuickMark,
   onSubmit,
@@ -3099,6 +3101,7 @@ function EditorDialog({
   groupOptions: GroupOption[];
   managedGroups: ManagedGroup[];
   onCreateGroup: (value: string) => boolean;
+  onGroupOrderChange: (labels: string[]) => void;
   onQuickGroup: (account: Account, value: string) => void;
   onQuickMark: (account: Account, value: string, color: MarkColor) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
@@ -3394,32 +3397,20 @@ function EditorDialog({
   const config = dialogConfig(dialog);
   const groupPicker =
     dialog.kind === "group" || dialog.kind === "create" ? (
-      <div className="groupPicker" aria-label="可选分组">
-        <span className="groupPickerLabel">分组</span>
-        {groupOptions.map((option) => {
-          const activeValue = dialog.kind === "create" ? dialog.group.trim() : dialog.value.trim();
-          const isActive = option.value === activeValue || (!option.value && !activeValue);
-          return (
-            <button
-              className={`groupOption ${isActive ? "active" : ""}`}
-              disabled={busy}
-              key={option.label}
-              type="button"
-              aria-pressed={isActive}
-              onClick={() => {
-                if (dialog.kind === "create") {
-                  setCreatingGroup(false);
-                  onChange({ ...dialog, group: option.value });
-                  return;
-                }
-                onQuickGroup(dialog.account, option.value);
-              }}
-            >
-              <Folder size={13} />
-              <span>{option.label}</span>
-            </button>
-          );
-        })}
+      <SortableGroupPicker
+        activeValue={dialog.kind === "create" ? dialog.group.trim() : dialog.value.trim()}
+        busy={busy}
+        options={groupOptions}
+        onOrderChange={onGroupOrderChange}
+        onSelect={(option) => {
+          if (dialog.kind === "create") {
+            setCreatingGroup(false);
+            onChange({ ...dialog, group: option.value });
+            return;
+          }
+          onQuickGroup(dialog.account, option.value);
+        }}
+      >
         {dialog.kind === "create" ? (
           <button
             aria-controls="cloak-new-group-name"
@@ -3464,7 +3455,7 @@ function EditorDialog({
             <small>可先创建空分组；创建账号时也会自动保存并选中该分组。</small>
           </div>
         ) : null}
-      </div>
+      </SortableGroupPicker>
     ) : null;
   return (
     <div className="modalBackdrop">
@@ -3549,6 +3540,364 @@ function EditorDialog({
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function SortableGroupPicker({
+  activeValue,
+  busy,
+  children,
+  onOrderChange,
+  onSelect,
+  options,
+}: {
+  activeValue: string;
+  busy: boolean;
+  children?: ReactNode;
+  onOrderChange: (labels: string[]) => void;
+  onSelect: (option: GroupOption) => void;
+  options: GroupOption[];
+}) {
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<GroupPointerDrag | null>(null);
+  const dropTargetRef = useRef<GroupDropTarget | null>(null);
+  const previewOrderRef = useRef<string[] | null>(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const previewFrameRef = useRef<number | null>(null);
+  const suppressClickRef = useRef(false);
+  const positionsRef = useRef<Map<string, { left: number; top: number }>>(new Map());
+  const [draggingLabel, setDraggingLabel] = useState("");
+  const [pressedLabel, setPressedLabel] = useState("");
+  const [dropTarget, setDropTarget] = useState<GroupDropTarget | null>(null);
+  const [previewOrder, setPreviewOrder] = useState<string[] | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+  const optionsKey = options.map((option) => option.label).join("\u0000");
+  const optionsByLabel = useMemo(
+    () => new Map(options.map((option) => [option.label, option])),
+    [options],
+  );
+  const displayedOptions = (previewOrder ?? options.map((option) => option.label))
+    .map((label) => optionsByLabel.get(label))
+    .filter((option): option is GroupOption => Boolean(option));
+
+  function capturePositions() {
+    const next = new Map<string, { left: number; top: number }>();
+    pickerRef.current
+      ?.querySelectorAll<HTMLElement>(".groupOption[data-group-label]")
+      .forEach((option) => {
+        const label = option.dataset.groupLabel ?? "";
+        if (!label) return;
+        const bounds = option.getBoundingClientRect();
+        next.set(label, { left: bounds.left, top: bounds.top });
+      });
+    positionsRef.current = next;
+  }
+
+  useLayoutEffect(() => {
+    const previous = positionsRef.current;
+    positionsRef.current = new Map();
+    if (previous.size === 0) return;
+    if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+    pickerRef.current
+      ?.querySelectorAll<HTMLElement>(".groupOption[data-group-label]")
+      .forEach((option) => {
+        const label = option.dataset.groupLabel ?? "";
+        if (!label || label === draggingLabel || typeof option.animate !== "function") return;
+        const before = previous.get(label);
+        if (!before) return;
+        const after = option.getBoundingClientRect();
+        const deltaX = before.left - after.left;
+        const deltaY = before.top - after.top;
+        if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) return;
+        option.animate(
+          [{ transform: `translate3d(${deltaX}px, ${deltaY}px, 0)` }, { transform: "translate3d(0, 0, 0)" }],
+          { duration: 180, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
+        );
+      });
+  }, [draggingLabel, optionsKey, previewOrder]);
+
+  function resolveDropTarget(clientX: number, clientY: number, sourceLabel: string): GroupDropTarget | null {
+    const candidates = Array.from(
+      pickerRef.current?.querySelectorAll<HTMLElement>(".groupOption[data-group-label]") ?? [],
+    ).filter((option) => option.dataset.groupLabel !== sourceLabel);
+    if (candidates.length === 0) return null;
+    const hit = (document.elementFromPoint(clientX, clientY) as HTMLElement | null)
+      ?.closest<HTMLElement>(".groupOption[data-group-label]");
+    let target = hit && hit.dataset.groupLabel !== sourceLabel && pickerRef.current?.contains(hit) ? hit : null;
+    if (!target) {
+      let nearestDistance = Number.POSITIVE_INFINITY;
+      for (const candidate of candidates) {
+        const bounds = candidate.getBoundingClientRect();
+        const deltaX = clientX - (bounds.left + bounds.width / 2);
+        const deltaY = clientY - (bounds.top + bounds.height / 2);
+        const distance = deltaX * deltaX + deltaY * deltaY;
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          target = candidate;
+        }
+      }
+    }
+    const label = target?.dataset.groupLabel ?? "";
+    if (!target || !label) return null;
+    const bounds = target.getBoundingClientRect();
+    const centerY = bounds.top + bounds.height / 2;
+    const verticalOffset = clientY - centerY;
+    const edge = Math.abs(verticalOffset) > bounds.height * 0.35
+      ? verticalOffset > 0 ? "after" : "before"
+      : clientX >= bounds.left + bounds.width / 2 ? "after" : "before";
+    return { label, edge };
+  }
+
+  function updateDestination(clientX: number, clientY: number, drag: GroupPointerDrag) {
+    const target = resolveDropTarget(clientX, clientY, drag.label);
+    const currentTarget = dropTargetRef.current;
+    if (currentTarget?.label === target?.label && currentTarget?.edge === target?.edge) return;
+    dropTargetRef.current = target;
+    setDropTarget(target);
+    if (!target) return;
+    const currentOrder = previewOrderRef.current ?? drag.initialOrder;
+    const nextOrder = reorderLabelList(currentOrder, drag.label, target.label, target.edge);
+    if (nextOrder.every((label, index) => label === currentOrder[index])) return;
+    capturePositions();
+    previewOrderRef.current = nextOrder;
+    setPreviewOrder(nextOrder);
+  }
+
+  function schedulePreview() {
+    if (previewFrameRef.current !== null) return;
+    previewFrameRef.current = window.requestAnimationFrame(() => {
+      previewFrameRef.current = null;
+      const drag = dragRef.current;
+      if (!drag?.active) return;
+      updateDestination(drag.latestX, drag.latestY, drag);
+      const preview = previewRef.current;
+      if (!preview) return;
+      const x = Math.round(drag.latestX - drag.grabOffsetX);
+      const y = Math.round(drag.latestY - drag.grabOffsetY);
+      preview.style.transform = `translate3d(${x}px, ${y}px, 0) scale(1.018)`;
+    });
+  }
+
+  function startPointerDrag(event: PointerEvent<HTMLElement>, option: GroupOption) {
+    if (busy || event.button !== 0 || event.isPrimary === false) return;
+    const optionElement = event.currentTarget.closest<HTMLButtonElement>(".groupOption[data-group-label]");
+    const captureElement = pickerRef.current;
+    if (!optionElement || !captureElement) return;
+    const bounds = optionElement.getBoundingClientRect();
+    event.preventDefault();
+    event.stopPropagation();
+    optionElement.focus({ preventScroll: true });
+    captureElement.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      label: option.label,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      latestX: event.clientX,
+      latestY: event.clientY,
+      grabOffsetX: event.clientX - bounds.left,
+      grabOffsetY: event.clientY - bounds.top,
+      width: bounds.width,
+      height: bounds.height,
+      active: false,
+      initialOrder: options.map((item) => item.label),
+      captureElement,
+    };
+    dropTargetRef.current = null;
+    previewOrderRef.current = null;
+    setDropTarget(null);
+    setPreviewOrder(null);
+    setPressedLabel(option.label);
+  }
+
+  function movePointerDrag(event: PointerEvent<HTMLElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    drag.latestX = event.clientX;
+    drag.latestY = event.clientY;
+    if (!drag.active) {
+      const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+      if (distance < groupDragActivationDistance) return;
+      drag.active = true;
+      setPressedLabel("");
+      setDraggingLabel(drag.label);
+      updateDestination(event.clientX, event.clientY, drag);
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    schedulePreview();
+  }
+
+  function clearPointerDrag() {
+    if (previewFrameRef.current !== null) {
+      window.cancelAnimationFrame(previewFrameRef.current);
+      previewFrameRef.current = null;
+    }
+    dropTargetRef.current = null;
+    previewOrderRef.current = null;
+    setPressedLabel("");
+    setDraggingLabel("");
+    setDropTarget(null);
+    setPreviewOrder(null);
+  }
+
+  function finishPointerDrag(event: PointerEvent<HTMLElement>, cancelled: boolean) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const releaseMoved = event.clientX !== drag.latestX || event.clientY !== drag.latestY;
+    if (drag.active && !cancelled && (releaseMoved || !dropTargetRef.current)) {
+      drag.latestX = event.clientX;
+      drag.latestY = event.clientY;
+      updateDestination(event.clientX, event.clientY, drag);
+    }
+    const nextOrder = previewOrderRef.current ?? drag.initialOrder;
+    dragRef.current = null;
+    if (drag.captureElement.hasPointerCapture(event.pointerId)) {
+      drag.captureElement.releasePointerCapture(event.pointerId);
+    }
+    if (drag.active) {
+      event.preventDefault();
+      event.stopPropagation();
+      suppressClickRef.current = true;
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+      if (!cancelled && nextOrder.some((label, index) => label !== drag.initialOrder[index])) {
+        onOrderChange(nextOrder);
+        setAnnouncement(`${drag.label} 分组顺序已调整`);
+      }
+    }
+    clearPointerDrag();
+  }
+
+  function cancelPointerDrag() {
+    const drag = dragRef.current;
+    dragRef.current = null;
+    if (drag?.captureElement.hasPointerCapture(drag.pointerId)) {
+      drag.captureElement.releasePointerCapture(drag.pointerId);
+    }
+    clearPointerDrag();
+  }
+
+  useEffect(() => {
+    if (!draggingLabel) return;
+    function cancelOnEscape(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      cancelPointerDrag();
+    }
+    window.addEventListener("keydown", cancelOnEscape, true);
+    return () => window.removeEventListener("keydown", cancelOnEscape, true);
+  }, [draggingLabel]);
+
+  useEffect(() => () => {
+    if (previewFrameRef.current !== null) window.cancelAnimationFrame(previewFrameRef.current);
+    const drag = dragRef.current;
+    if (drag?.captureElement.hasPointerCapture(drag.pointerId)) {
+      drag.captureElement.releasePointerCapture(drag.pointerId);
+    }
+  }, []);
+
+  function moveFromKeyboard(event: KeyboardEvent<HTMLButtonElement>, option: GroupOption) {
+    if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const labels = options.map((item) => item.label);
+    const sourceIndex = labels.indexOf(option.label);
+    const direction = event.key === "ArrowLeft" ? -1 : 1;
+    const targetIndex = sourceIndex + direction;
+    if (sourceIndex < 0 || targetIndex < 0 || targetIndex >= labels.length) {
+      setAnnouncement(`${option.label} 分组已在${direction < 0 ? "最前" : "最后"}`);
+      return;
+    }
+    capturePositions();
+    const nextOrder = [...labels];
+    nextOrder.splice(sourceIndex, 1);
+    nextOrder.splice(targetIndex, 0, option.label);
+    onOrderChange(nextOrder);
+    setAnnouncement(`${option.label} 分组已移至第 ${targetIndex + 1} 位`);
+  }
+
+  const activeDrag = dragRef.current;
+  const previewStyle: CSSProperties | null = activeDrag?.active
+    ? {
+        width: activeDrag.width,
+        height: activeDrag.height,
+        transform: `translate3d(${Math.round(activeDrag.latestX - activeDrag.grabOffsetX)}px, ${Math.round(activeDrag.latestY - activeDrag.grabOffsetY)}px, 0) scale(1.018)`,
+      }
+    : null;
+
+  return (
+    <div
+      aria-describedby="cloak-group-order-hint"
+      aria-label="可选分组"
+      className={`groupPicker ${draggingLabel ? "dragging" : ""}`}
+      onLostPointerCapture={(event) => finishPointerDrag(event, true)}
+      onPointerCancel={(event) => finishPointerDrag(event, true)}
+      onPointerMove={movePointerDrag}
+      onPointerUp={(event) => finishPointerDrag(event, false)}
+      ref={pickerRef}
+      role="group"
+    >
+      <span className="groupPickerHeader">
+        <span className="groupPickerLabel">分组</span>
+        <small className="groupPickerHint" id="cloak-group-order-hint">
+          <GripVertical aria-hidden="true" size={11} />
+          拖动手柄排序
+        </small>
+      </span>
+      {displayedOptions.map((option) => {
+        const isActive = option.value === activeValue || (!option.value && !activeValue);
+        const reorderEdge = dropTarget?.label === option.label ? dropTarget.edge : undefined;
+        return (
+          <button
+            aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
+            aria-pressed={isActive}
+            className={`groupOption ${isActive ? "active" : ""} ${pressedLabel === option.label ? "pressed" : ""} ${draggingLabel === option.label ? "dragOrigin" : ""} ${reorderEdge ? "reorderTarget" : ""}`}
+            data-drop-edge={reorderEdge}
+            data-group-label={option.label}
+            disabled={busy}
+            key={option.label}
+            title="点击选择；拖动左侧手柄排序；⌥← / ⌥→ 微调"
+            type="button"
+            onClick={(event) => {
+              if (suppressClickRef.current) {
+                suppressClickRef.current = false;
+                return;
+              }
+              if ((event.target as HTMLElement).closest(".groupOptionDragHandle")) return;
+              onSelect(option);
+            }}
+            onKeyDown={(event) => moveFromKeyboard(event, option)}
+          >
+            <span
+              aria-hidden="true"
+              className="groupOptionDragHandle"
+              title="拖动调整分组顺序"
+              onPointerDown={(event) => startPointerDrag(event, option)}
+            >
+              <GripVertical size={11} />
+            </span>
+            <Folder aria-hidden="true" size={13} />
+            <span>{option.label}</span>
+          </button>
+        );
+      })}
+      {children}
+      {draggingLabel && activeDrag?.active && previewStyle ? (
+        <div aria-hidden="true" className="groupPickerDragPreview" ref={previewRef} style={previewStyle}>
+          <span className="groupOptionDragHandle"><GripVertical size={11} /></span>
+          <Folder size={13} />
+          <strong>{middleTruncate(draggingLabel, 28)}</strong>
+        </div>
+      ) : null}
+      <span aria-atomic="true" aria-live="polite" className="visuallyHidden" role="status">
+        {announcement}
+      </span>
     </div>
   );
 }
@@ -4215,27 +4564,30 @@ function groupAccounts(accounts: Account[]): AccountGroup[] {
 }
 
 function buildGroupOptions(accounts: Account[], groupOrder: string[], hiddenGroups: string[]): GroupOption[] {
-  const options: GroupOption[] = [{ label: ungroupedLabel, value: "" }];
-  const seen = new Set<string>([ungroupedLabel]);
+  const labels = [ungroupedLabel];
+  const seen = new Set<string>(labels);
   const hidden = new Set(hiddenGroups);
   for (const account of accounts) {
     const label = account.group?.trim();
     if (!label || seen.has(label)) continue;
     seen.add(label);
-    options.push({ label, value: label });
+    labels.push(label);
   }
   for (const rawLabel of groupOrder) {
     const label = rawLabel.trim();
     if (!label || label === allGroupsLabel || label === allGroupsValue || seen.has(label) || hidden.has(label)) continue;
     seen.add(label);
-    options.push({ label, value: label });
+    labels.push(label);
   }
   for (const label of commonGroups) {
     if (seen.has(label) || hidden.has(label)) continue;
     seen.add(label);
-    options.push({ label, value: label });
+    labels.push(label);
   }
-  return options;
+  return orderGroupLabels(labels, groupOrder).map((label) => ({
+    label,
+    value: label === ungroupedLabel ? "" : label,
+  }));
 }
 
 function orderAccountGroups(groups: AccountGroup[], groupOrder: string[]): AccountGroup[] {
@@ -4341,6 +4693,20 @@ function reorderGroupLabels(
   labels.splice(targetIndex >= 0 ? targetIndex + (edge === "after" ? 1 : 0) : labels.length, 0, source);
   if (labels.every((label, index) => label === effectiveOrder[index])) return currentOrder;
   return labels;
+}
+
+function reorderLabelList(
+  labels: string[],
+  source: string,
+  target: string,
+  edge: GroupDropTarget["edge"],
+): string[] {
+  if (!source || source === target) return labels;
+  const next = labels.filter((label) => label !== source);
+  const targetIndex = next.indexOf(target);
+  if (targetIndex < 0) return labels;
+  next.splice(targetIndex + (edge === "after" ? 1 : 0), 0, source);
+  return next;
 }
 
 function toggleStringInArray(values: string[], value: string): string[] {
