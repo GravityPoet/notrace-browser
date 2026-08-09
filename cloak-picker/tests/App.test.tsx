@@ -195,6 +195,30 @@ describe("Cloak Picker dialog regressions", () => {
     vi.spyOn(groupFilter("claude"), "getBoundingClientRect").mockReturnValue(new DOMRect(230, 10, 100, 30));
   }
 
+  function dialogGroupLabels(dialog: ParentNode): string[] {
+    return Array.from(dialog.querySelectorAll<HTMLElement>(".groupOption[data-group-label]"))
+      .map((option) => option.dataset.groupLabel ?? "")
+      .filter(Boolean);
+  }
+
+  function dialogGroupOption(dialog: ParentNode, label: string): HTMLButtonElement {
+    const option = Array.from(dialog.querySelectorAll<HTMLButtonElement>(".groupOption[data-group-label]"))
+      .find((candidate) => candidate.dataset.groupLabel === label);
+    if (!option) throw new Error(`dialog group option not found: ${label}`);
+    return option;
+  }
+
+  function mockDialogGroupGeometry(dialog: ParentNode) {
+    vi.spyOn(dialogGroupOption(dialog, "未分组"), "getBoundingClientRect")
+      .mockReturnValue(new DOMRect(10, 10, 100, 30));
+    vi.spyOn(dialogGroupOption(dialog, "codex"), "getBoundingClientRect")
+      .mockReturnValue(new DOMRect(120, 10, 100, 30));
+    vi.spyOn(dialogGroupOption(dialog, "antigravity"), "getBoundingClientRect")
+      .mockReturnValue(new DOMRect(230, 10, 100, 30));
+    vi.spyOn(dialogGroupOption(dialog, "claude"), "getBoundingClientRect")
+      .mockReturnValue(new DOMRect(10, 50, 100, 30));
+  }
+
   async function openMarkDialog(name: string) {
     await openContextMenu(accountRow(name));
     const menu = document.querySelector<HTMLElement>('[role="menu"]');
@@ -484,6 +508,68 @@ describe("Cloak Picker dialog regressions", () => {
     const groupFilter = document.querySelector<HTMLElement>('[data-group-label="注册邮箱"]');
     expect(groupFilter?.querySelector("small")?.textContent).toBe("0");
     expect(groupFilterLabels().at(-1)).toBe("注册邮箱");
+  });
+
+  it("reorders wrapped group choices in the create dialog and keeps selection separate", async () => {
+    await click(buttonWithText("新建"));
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog?.textContent).toContain("拖动手柄排序");
+    expect(dialogGroupLabels(dialog as HTMLElement)).toEqual(["未分组", "codex", "antigravity", "claude"]);
+
+    const codexOption = dialogGroupOption(dialog as HTMLElement, "codex");
+    await click(codexOption);
+    expect(codexOption.getAttribute("aria-pressed")).toBe("true");
+    const handle = codexOption.querySelector<HTMLElement>(".groupOptionDragHandle");
+    const claudeOption = dialogGroupOption(dialog as HTMLElement, "claude");
+    expect(handle).not.toBeNull();
+    mockDialogGroupGeometry(dialog as HTMLElement);
+    vi.mocked(document.elementFromPoint).mockReturnValue(claudeOption);
+
+    await dispatchPointer(handle as HTMLElement, "pointerdown", 130, 25);
+    await dispatchPointer(handle as HTMLElement, "pointermove", 100, 65);
+    await settle(30);
+
+    expect(document.querySelector(".groupPickerDragPreview")).not.toBeNull();
+    expect(codexOption.classList.contains("dragOrigin")).toBe(true);
+    expect(claudeOption.dataset.dropEdge).toBe("after");
+    expect(dialogGroupLabels(dialog as HTMLElement)).toEqual(["未分组", "antigravity", "claude", "codex"]);
+    expect(dialogGroupOption(dialog as HTMLElement, "codex").getAttribute("aria-pressed")).toBe("true");
+
+    await dispatchPointer(handle as HTMLElement, "pointerup", 100, 65);
+    await settle(30);
+
+    expect(document.querySelector(".groupPickerDragPreview")).toBeNull();
+    expect(dialogGroupLabels(dialog as HTMLElement)).toEqual(["未分组", "antigravity", "claude", "codex"]);
+    expect(groupFilterLabels()).toEqual(["未分组", "antigravity", "claude", "codex"]);
+    expect(window.localStorage.getItem("cloak-picker.groupOrder.v1")).toBe(
+      '["未分组","antigravity","claude","codex"]',
+    );
+  });
+
+  it("keeps short handle movements harmless and offers keyboard sorting in the create dialog", async () => {
+    await click(buttonWithText("新建"));
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    const codexOption = dialogGroupOption(dialog as HTMLElement, "codex");
+    const handle = codexOption.querySelector<HTMLElement>(".groupOptionDragHandle");
+    expect(handle).not.toBeNull();
+    expect(codexOption.getAttribute("aria-keyshortcuts")).toBe("Alt+ArrowLeft Alt+ArrowRight");
+    mockDialogGroupGeometry(dialog as HTMLElement);
+
+    await dispatchPointer(handle as HTMLElement, "pointerdown", 130, 25);
+    await dispatchPointer(handle as HTMLElement, "pointermove", 135, 25);
+    expect(document.querySelector(".groupPickerDragPreview")).toBeNull();
+    await dispatchPointer(handle as HTMLElement, "pointerup", 135, 25);
+    expect(dialogGroupLabels(dialog as HTMLElement)).toEqual(["未分组", "codex", "antigravity", "claude"]);
+
+    await pressKeyOn(codexOption, "ArrowRight", false, true);
+    await settle(30);
+    expect(dialogGroupLabels(dialog as HTMLElement)).toEqual(["未分组", "antigravity", "codex", "claude"]);
+    expect(window.localStorage.getItem("cloak-picker.groupOrder.v1")).toBe(
+      '["未分组","antigravity","codex","claude"]',
+    );
+    expect(dialog?.querySelector('[role="status"]')?.textContent).toContain("codex 分组已移至第 3 位");
   });
 
   it("keeps a manually arranged group order when moving an account into a group", async () => {

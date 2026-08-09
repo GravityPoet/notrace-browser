@@ -2129,18 +2129,37 @@ button:disabled {
   min-width: 0;
 }
 
-.groupPickerLabel {
+.groupPickerHeader {
+  display: flex;
   flex: 0 0 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.groupPickerLabel {
   color: var(--muted);
   font-size: 12px;
   font-weight: 650;
 }
 
+.groupPickerHint {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--soft);
+  font-size: 10px;
+  font-weight: 560;
+  white-space: nowrap;
+}
+
 .groupOption {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
   min-height: 30px;
   max-width: 100%;
@@ -2149,10 +2168,11 @@ button:disabled {
   background: rgba(0, 113, 227, 0.06);
   color: var(--accent);
   cursor: pointer;
-  padding: 0 10px;
+  padding: 0 10px 0 6px;
   font-size: 12px;
   font-weight: 650;
-  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+  transform-origin: center;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, transform 100ms ease;
 }
 
 .groupOption span {
@@ -2162,12 +2182,114 @@ button:disabled {
   white-space: nowrap;
 }
 
-.groupOption:hover,
+.groupOption:hover {
+  border-color: rgba(0, 113, 227, 0.34);
+  background: rgba(0, 113, 227, 0.11);
+  color: var(--accent);
+  box-shadow: 0 6px 14px rgba(0, 113, 227, 0.1);
+}
+
 .groupOption.active {
   border-color: rgba(0, 113, 227, 0.42);
   background: var(--accent);
   color: #ffffff;
   box-shadow: 0 8px 18px rgba(0, 113, 227, 0.14);
+}
+
+.groupOptionDragHandle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 20px;
+  margin-left: -2px;
+  border-radius: 999px;
+  color: currentColor;
+  cursor: grab;
+  opacity: 0.62;
+  overflow: visible !important;
+  touch-action: none;
+  user-select: none;
+  transition: background 140ms ease, opacity 140ms ease;
+}
+
+.groupOptionDragHandle:hover {
+  background: rgba(0, 113, 227, 0.12);
+  opacity: 1;
+}
+
+.groupOption.active .groupOptionDragHandle:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.groupOptionDragHandle:active {
+  cursor: grabbing;
+}
+
+.groupOption.pressed {
+  border-color: rgba(0, 113, 227, 0.42);
+  transform: scale(0.985);
+}
+
+.groupOption.dragOrigin {
+  visibility: hidden;
+}
+
+.groupOption.reorderTarget::after {
+  position: absolute;
+  z-index: 2;
+  top: 3px;
+  bottom: 3px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.1);
+  content: "";
+  pointer-events: none;
+}
+
+.groupOption.reorderTarget[data-drop-edge="before"]::after {
+  left: -5px;
+}
+
+.groupOption.reorderTarget[data-drop-edge="after"]::after {
+  right: -5px;
+}
+
+.groupPicker.dragging .groupOption {
+  will-change: transform;
+}
+
+.groupPickerDragPreview {
+  position: fixed;
+  z-index: 1102;
+  top: 0;
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 30px;
+  border: 1px solid rgba(0, 113, 227, 0.4);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--accent);
+  padding: 0 10px 0 6px;
+  box-shadow: 0 12px 28px rgba(0, 67, 138, 0.2), 0 2px 8px rgba(0, 0, 0, 0.08);
+  pointer-events: none;
+  transform-origin: center;
+  will-change: transform;
+  backdrop-filter: saturate(180%) blur(18px);
+}
+
+.groupPickerDragPreview strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .groupOption:focus-visible {
@@ -2179,6 +2301,7 @@ button:disabled {
   border-style: dashed;
   background: transparent;
   color: var(--muted);
+  padding-left: 10px;
 }
 
 .groupOptionCreate:hover,
@@ -2586,6 +2709,8 @@ button:disabled {
 
   .groupFilterButton,
   .groupDragHandle,
+  .groupOption,
+  .groupOptionDragHandle,
   .accountGroup,
   .accountGroupHeader,
   .accountRow,
