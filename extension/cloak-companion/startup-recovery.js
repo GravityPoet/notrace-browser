@@ -1,8 +1,8 @@
-// ChatGPT can occasionally render its server shell before React has attached
-// handlers. Early repeated clicks can then keep the shell busy enough to delay
-// hydration indefinitely. Coalesce those no-op clicks and replay the latest one
-// once the target is interactive. Keep the existing one-shot reload for the
-// separate unauth-mweb module failure.
+// Recover two bounded OpenAI startup failures without touching normal pages:
+// an auth route that received HTML instead of JSON, and ChatGPT's unauth-mweb
+// module failure. ChatGPT's server shell can also render before React has
+// attached handlers, so coalesce early no-op clicks and replay the latest one
+// once the target is interactive.
 (() => {
   "use strict";
 
@@ -10,14 +10,11 @@
   const fallbackReplayDelayMs = 7_000;
   const replayPollMs = 100;
   const moduleFailure = /Failed to fetch dynamically imported module:\s*https:\/\/chatgpt\.com\/unauth-mweb\/assets\//i;
+  const authRouteFailure = /Route Error\s*\(400 Invalid content type:\s*text\/html;\s*charset=UTF-8\)/i;
+  const recoverableAuthPaths = new Set(["/api/accounts/authorize", "/log-in/password"]);
+  const authRecoveryKeyPrefix = "notrace.auth-route-recovery:";
 
-  if (window.top !== window || window.location.hostname !== "chatgpt.com") return;
-
-  const startedAt = window.performance?.now?.() || 0;
-  let reloadScheduled = false;
-  let pendingClick = null;
-  let replayTimer = null;
-  let replayingClick = false;
+  if (window.top !== window) return;
 
   function wasReloadNavigation() {
     try {
@@ -27,6 +24,47 @@
       return false;
     }
   }
+
+  function recoverAuthRoute() {
+    const path = window.location.pathname;
+    if (!recoverableAuthPaths.has(path)) return;
+
+    const key = `${authRecoveryKeyPrefix}${path}`;
+    const pageText = String(
+      window.document.body?.innerText || window.document.body?.textContent || "",
+    ).replace(/\s+/g, " ");
+    if (!authRouteFailure.test(pageText)) {
+      try {
+        window.sessionStorage.removeItem(key);
+      } catch (_) {
+        // A blocked session store must not affect a healthy auth page.
+      }
+      return;
+    }
+
+    if (wasReloadNavigation()) return;
+    const now = Date.now();
+    try {
+      const lastAttempt = Number(window.sessionStorage.getItem(key) || 0);
+      if (lastAttempt > 0 && now - lastAttempt < recoveryWindowMs) return;
+      window.sessionStorage.setItem(key, String(now));
+    } catch (_) {
+      // Navigation type still provides a one-reload loop guard.
+    }
+    window.setTimeout(() => window.location.reload(), 250);
+  }
+
+  if (window.location.hostname === "auth.openai.com") {
+    recoverAuthRoute();
+    return;
+  }
+  if (window.location.hostname !== "chatgpt.com") return;
+
+  const startedAt = window.performance?.now?.() || 0;
+  let reloadScheduled = false;
+  let pendingClick = null;
+  let replayTimer = null;
+  let replayingClick = false;
 
   function messageOf(reason) {
     if (typeof reason === "string") return reason;
