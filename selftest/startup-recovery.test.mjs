@@ -13,6 +13,9 @@ const dynamicModuleError =
 
 function harness({
   hostname = "chatgpt.com",
+  pathname = "/",
+  bodyText = "",
+  sessionStore = new Map(),
   navigationType = "navigate",
   initialNow = 0,
   readyState = "loading",
@@ -32,6 +35,7 @@ function harness({
 
   const document = {
     readyState,
+    body: { innerText: bodyText, textContent: bodyText },
     addEventListener(type, callback) { documentListeners.set(type, callback); },
     querySelector(selector) {
       if (selector.includes('input[type="email"]')) return authVisible ? {} : null;
@@ -44,7 +48,13 @@ function harness({
     document,
     location: {
       hostname,
+      pathname,
       reload() { reloads += 1; },
+    },
+    sessionStorage: {
+      getItem(key) { return sessionStore.get(key) ?? null; },
+      removeItem(key) { sessionStore.delete(key); },
+      setItem(key, value) { sessionStore.set(key, String(value)); },
     },
     performance: {
       now: () => now,
@@ -175,6 +185,45 @@ test("does not loop after a reload navigation", () => {
 test("does not install recovery outside chatgpt.com", () => {
   const page = harness({ hostname: "example.com" });
   assert.equal(page.listenerCount(), 0);
+});
+
+test("reloads the observed OpenAI HTML auth error once", () => {
+  const sessionStore = new Map();
+  const options = {
+    hostname: "auth.openai.com",
+    pathname: "/api/accounts/authorize",
+    bodyText: 'Route Error (400 Invalid content type: text/html; charset=UTF-8): "Invalid content type: text/html; charset=UTF-8"',
+    readyState: "complete",
+    sessionStore,
+  };
+
+  const firstLoad = harness(options);
+  firstLoad.flushTimers();
+  assert.equal(firstLoad.reloadCount(), 1);
+
+  const reloadedError = harness({ ...options, navigationType: "reload" });
+  reloadedError.flushTimers();
+  assert.equal(reloadedError.reloadCount(), 0);
+});
+
+test("leaves normal and unrelated OpenAI auth pages untouched", () => {
+  const normalAuth = harness({
+    hostname: "auth.openai.com",
+    pathname: "/api/accounts/authorize",
+    bodyText: "Continue to ChatGPT",
+    readyState: "complete",
+  });
+  const unrelatedPath = harness({
+    hostname: "auth.openai.com",
+    pathname: "/password-reset",
+    bodyText: "Route Error (400 Invalid content type: text/html; charset=UTF-8)",
+    readyState: "complete",
+  });
+
+  normalAuth.flushTimers();
+  unrelatedPath.flushTimers();
+  assert.equal(normalAuth.reloadCount(), 0);
+  assert.equal(unrelatedPath.reloadCount(), 0);
 });
 
 test("replays one early login click after ChatGPT hydration completes", () => {

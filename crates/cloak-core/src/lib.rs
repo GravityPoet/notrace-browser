@@ -4403,6 +4403,7 @@ mod tests {
 	              "declarative_net_request": { "rule_resources": [] },
 	              "content_scripts": [
 	                { "matches": ["https://chatgpt.com/*"], "js": ["startup-recovery.js"] },
+	                { "matches": ["https://auth.openai.com/*"], "js": ["startup-recovery.js"] },
 	                { "matches": ["https://*/*"], "js": ["spoof.js"] }
 	              ]
 	            }"#,
@@ -4416,10 +4417,14 @@ mod tests {
             .get("content_scripts")
             .and_then(Value::as_array)
             .expect("the unrelated startup recovery script must remain");
-        assert_eq!(scripts.len(), 1);
+        assert_eq!(scripts.len(), 2);
         assert_eq!(
             scripts[0].pointer("/js/0").and_then(Value::as_str),
             Some("startup-recovery.js")
+        );
+        assert_eq!(
+            scripts[1].pointer("/matches/0").and_then(Value::as_str),
+            Some("https://auth.openai.com/*")
         );
         assert!(stripped.get("host_permissions").is_none());
         assert!(stripped.get("background").is_none());
