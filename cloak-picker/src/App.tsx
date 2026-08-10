@@ -1895,7 +1895,6 @@ export default function App() {
   }
 
   async function launchAccount(account: Account) {
-    if (account.trashed) return;
     // A row launches on double click, which bypasses the button's disabled
     // state. Without this guard the second call cancels the first, so the user
     // is told "启动已取消" while a third launch quietly opens the browser.
@@ -2435,7 +2434,6 @@ export default function App() {
                   onMoveAccountDrag={moveAccountPointerDrag}
                   onMoveAccountFromKeyboard={moveAccountFromKeyboard}
                   onOpenAccountContextMenu={openAccountContextMenu}
-                  onRestoreAccount={restoreAccount}
                   onSelectAccount={handleAccountSelection}
                   onStartAccountDrag={startAccountPointerDrag}
                   onToggleCollapse={toggleGroupCollapse}
@@ -2490,10 +2488,27 @@ export default function App() {
                   ) : null}
                 </div>
                 {selected.trashed ? (
-                  <button className="launchButton" disabled={busy} onClick={() => void restoreAccount(selected)}>
-                    <ArchiveRestore size={16} />
-                    恢复
-                  </button>
+                  <div className="detailHeaderControl">
+                    <div className="detailHeaderActions">
+                      <button className="secondaryButton" disabled={busy} onClick={() => void restoreAccount(selected)}>
+                        <ArchiveRestore size={16} />
+                        恢复
+                      </button>
+                      <button
+                        className="launchButton"
+                        disabled={busy || (launchStatusIsPending && launchStatus?.target !== "chatgpt")}
+                        title="启动账号但保持回收站状态"
+                        onClick={() => void (
+                          launchStatusIsPending && launchStatus?.target === "chatgpt"
+                            ? cancelLaunch(selected)
+                            : launchAccount(selected)
+                        )}
+                      >
+                        {launchStatusIsPending && launchStatus?.target === "chatgpt" ? <X size={16} /> : <Play size={16} />}
+                        {launchStatusIsPending && launchStatus?.target === "chatgpt" ? "取消" : "临时启动"}
+                      </button>
+                    </div>
+                  </div>
                 ) : (
                   <div className="detailHeaderControl">
                     <div className="detailHeaderActions">
@@ -2916,7 +2931,6 @@ function AccountGroupSection({
   onMoveAccountDrag,
   onMoveAccountFromKeyboard,
   onOpenAccountContextMenu,
-  onRestoreAccount,
   onSelectAccount,
   onStartAccountDrag,
   onToggleCollapse,
@@ -2938,7 +2952,6 @@ function AccountGroupSection({
   onMoveAccountDrag: (event: PointerEvent<HTMLButtonElement>) => void;
   onMoveAccountFromKeyboard: (event: KeyboardEvent<HTMLButtonElement>, account: Account) => void;
   onOpenAccountContextMenu: (event: MouseEvent<HTMLButtonElement>, account: Account) => void;
-  onRestoreAccount: (account: Account) => Promise<void>;
   onSelectAccount: (name: string) => void;
   onStartAccountDrag: (event: PointerEvent<HTMLButtonElement>, account: Account) => void;
   onToggleCollapse: (groupLabel: string) => void;
@@ -3000,11 +3013,7 @@ function AccountGroupSection({
                   onDoubleClick={(event) => {
                     const target = event.target;
                     if (target instanceof Element && target.closest(".dragHandle")) return;
-                    if (account.trashed) {
-                      void onRestoreAccount(account);
-                    } else {
-                      void onLaunchAccount(account);
-                    }
+                    void onLaunchAccount(account);
                   }}
                   onKeyDown={searching ? undefined : (event) => onMoveAccountFromKeyboard(event, account)}
                   onLostPointerCapture={searching ? undefined : (event) => onFinishAccountDrag(event, true)}
