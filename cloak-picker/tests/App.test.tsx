@@ -874,7 +874,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(dialog.querySelector('button[aria-label^="修改 Plus 的颜色"]')).toBeNull();
   });
 
-  it("keeps legacy archived accounts in the trash workflow", async () => {
+  it("temporarily launches a trashed account without restoring it", async () => {
     const accountSearch = document.querySelector<HTMLInputElement>('input[type="search"]');
     expect(accountSearch?.placeholder).toBe("搜索所有账号、分组、标记或备注");
     expect(accountSearch?.closest(".topbar")).not.toBeNull();
@@ -890,11 +890,30 @@ describe("Cloak Picker dialog regressions", () => {
     await click(archivedAccount as HTMLButtonElement);
 
     expect(document.querySelector(".detail")?.textContent).toContain("已移入回收站");
+    expect(buttonWithText("临时启动")).toBeTruthy();
     expect(buttonWithText("恢复账号")).toBeTruthy();
     expect(buttonWithText("彻底删除")).toBeTruthy();
-    expect(Array.from(document.querySelectorAll("button")).some((button) => button.textContent?.trim() === "启动")).toBe(
-      false,
-    );
+
+    await click(buttonWithText("临时启动"));
+    await settle(260);
+
+    expect(mockCommandCountForTest("launch_account")).toBe(1);
+    expect(mockCommandCountForTest("restore_account")).toBe(0);
+    expect(document.querySelector(".detail")?.textContent).toContain("已移入回收站");
+  });
+
+  it("double-clicks a trashed account to launch without restoring it", async () => {
+    await click(buttonWithText("回收站"));
+    await settle(120);
+
+    const archivedAccount = accountRow("demo-gamma");
+    await act(async () => {
+      archivedAccount.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    await settle(260);
+
+    expect(mockCommandCountForTest("launch_account")).toBe(1);
+    expect(mockCommandCountForTest("restore_account")).toBe(0);
   });
 
   it("orders the recycle bin from newest deletion to oldest across original groups", async () => {

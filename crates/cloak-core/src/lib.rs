@@ -831,10 +831,6 @@ fn build_launch_plan_for_url(
     }
 
     let profile_path = config.profile_dir(name);
-    if profile_path.join(".cloak-trashed").exists() || profile_path.join(".cloak-archived").exists()
-    {
-        return Err(CloakError::AccountTrashed(name.to_string()));
-    }
     let seed = pinned_seed(&profile_path)?.unwrap_or_else(|| legacy_seed(name));
     let extension_runtime_path = profile_path.join(".cloak-companion");
     let extension_plan = discover_extra_extensions(config, &profile_path, &extension_runtime_path)?;
@@ -3775,6 +3771,41 @@ mod tests {
         assert_eq!(restored.seed, account.seed);
         assert_eq!(list_accounts(&config).unwrap().len(), 1);
         assert!(list_trashed_accounts(&config).unwrap().is_empty());
+    }
+
+    #[test]
+    fn trashed_account_launch_plan_preserves_trash_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = CloakConfig {
+            repo_root: dir.path().to_path_buf(),
+            account_base: dir.path().join("accounts"),
+            extension_source: dir.path().join("extension"),
+            cloakbrowser_root: dir.path().join("browser"),
+        };
+        fs::create_dir_all(&config.extension_source).unwrap();
+        let browser = config
+            .cloakbrowser_root
+            .join(current_browser_relative_path());
+        fs::create_dir_all(browser.parent().unwrap()).unwrap();
+        fs::write(&browser, "").unwrap();
+
+        create_account(&config, "work").unwrap();
+        delete_account(&config, "work").unwrap();
+
+        let plan = build_launch_plan(
+            &config,
+            "work",
+            &LaunchOptions {
+                dry_run: true,
+                skip_geo: true,
+                ..LaunchOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.account, "work");
+        assert!(list_accounts(&config).unwrap().is_empty());
+        assert_eq!(list_trashed_accounts(&config).unwrap()[0].name, "work");
     }
 
     #[test]
