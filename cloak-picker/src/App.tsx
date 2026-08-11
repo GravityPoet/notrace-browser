@@ -5126,7 +5126,7 @@ function mockLaunchPlan(account: Account, full: boolean): LaunchPlan {
       relay_needed: account.has_proxy,
     },
     geo: full
-      ? { exit_ip: "45.92.159.252", country: account.region, timezone: account.region === "JP" ? "Asia/Tokyo" : "America/Los_Angeles" }
+      ? { exit_ip: "45.92.159.246", country: account.region, timezone: account.region === "JP" ? "Asia/Tokyo" : "America/Los_Angeles" }
       : { exit_ip: null, country: null, timezone: null },
     geo_cache_hit: false,
     locale: account.locale_enabled ? "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7" : null,
