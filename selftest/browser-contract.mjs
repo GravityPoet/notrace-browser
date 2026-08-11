@@ -1,5 +1,6 @@
 const MAC_UA_VERSION = "10_15_7";
 const MAC_PLATFORM_VERSION = "15.5.0";
+const NATIVE_IDENTITY_148_RELEASE = "148.0.7778.215.3";
 
 const falsy = (value) => /^(0|off|false|no)$/i.test(String(value ?? ""));
 
@@ -34,6 +35,25 @@ export function browserIdentityForVersion(version) {
       model: "",
     },
   };
+}
+
+export function distributionVersionFromPath(binaryPath) {
+  return String(binaryPath || "").match(
+    /\/chromium-(\d+(?:\.\d+){3,4})(?:-pro)?(?:-notrace)?\/Chromium\.app\//,
+  )?.[1] || "";
+}
+
+export function nativeEngineIdentitySupported(version) {
+  const major = Number.parseInt(String(version?.major ?? ""), 10);
+  if (Number.isInteger(major) && major >= 150) return true;
+  if (major !== 148) return false;
+  const current = String(version?.distribution || "").split(".").map(Number);
+  const minimum = NATIVE_IDENTITY_148_RELEASE.split(".").map(Number);
+  for (let index = 0; index < Math.max(current.length, minimum.length); index += 1) {
+    if ((current[index] || 0) > (minimum[index] || 0)) return true;
+    if ((current[index] || 0) < (minimum[index] || 0)) return false;
+  }
+  return current.length > 0;
 }
 
 export function companionPageSpoofEnabled(env = process.env) {

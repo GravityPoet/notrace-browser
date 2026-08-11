@@ -5,7 +5,7 @@
 NoTrace Browser is a source-available, macOS-focused orchestration and multi-account management client for a separately installed **CloakBrowser C++-patched Chromium engine**. This repository provides the native picker, CLI, profile isolation, proxy relay, companion extension, and packaging scripts; it does not contain or redistribute the CloakBrowser binary.
 
 > [!IMPORTANT]
-> **The client and browser engine have separate distribution terms.** Obtain CloakBrowser from its [official repository](https://github.com/CloakHQ/CloakBrowser), [releases](https://github.com/CloakHQ/CloakBrowser/releases), or [website](https://cloakbrowser.dev/). Upstream currently describes its wrappers as MIT-licensed and its binary as a delayed free-release model (an older build is free, while the latest build is Pro). Check the current upstream terms before use or redistribution. This NoTrace repository does not currently include a project license, so source availability alone does not grant reuse or redistribution rights.
+> **The client, wrapper, and browser engine have separate distribution terms.** Obtain CloakBrowser through its [official repository](https://github.com/CloakHQ/CloakBrowser), [releases](https://github.com/CloakHQ/CloakBrowser/releases), or [website](https://cloakbrowser.dev/). Upstream currently publishes MIT-licensed wrappers; a validated free GitHub key can resolve the latest keyed binary with a one-session limit, while the keyless route remains on an older build. That does not make the binary open source. Check the current binary terms before use, modification, or redistribution. This NoTrace repository does not currently include a project license, so source availability alone does not grant reuse or redistribution rights.
 
 ---
 
@@ -23,7 +23,7 @@ graph TD
     B -->|C++ Fingerprint Patches| C[Spoofed Canvas, WebGL, Audio & Client Hints]
     B -->|Proxy Relay Launcher| D[Authenticated SOCKS5 Exit]
     B -->|TZ env + engine timezone flag| E[Intl Timezone matched in page and Worker]
-    B -->|TCC Patched Engine| F[Microphone Voice / Bluetooth Passkeys]
+    B -->|TCC-ready Signed Engine| F[Microphone Voice / Bluetooth Passkeys]
     D -->|Target Network| G[Websites / AI / Web3 / Socials / eCommerce]
 ```
 
@@ -47,13 +47,13 @@ NoTrace Browser combines CloakBrowser's source-level engine patches with a compa
 Normal launches are **native-first**: they use CloakBrowser's engine patches and a stable seed without injecting Navigator/Canvas/Audio hooks into every page or replacing page `Function.prototype.toString`. The legacy page spoof is opt-in via `CLOAK_COMPANION_PAGE_SPOOF=1` and is not recommended for strict bot-detection targets.
 
 ### 1. WebGL & GPU Masking
-Instead of reporting your physical GPU model (e.g., `Apple M4 Pro`), NoTrace overrides rendering parameters to report a generic Metal string (`ANGLE (Apple, ANGLE Metal Renderer: Apple M1-M4, Unspecified Version)`) with vendor `Google Inc. (Apple)`. This aims to reduce renderer inconsistencies that can contribute to CreepJS's `like headless` flags.
+The legacy macOS 145 engine receives the explicit, seed-stable Apple Metal renderer compatibility flags it requires. The fixed macOS `148.0.7778.215.3` line and CloakBrowser 150+ keep the engine's native GPU identity authoritative; NoTrace deliberately does not stack an external renderer override on top of those source-level patches.
 
 ### 2. Physical WebRTC Isolation
 Utilizing CloakBrowser's `--fingerprint-webrtc-ip`, NoTrace asks supported engine builds to present the configured proxy exit IP in WebRTC candidates. Verify the result after every engine or proxy change because browser, network, and proxy behavior can still affect leakage tests.
 
 ### 3. UA & Client Hints Consistency
-Modifying the User Agent alone creates a version-consistency discrepancy. NoTrace uses CloakBrowser's supported `Chrome` brand token to align the UA, product versions, `fullVersionList`, `platformVersion`, and `architecture`. When companion header rules are explicitly enabled, they emit only the low-entropy hints Chrome sends proactively and never force high-entropy hints onto every request. The current macOS 145 engine still reports an empty `bitness`, which the live audit records as an upstream limitation.
+Modifying the User Agent alone creates a version-consistency discrepancy. NoTrace retains its explicit UA/brand/platform compatibility flags for macOS 145 and earlier 148 revisions. The fixed `148.0.7778.215.3` distribution and CloakBrowser 150+ use the native engine identity, matching the official guidance for those builds. When companion header rules are explicitly enabled, they emit only the low-entropy hints Chrome sends proactively and never force high-entropy hints onto every request. The macOS 145 engine still reports an empty `bitness`, which the live audit records as an upstream limitation.
 
 ### 4. Optional Legacy Canvas & Audio Noise
 The page hooks below run only with `CLOAK_COMPANION_PAGE_SPOOF=1`; native seed isolation is the default.
@@ -115,14 +115,15 @@ Chromium without shell interpolation.
 NoTrace Browser is built specifically to feel like a premium application on macOS:
 
 - **Durable Green Icon**: Chromium shims overwrite `app.icns` on updates, stripping custom PWA icons. NoTrace applies a Finder-level custom icon (`kHasCustomIcon` + bundle-root `Icon\r` resource) via `NSWorkspace setIcon:forFile:`. This custom icon is preferred by LaunchServices and **survives browser engine rebuilds**.
-- **Stable TCC Permission Identity**: Chromium compiled ad-hoc lacks microphone, camera, and Bluetooth usage descriptions, and each changed ad-hoc CDHash looks like a different app to macOS. NoTrace injects `NSMicrophoneUsageDescription`, `NSCameraUsageDescription`, and `NSBluetoothAlwaysUsageDescription`, prefers the persistent local signing identity when available, and dispatches every account launch through LaunchServices. Picker, CLI, and per-account tiles therefore share the Chromium TCC identity instead of creating one Bluetooth grant per launcher.
+- **Stable TCC Permission Identity**: The updater never rewrites the wrapper-managed `chromium-<version>[-pro]` source directory. For this machine's own runtime, it copies that bundle to a clearly marked `chromium-<version>[-pro]-notrace` directory, injects the microphone, camera, and Bluetooth usage descriptions, and signs the copy with the persistent local identity. Newly downloaded official archives are checksum/manifest verified by the pinned wrapper; an existing cache hit is only structurally signature-checked and is not mislabeled as freshly verified. The source cache remains independently available, and NoTrace does not package or redistribute the local runtime. Every account launch still goes through LaunchServices.
 
 ---
 
 ## 📁 Runtime Paths & Directory Map
 
 * **Daily PWA App Bundle**: `~/Applications/Chromium Apps.localized/NoTrace Browser.app`
-* **CloakBrowser Core Engine**: `~/.cloakbrowser/chromium-<version>/Chromium.app/Contents/MacOS/Chromium`
+* **Wrapper-managed CloakBrowser Source Cache**: `~/.cloakbrowser/chromium-<version>[-pro]/Chromium.app/Contents/MacOS/Chromium`
+* **Local TCC-ready Runtime**: `~/.cloakbrowser/chromium-<version>[-pro]-notrace/Chromium.app/Contents/MacOS/Chromium`
 * **Default Profile Path**: `~/Library/Application Support/NoTrace Browser/Profiles/main`
 * **Multi-Account Profile Sandbox**: `~/Library/Application Support/NoTrace Browser/Accounts/<name>`
 
@@ -131,7 +132,7 @@ NoTrace Browser is built specifically to feel like a premium application on macO
 ## 🚀 Setup & Installation
 
 ### Prerequisite: Obtain the CloakBrowser Engine Separately
-Follow the current [official installation instructions](https://github.com/CloakHQ/CloakBrowser#install) and complete an initial download or launch so a Chromium bundle exists under `~/.cloakbrowser/chromium-*` (the optional `~/.cloakbrowser/current` symlink is also supported). Choose the upstream free or Pro build according to its current licensing terms. NoTrace installation scripts do not download or license this binary for you.
+Follow the current [official installation instructions](https://github.com/CloakHQ/CloakBrowser#install) and complete an initial download or launch so a Chromium bundle exists under `~/.cloakbrowser/chromium-*` (the optional `~/.cloakbrowser/current` symlink is also supported). Choose the upstream keyless, free-key, or paid tier under its current terms. NoTrace never creates or embeds a license key; its updater delegates later downloads and license validation to the pinned official wrapper.
 
 ### Step 1: Clone the Repository & Build Picker
 Build prerequisites are macOS 12 or later, Xcode Command Line Tools, a stable Rust toolchain, and Node.js 20 or later with npm. The installer automatically runs `npm ci` when frontend dependencies are missing or do not match `package.json`.
@@ -142,20 +143,36 @@ If you want to use the native graphical multi-account picker (Tauri-based):
 ./packaging/install-cloak-picker-app.sh
 ```
 
-### Step 2: Patch Chromium TCC Permissions
-To prevent crashes when using Voice Inputs or Passkeys, patch and sign the CloakBrowser binary:
+### Step 2: Patch TCC Permissions on the Marked Local Runtime
+The updater performs this automatically on its `-notrace` copy. The command can also repair that marked local runtime idempotently, or patch a separately supplied custom Chromium outside the official cache:
 ```bash
 ./packaging/patch-chromium.sh
 ```
-*Note: Run this patcher after every major CloakBrowser update. The scripts automatically use `ChatGPT Cloak Local Code Signing` when that identity is installed, or `CLOAK_CODESIGN_IDENTITY=<name>` when explicitly configured; otherwise they fall back to ad-hoc signing and warn that macOS may ask again after an update.*
+*Note: CloakHQ's current binary license text prohibits modifying every official binary version and contains no personal-use exception. The patcher therefore refuses unsuffixed wrapper-cache `chromium-<version>[-pro]` directories. The local `-notrace` derivative is an explicit machine-local choice and is never included in this repository or redistributed; users remain responsible for the upstream binary terms.*
 
-### Step 3: Apply the Native Green Icon
+### Step 3: Install the Signed Update Staging Chain
+The updater pins the official JavaScript wrapper at `0.5.7`. That wrapper performs license routing and verifies newly downloaded official archives with SHA256 plus an Ed25519-signed manifest. NoTrace leaves the wrapper source cache unchanged, creates and locally signs the `-notrace` copy, then runs its local/live gates and atomically switches `current` only after approval.
+
+```bash
+# Read-only decision
+DRY_RUN=1 ./packaging/update-chromium.sh
+# Install or refresh the daily staging timer
+./packaging/install-updater.sh
+# With all Cloak windows closed: run headed gates and promote an eligible candidate
+CLOAK_UPDATE_LIVE_GATE=1 ./packaging/update-chromium.sh
+# List or atomically select any retained build (including -pro and -notrace targets)
+./packaging/rollback-chromium.sh --list
+```
+
+The exact macOS build `150.0.7871.114.3` is denylisted because upstream confirmed its `browserTampering` regression. It may be downloaded by other tools, but NoTrace will not promote it; a later fixed macOS build must pass both gates.
+
+### Step 4: Apply the Native Green Icon
 Chromium PWAs default to a low-res green badge on a white tile. Set the beautiful, full-bleed macOS green icon:
 ```bash
 ./packaging/set-pwa-icon.sh
 ```
 
-### Step 4: Install the Timezone Companion
+### Step 5: Install the Timezone Companion
 1. Open `chrome://extensions` in your browser.
 2. Toggle **Developer mode** (top-right).
 3. Click **Load unpacked** and select `extension/cloak-companion/` from this repo.
@@ -206,4 +223,4 @@ Validate CLI arguments, contract hooks, and headless privacy engines:
 
 ## 🤝 Credits & Acknowledgements
 
-NoTrace Browser orchestrates a separately obtained **CloakBrowser** Chromium binary and adds a native macOS picker, account workspace management, proxy tooling, and companion integration. The upstream wrapper and binary have distinct licensing and release terms; NoTrace does not bundle the binary, and users or distributors must follow the current [CloakBrowser terms](https://github.com/CloakHQ/CloakBrowser#cloakbrowser-pro).
+NoTrace Browser orchestrates a separately obtained **CloakBrowser** Chromium binary and adds a native macOS picker, account workspace management, proxy tooling, and companion integration. The upstream wrapper and binary have distinct licensing and release terms; NoTrace does not bundle the binary, and users or distributors must review the current [CloakBrowser binary license](https://github.com/CloakHQ/CloakBrowser/blob/main/BINARY-LICENSE.md).

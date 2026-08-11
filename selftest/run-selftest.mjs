@@ -11,6 +11,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -22,15 +23,19 @@ import {
   browserIdentityForVersion,
   browserIdentityHeaderRules,
   companionPageSpoofEnabled,
+  distributionVersionFromPath,
+  nativeEngineIdentitySupported,
   parseChromiumVersion,
 } from "./browser-contract.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const HOME = process.env.HOME;
-const BIN = process.env.CLOAK_BROWSER_BIN || `${HOME}/.cloakbrowser/current/Chromium.app/Contents/MacOS/Chromium`;
+const REQUESTED_BIN = process.env.CLOAK_BROWSER_BIN || `${HOME}/.cloakbrowser/current/Chromium.app/Contents/MacOS/Chromium`;
+const BIN = existsSync(REQUESTED_BIN) ? realpathSync(REQUESTED_BIN) : REQUESTED_BIN;
 const PROBE_PATH = join(__dir, "probe.html");
 const EXT_SOURCE = join(dirname(__dir), "extension", "cloak-companion");
 let BROWSER_IDENTITY = null;
+let BROWSER_VERSION = null;
 
 const defaults = {
   seed: "24680",
@@ -264,10 +269,6 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
     "--remote-debugging-port=0",
     `--fingerprint=${seed}`,
     "--fingerprint-platform=macos",
-    `--user-agent=${BROWSER_IDENTITY.userAgent}`,
-    "--fingerprint-brand=Chrome",
-    `--fingerprint-brand-version=${BROWSER_IDENTITY.uaData.uaFullVersion}`,
-    `--fingerprint-platform-version=${BROWSER_IDENTITY.uaData.platformVersion}`,
     "--ignore-gpu-blocklist",
     "--test-type",
     "--disable-blink-features=AutomationControlled",
@@ -276,6 +277,14 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
     "--no-default-browser-check",
     "--remote-allow-origins=*",
   ];
+  if (!nativeEngineIdentitySupported(BROWSER_VERSION)) {
+    args.push(
+      `--user-agent=${BROWSER_IDENTITY.userAgent}`,
+      "--fingerprint-brand=Chrome",
+      `--fingerprint-brand-version=${BROWSER_IDENTITY.uaData.uaFullVersion}`,
+      `--fingerprint-platform-version=${BROWSER_IDENTITY.uaData.platformVersion}`,
+    );
+  }
   if (opts.headless) {
     args.push("--headless=new", "--window-size=1440,900", "--force-device-scale-factor=2");
   }
@@ -568,7 +577,9 @@ async function main() {
   if (versionResult.status !== 0) {
     throw new Error(`could not read browser version: ${versionResult.stderr || versionResult.stdout}`);
   }
-  BROWSER_IDENTITY = browserIdentityForVersion(parseChromiumVersion(versionResult.stdout));
+  BROWSER_VERSION = parseChromiumVersion(versionResult.stdout);
+  BROWSER_VERSION.distribution = distributionVersionFromPath(BIN);
+  BROWSER_IDENTITY = browserIdentityForVersion(BROWSER_VERSION);
   const server = await startProbeServer();
 
   try {

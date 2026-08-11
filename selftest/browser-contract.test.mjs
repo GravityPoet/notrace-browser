@@ -5,6 +5,8 @@ import {
   browserIdentityForVersion,
   browserIdentityHeaderRules,
   companionPageSpoofEnabled,
+  distributionVersionFromPath,
+  nativeEngineIdentitySupported,
   parseChromiumVersion,
   redactProxyCredentials,
 } from "./browser-contract.mjs";
@@ -18,6 +20,31 @@ test("browser identity follows the installed Chromium version", () => {
   assert.equal(identity.uaData.brands[0].version, "145");
   assert.equal(identity.uaData.fullVersionList[0].version, "145.0.7632.109");
   assert.equal(identity.uaData.uaFullVersion, "145.0.7632.109");
+});
+
+test("new engine generations keep native identity surfaces authoritative", () => {
+  assert.equal(nativeEngineIdentitySupported({ major: "145" }), false);
+  assert.equal(
+    nativeEngineIdentitySupported({ major: "148", distribution: "148.0.7778.215.2" }),
+    false,
+  );
+  assert.equal(
+    nativeEngineIdentitySupported({ major: "148", distribution: "148.0.7778.215.3" }),
+    true,
+  );
+  assert.equal(nativeEngineIdentitySupported({ major: "150" }), true);
+  assert.equal(
+    distributionVersionFromPath(
+      "/Users/example/.cloakbrowser/chromium-150.0.7871.114.3-pro/Chromium.app/Contents/MacOS/Chromium",
+    ),
+    "150.0.7871.114.3",
+  );
+  assert.equal(
+    distributionVersionFromPath(
+      "/Users/example/.cloakbrowser/chromium-150.0.7871.114.4-pro-notrace/Chromium.app/Contents/MacOS/Chromium",
+    ),
+    "150.0.7871.114.4",
+  );
 });
 
 test("companion page spoof is opt-in", () => {

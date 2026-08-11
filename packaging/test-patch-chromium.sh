@@ -58,6 +58,33 @@ after_repeat="$(cdhash "$APP")"
   exit 1
 }
 
+OFFICIAL_ROOT="$TMP_ROOT/official-cache"
+OFFICIAL_APP="$OFFICIAL_ROOT/chromium-145.0.7632.109.2/Chromium.app"
+mkdir -p "$(dirname "$OFFICIAL_APP")"
+cp -R "$APP" "$OFFICIAL_APP"
+if CLOAKBROWSER_DIR="$OFFICIAL_ROOT" CLOAK_CODESIGN_IDENTITY=- \
+  CLOAK_BROWSER_APP="$OFFICIAL_APP" "$PATCH_SCRIPT" >/dev/null 2>&1; then
+  printf '%s\n' "error: official CloakBrowser distribution was modified" >&2
+  exit 1
+fi
+/usr/bin/codesign --verify --deep --strict "$OFFICIAL_APP"
+
+LOCAL_RUNTIME_DIR="$OFFICIAL_ROOT/chromium-145.0.7632.109.2-notrace"
+LOCAL_RUNTIME_APP="$LOCAL_RUNTIME_DIR/Chromium.app"
+mkdir -p "$LOCAL_RUNTIME_DIR"
+cp -R "$APP" "$LOCAL_RUNTIME_APP"
+printf '%s\n' 'NoTrace local runtime v1' >"$LOCAL_RUNTIME_DIR/.notrace-local-runtime"
+"$PLISTBUDDY" -c 'Delete :NSMicrophoneUsageDescription' \
+  "$LOCAL_RUNTIME_APP/Contents/Info.plist"
+CLOAKBROWSER_DIR="$OFFICIAL_ROOT" CLOAK_CODESIGN_IDENTITY=- \
+  CLOAK_BROWSER_APP="$LOCAL_RUNTIME_APP" "$PATCH_SCRIPT" >/dev/null
+[[ "$("$PLISTBUDDY" -c 'Print :NSMicrophoneUsageDescription' \
+  "$LOCAL_RUNTIME_APP/Contents/Info.plist")" == "ChatGPT voice input uses the microphone." ]] || {
+  printf '%s\n' "error: marked local runtime was not patched" >&2
+  exit 1
+}
+/usr/bin/codesign --verify --deep --strict "$LOCAL_RUNTIME_APP"
+
 if cloak_codesign_identity_exists "$CLOAK_DEFAULT_CODESIGN_IDENTITY"; then
   CLOAK_BROWSER_APP="$APP" "$PATCH_SCRIPT" >/dev/null
   cloak_signature_matches_identity "$APP" "$CLOAK_DEFAULT_CODESIGN_IDENTITY" || {
