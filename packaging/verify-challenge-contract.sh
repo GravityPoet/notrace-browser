@@ -57,7 +57,7 @@ cargo build -p cloak-cli >/dev/null
 LOCALE=1 "$ROOT/target/debug/cloak" launch "$ACCOUNT_NAME" --dry-run --json > "$tmpdir/rust-plan.json"
 LOCALE=1 DRY_RUN=1 "$ROOT/packaging/launch-account.sh" "$ACCOUNT_NAME" > "$tmpdir/bash-dry-run.txt"
 
-node - "$tmpdir/rust-plan.json" <<'NODE'
+node - "$tmpdir/rust-plan.json" "$tmpdir/identity-mode" <<'NODE'
 const fs = require("fs");
 const plan = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const argv = plan.argv || [];
@@ -71,7 +71,13 @@ function assert(condition, message) {
 assert(argv.some((arg) => arg.startsWith("--user-data-dir=")), "missing --user-data-dir");
 assert(argv.some((arg) => arg.startsWith("--fingerprint=")), "missing --fingerprint");
 assert(argv.includes("--fingerprint-platform=macos"), "missing --fingerprint-platform=macos");
-assert(argv.some((arg) => arg.startsWith("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")), "missing coherent macOS --user-agent");
+const nativeIdentity = !argv.some((arg) => arg.startsWith("--user-agent="));
+fs.writeFileSync(process.argv[3], nativeIdentity ? "native\n" : "legacy\n");
+if (nativeIdentity) {
+  assert(!argv.some((arg) => arg.startsWith("--user-agent=")), "modern engine must keep native --user-agent");
+} else {
+  assert(argv.some((arg) => arg.startsWith("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")), "legacy engine missing coherent macOS --user-agent");
+}
 assert(argv.some((arg) => arg.startsWith("--load-extension=")), "missing --load-extension");
 assert(!argv.some((arg) => arg.startsWith("--disable-extensions-except=")), "--disable-extensions-except blocks Web Store installs");
 assert(argv.includes("--ip-address-space-overrides=198.18.0.0/15=public,[fdfe:dcba:9876::]/48=public"), "missing fake-IP address-space override");
@@ -84,10 +90,16 @@ assert(argv.some((arg) => arg.startsWith("--lang=")), "missing --lang");
 assert(argv.some((arg) => arg.startsWith("--fingerprint-locale=")), "missing --fingerprint-locale");
 assert(argv.some((arg) => arg.startsWith("--accept-lang=")), "missing --accept-lang");
 assert(argv.some((arg) => arg.startsWith("--fingerprint-webrtc-ip=")), "missing --fingerprint-webrtc-ip");
-assert(argv.some((arg) => arg.startsWith("--fingerprint-brand-version=")), "missing --fingerprint-brand-version");
-assert(argv.some((arg) => arg.startsWith("--fingerprint-platform-version=")), "missing --fingerprint-platform-version");
-assert(argv.some((arg) => arg.startsWith("--fingerprint-gpu-vendor=")), "missing --fingerprint-gpu-vendor");
-assert(argv.some((arg) => arg.startsWith("--fingerprint-gpu-renderer=")), "missing --fingerprint-gpu-renderer");
+for (const prefix of [
+  "--fingerprint-brand=",
+  "--fingerprint-brand-version=",
+  "--fingerprint-platform-version=",
+  "--fingerprint-gpu-vendor=",
+  "--fingerprint-gpu-renderer=",
+]) {
+  const present = argv.some((arg) => arg.startsWith(prefix));
+  assert(nativeIdentity ? !present : present, `${nativeIdentity ? "modern" : "legacy"} engine identity flag mismatch: ${prefix}`);
+}
 assert(plan.browser_identity?.userAgent?.includes("Mac OS X 10_15_7"), "browser identity missing coherent UA");
 assert(plan.browser_identity?.uaData?.platform === "macOS", "browser identity missing low-entropy UA-CH platform");
 assert(plan.browser_identity?.uaData?.platformVersion === "15.5.0", "browser identity missing platformVersion");
@@ -110,8 +122,15 @@ NODE
 if LC_ALL=C grep -aq -- "--disable-extensions-except=" "$tmpdir/bash-dry-run.txt"; then
   fail "Bash dry-run blocks Web Store installs with --disable-extensions-except"
 fi
-LC_ALL=C grep -aq -- "--user-agent=Mozilla/5.0" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --user-agent"
-LC_ALL=C grep -aq -- "10_15_7" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing coherent macOS UA version"
+identity_mode="$(awk 'NR == 1 { print $1 }' "$tmpdir/identity-mode")"
+if [[ "$identity_mode" == "native" ]]; then
+  if LC_ALL=C grep -aq -- "--user-agent=" "$tmpdir/bash-dry-run.txt"; then
+    fail "Bash dry-run overrides modern engine user-agent"
+  fi
+else
+  LC_ALL=C grep -aq -- "--user-agent=Mozilla/5.0" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing legacy --user-agent"
+  LC_ALL=C grep -aq -- "10_15_7" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing coherent legacy macOS UA version"
+fi
 LC_ALL=C grep -Fq -- "--ip-address-space-overrides=198.18.0.0/15=public" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing IPv4 fake-IP address-space override"
 LC_ALL=C grep -Fq -- "fdfe:dcba:9876::" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing IPv6 fake-IP address-space override"
 LC_ALL=C grep -aq -- "--ignore-gpu-blocklist" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --ignore-gpu-blocklist"
@@ -122,10 +141,22 @@ fi
 LC_ALL=C grep -aq -- "--disable-blink-features=AutomationControlled" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing AutomationControlled blink feature guard"
 LC_ALL=C grep -aq -- "--fingerprint-timezone=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --fingerprint-timezone"
 LC_ALL=C grep -aq -- "--fingerprint-webrtc-ip=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --fingerprint-webrtc-ip"
-LC_ALL=C grep -aq -- "--fingerprint-brand-version=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --fingerprint-brand-version"
-LC_ALL=C grep -aq -- "--fingerprint-platform-version=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --fingerprint-platform-version"
-LC_ALL=C grep -aq -- "--fingerprint-gpu-vendor=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --fingerprint-gpu-vendor"
-LC_ALL=C grep -aq -- "--fingerprint-gpu-renderer=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --fingerprint-gpu-renderer"
+for identity_flag in \
+  --fingerprint-brand= \
+  --fingerprint-brand-version= \
+  --fingerprint-platform-version= \
+  --fingerprint-gpu-vendor= \
+  --fingerprint-gpu-renderer=
+do
+  if [[ "$identity_mode" == "native" ]]; then
+    if LC_ALL=C grep -aq -- "$identity_flag" "$tmpdir/bash-dry-run.txt"; then
+      fail "Bash dry-run overrides modern engine identity: $identity_flag"
+    fi
+  else
+    LC_ALL=C grep -aq -- "$identity_flag" "$tmpdir/bash-dry-run.txt" \
+      || fail "Bash dry-run missing legacy identity flag: $identity_flag"
+  fi
+done
 if LC_ALL=C grep -aq "沉浸式翻译" "$tmpdir/bash-dry-run.txt"; then
   fail "Bash dry-run default-loaded immersive translate"
 fi

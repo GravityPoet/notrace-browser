@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$ROOT/packaging/codesign-common.sh"
 
-# Patch the CloakBrowser Chromium so ChatGPT voice/camera/passkey do not crash macOS TCC.
+# Patch a locally built Chromium so ChatGPT voice/camera/passkey do not crash macOS TCC.
 #
 # CloakBrowser ships an ad-hoc Chromium whose Info.plist has no NSMicrophoneUsageDescription.
 # On macOS, the instant a process touches the microphone (ChatGPT getUserMedia) without that
@@ -22,8 +22,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # into the main app and its helper bundles, then sign with the persistent local identity when
 # available. Its designated requirement stays stable even when an upgrade changes the CDHash.
 # Machines without that identity retain the ad-hoc fallback, and unchanged valid signatures are
-# still left alone. CloakBrowser upgrades replace Chromium and drop the keys again, so re-run
-# after every CloakBrowser upgrade.
+# still left alone. Unsuffixed wrapper-managed cache directories are always excluded. The updater
+# leaves those exact directories unchanged and applies this patch only to a local-only `-notrace`
+# runtime copy. NoTrace never packages or redistributes that local derivative.
 #
 # Note: Chromium is intentionally NOT rebranded. The green ChatGPT identity belongs to the
 # NoTrace Browser launcher; the Chromium it drives stays a plain browser so the two are distinct.
@@ -42,16 +43,41 @@ if [[ -n "${CLOAK_BROWSER_APP:-}" ]]; then
 elif [[ -n "${CLOAK_BROWSER_VERSION_DIR:-}" ]]; then
   APPS=("$CLOAK_BROWSER_VERSION_DIR/Chromium.app")
 else
-  APPS=("$CLOAK_DIR"/chromium-*/Chromium.app)
+  APPS=("$CLOAK_DIR"/chromium-*-notrace/Chromium.app)
 fi
 if [[ ${#APPS[@]} -eq 0 ]]; then
   printf 'error: no CloakBrowser Chromium found under %s\n' "$CLOAK_DIR" >&2
   exit 1
 fi
+CLOAK_REAL=""
+if [[ -d "$CLOAK_DIR" ]]; then
+  CLOAK_REAL="$(cd "$CLOAK_DIR" && pwd -P)"
+fi
+
 for APP in "${APPS[@]}"; do
   if [[ ! -d "$APP" ]]; then
     printf 'error: Chromium.app not found: %s\n' "$APP" >&2
     exit 1
+  fi
+  APP_REAL="$(cd "$APP" && pwd -P)"
+  APP_PARENT="$(dirname "$APP_REAL")"
+  APP_PARENT_NAME="$(basename "$APP_PARENT")"
+  if [[ -n "$CLOAK_REAL" ]]; then
+    case "$APP_REAL" in
+      "$CLOAK_REAL"/chromium-*/Chromium.app)
+        if [[ "$APP_PARENT_NAME" != *-notrace || ! -f "$APP_PARENT/.notrace-local-runtime" ]]; then
+          printf 'error: refusing to modify a wrapper-managed CloakBrowser source bundle: %s\n' "$APP" >&2
+          printf 'the updater must first copy it to a marked chromium-*-notrace runtime\n' >&2
+          exit 1
+        fi
+        ;;
+      "$CLOAK_REAL"/update-staging/*/Chromium.app)
+        if [[ "${CLOAK_LOCAL_RUNTIME_PATCH:-}" != "1" || "$APP_PARENT_NAME" != *-notrace || ! -f "$APP_PARENT/.notrace-local-runtime" ]]; then
+          printf 'error: refusing to patch an unmarked updater staging bundle: %s\n' "$APP" >&2
+          exit 1
+        fi
+        ;;
+    esac
   fi
 done
 

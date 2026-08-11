@@ -27,6 +27,7 @@ const CHATGPT_URL: &str = "https://chatgpt.com/";
 const CHROME_WEB_STORE_URL: &str = "https://chromewebstore.google.com/";
 const RELAY_PLACEHOLDER: &str = "socks5://127.0.0.1:<relay-port>";
 const CLOAK_CHROME_MAJOR_FALLBACK: &str = "145";
+const CLOAK_NATIVE_IDENTITY_148_RELEASE: &str = "148.0.7778.215.3";
 const CLOAK_MAC_UA_VERSION: &str = "10_15_7";
 const CLOAK_MAC_PLATFORM_VERSION: &str = "15.5.0";
 const HTTPS_ONLY_MODE_PREF: &str = "https_only_mode_enabled";
@@ -68,6 +69,7 @@ fn gpu_renderer_for_seed(seed: &str) -> &'static str {
 struct EngineVersion {
     major: String,
     full: String,
+    distribution: String,
 }
 
 impl EngineVersion {
@@ -75,6 +77,18 @@ impl EngineVersion {
         Self {
             major: CLOAK_CHROME_MAJOR_FALLBACK.to_string(),
             full: format!("{CLOAK_CHROME_MAJOR_FALLBACK}.0.0.0"),
+            distribution: format!("{CLOAK_CHROME_MAJOR_FALLBACK}.0.0.0"),
+        }
+    }
+
+    fn uses_native_identity(&self) -> bool {
+        match self.major.parse::<u64>() {
+            Ok(major) if major >= 150 => true,
+            Ok(148) => {
+                numeric_version_components(&self.distribution)
+                    >= numeric_version_components(CLOAK_NATIVE_IDENTITY_148_RELEASE)
+            }
+            _ => false,
         }
     }
 }
@@ -83,6 +97,7 @@ impl EngineVersion {
 /// Runs `Chromium --version`, parses "Chromium 145.0.7632.109" → major="145", full="145.0.7632.109".
 /// Falls back to path-based detection (directory name like `chromium-145`), then to the compile-time constant.
 fn detect_engine_version(browser_binary: &Path) -> EngineVersion {
+    let path_version = extract_version_from_path(browser_binary);
     // Strategy 1: run --version
     if let Ok(output) = Command::new(browser_binary)
         .arg("--version")
@@ -92,12 +107,17 @@ fn detect_engine_version(browser_binary: &Path) -> EngineVersion {
         .output()
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Some(version) = parse_chromium_version(&stdout) {
+        if let Some(mut version) = parse_chromium_version(&stdout) {
+            if let Some(path_version) = path_version.as_ref() {
+                if path_version.major == version.major {
+                    version.distribution = path_version.distribution.clone();
+                }
+            }
             return version;
         }
     }
     // Strategy 2: extract from binary path (e.g. .../chromium-145/...)
-    if let Some(version) = extract_version_from_path(browser_binary) {
+    if let Some(version) = path_version {
         return version;
     }
     // Strategy 3: fallback constant
@@ -110,18 +130,41 @@ fn parse_chromium_version(output: &str) -> Option<EngineVersion> {
     let caps = re.captures(output)?;
     let major = caps.get(1)?.as_str().to_string();
     let full = format!("{}.{}.{}.{}", &caps[1], &caps[2], &caps[3], &caps[4]);
-    Some(EngineVersion { major, full })
+    Some(EngineVersion {
+        major,
+        distribution: full.clone(),
+        full,
+    })
 }
 
-/// Try to extract major version from binary path components like `chromium-145`
+fn numeric_version_components(version: &str) -> Vec<u64> {
+    version
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
+/// Extract the distribution revision from paths such as
+/// `chromium-148.0.7778.215.3-pro-notrace`. Chromium's own `--version` omits
+/// the final packaging revision even when that revision contains fingerprint
+/// fixes. `-notrace` identifies the locally signed TCC-ready runtime copy.
 fn extract_version_from_path(path: &Path) -> Option<EngineVersion> {
-    let re = Regex::new(r"chromium[-_](\d+)").ok()?;
+    let re = Regex::new(r"^chromium[-_](\d+(?:\.\d+){0,4})(?:-pro)?(?:-notrace)?$").ok()?;
     for ancestor in path.ancestors() {
         let name = ancestor.file_name()?.to_string_lossy();
         if let Some(caps) = re.captures(&name) {
-            let major = caps.get(1)?.as_str().to_string();
-            let full = format!("{major}.0.0.0");
-            return Some(EngineVersion { major, full });
+            let distribution = caps.get(1)?.as_str().to_string();
+            let mut components = distribution.split('.').take(4).collect::<Vec<_>>();
+            while components.len() < 4 {
+                components.push("0");
+            }
+            let full = components.join(".");
+            let major = components.first()?.to_string();
+            return Some(EngineVersion {
+                major,
+                full,
+                distribution,
+            });
         }
     }
     None
@@ -304,8 +347,8 @@ pub struct LaunchDiagnostics {
     pub preflight_ms: u64,
     pub launch_ms: u64,
     /// Capabilities provided by the wrapper/current binary contract. This is
-    /// deliberately explicit so a 145 engine is never presented as a Pro 148
-    /// engine merely because a UI feature exists.
+    /// deliberately explicit so a legacy engine is never presented as a newer
+    /// native-identity distribution merely because a UI feature exists.
     pub capabilities: Vec<String>,
 }
 
@@ -949,17 +992,24 @@ fn build_launch_plan_for_url(
         }
     }
 
-    let user_agent = browser_identity
-        .get("userAgent")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
     let load_extensions = join_extension_paths(&extension_plan.load_extension_paths);
     let mut argv = vec![
         format!("--user-data-dir={}", profile_path.display()),
         format!("--fingerprint={seed}"),
         format!("--fingerprint-platform={}", fingerprint_platform()),
-        format!("--user-agent={user_agent}"),
+    ];
+    // CloakBrowser 150+ derives a coherent UA, Client Hints, platform and GPU
+    // identity inside the engine. Re-supplying the legacy overrides can create
+    // conflicts with those native patches. Keep them only for the installed 145
+    // compatibility line.
+    if !engine.uses_native_identity() {
+        let user_agent = browser_identity
+            .get("userAgent")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        argv.push(format!("--user-agent={user_agent}"));
+    }
+    argv.extend([
         format!("--load-extension={load_extensions}"),
         // Clash-style fake-IP DNS uses reserved IPv4/IPv6 ranges. Chromium
         // otherwise classifies cross-origin CDN traffic as local-network access.
@@ -974,7 +1024,7 @@ fn build_launch_plan_for_url(
         // Suppress Chromium's bad-flags infobar without enabling automation mode.
         "--test-type".to_string(),
         "--disable-blink-features=AutomationControlled".to_string(),
-    ];
+    ]);
     append_native_fingerprint_args(&mut argv, &geo, locale.as_deref(), &engine, &seed);
     append_window_geometry_args(&mut argv, &profile_path);
     if let Some(proxy_arg) = &proxy_config.browser_arg {
@@ -1109,7 +1159,10 @@ fn launch_plan(
             geo_cache_hit: plan.geo_cache_hit,
             preflight_ms: duration_millis(preflight_duration),
             launch_ms: duration_millis(launch_started.elapsed()),
-            capabilities: launch_capabilities(),
+            capabilities: launch_capabilities(
+                !plan.argv.iter().any(|arg| arg.starts_with("--user-agent=")),
+                is_local_notrace_runtime(&plan.browser_binary),
+            ),
         },
     };
 
@@ -2349,10 +2402,17 @@ fn resolve_browser_binary(config: &CloakConfig) -> Result<PathBuf> {
         return Ok(real_browser_path(current));
     }
     let mut candidates = Vec::new();
+    let licensed_binary_available = cloakbrowser_license_configured(config);
     if let Ok(entries) = fs::read_dir(&config.cloakbrowser_root) {
         for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let distribution = name.strip_suffix("-notrace").unwrap_or(name.as_ref());
+            if distribution.ends_with("-pro") && !licensed_binary_available {
+                continue;
+            }
             let path = entry.path().join(browser_relative_in_version_dir());
-            if is_executable(&path) {
+            if is_executable(&path) && extract_version_from_path(&path).is_some() {
                 candidates.push(path);
             }
         }
@@ -2366,9 +2426,20 @@ fn resolve_browser_binary(config: &CloakConfig) -> Result<PathBuf> {
         .ok_or(CloakError::BrowserMissing)
 }
 
+fn cloakbrowser_license_configured(config: &CloakConfig) -> bool {
+    if env::var_os("CLOAKBROWSER_LICENSE_KEY").is_some_and(|value| !value.is_empty()) {
+        return true;
+    }
+    fs::metadata(config.cloakbrowser_root.join("license.key"))
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+}
+
 /// Numeric components of a `chromium-<version>` directory, for version ordering.
-/// `chromium-145.0.7632.109.2` yields `[145, 0, 7632, 109, 2]`.
-fn version_sort_key(path: &Path) -> Vec<u64> {
+/// `chromium-145.0.7632.109.2` yields
+/// `([145, 0, 7632, 109, 2], false, false)`; the official keyed distribution
+/// suffix (`-pro`) and the local runtime suffix (`-notrace`) are parsed
+/// separately. For the same upstream build, the TCC-ready local runtime wins.
+fn version_sort_key(path: &Path) -> (Vec<u64>, bool, bool) {
     for ancestor in path.ancestors() {
         let Some(name) = ancestor.file_name().map(|name| name.to_string_lossy()) else {
             continue;
@@ -2379,15 +2450,31 @@ fn version_sort_key(path: &Path) -> Vec<u64> {
         else {
             continue;
         };
-        let parts: Vec<u64> = rest
+        let local_runtime = rest.ends_with("-notrace");
+        let distribution = rest.strip_suffix("-notrace").unwrap_or(rest);
+        let pro = distribution.ends_with("-pro");
+        let numeric = distribution.strip_suffix("-pro").unwrap_or(distribution);
+        let parts: Vec<u64> = numeric
             .split('.')
             .map(|part| part.parse::<u64>().unwrap_or(0))
             .collect();
         if !parts.is_empty() {
-            return parts;
+            return (parts, pro, local_runtime);
         }
     }
-    Vec::new()
+    (Vec::new(), false, false)
+}
+
+fn is_local_notrace_runtime(path: &Path) -> bool {
+    path.ancestors().any(|ancestor| {
+        ancestor
+            .file_name()
+            .map(|name| {
+                let name = name.to_string_lossy();
+                name.starts_with("chromium-") && name.ends_with("-notrace")
+            })
+            .unwrap_or(false)
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -2503,7 +2590,12 @@ fn append_native_fingerprint_args(
     if let Some(exit_ip) = geo.exit_ip.as_deref().filter(|value| !value.is_empty()) {
         argv.push(format!("--fingerprint-webrtc-ip={exit_ip}"));
     }
-    // New: brand-version, platform-version, GPU vendor/renderer (C2+C3)
+    if engine.uses_native_identity() {
+        return;
+    }
+
+    // Legacy 145 compatibility: brand-version, platform-version and GPU
+    // overrides fill gaps in that engine. Newer builds own these surfaces.
     //
     // CloakBrowser accepts the product token "Chrome" here, not the emitted
     // Client-Hints label "Google Chrome". Passing the label leaves Chromium's
@@ -2542,8 +2634,8 @@ fn append_window_geometry_args(argv: &mut Vec<String>, profile_path: &Path) {
     argv.push(format!("--window-size={width},{height}"));
 }
 
-fn launch_capabilities() -> Vec<String> {
-    vec![
+fn launch_capabilities(native_identity: bool, local_tcc_runtime: bool) -> Vec<String> {
+    let mut capabilities = vec![
         "isolated-profile-storage".to_string(),
         "stable-seed-fingerprint".to_string(),
         "ua-client-hints-consistency".to_string(),
@@ -2553,7 +2645,16 @@ fn launch_capabilities() -> Vec<String> {
         "https-only-profile".to_string(),
         "challenge-signal-reporting".to_string(),
         "engine-pin-rollback".to_string(),
-    ]
+    ];
+    if native_identity {
+        capabilities.push("native-coherent-engine-identity".to_string());
+    } else {
+        capabilities.push("legacy-engine-identity-overrides".to_string());
+    }
+    if local_tcc_runtime {
+        capabilities.push("local-tcc-runtime".to_string());
+    }
+    capabilities
 }
 
 fn parse_window_geometry(value: &str) -> Option<(i64, i64, u32, u32)> {
@@ -3166,9 +3267,27 @@ mod tests {
         let older = Path::new("/root/chromium-99.0.1.2/Chromium.app/Contents/MacOS/Chromium");
         let newer =
             Path::new("/root/chromium-145.0.7632.109.2/Chromium.app/Contents/MacOS/Chromium");
+        let keyed =
+            Path::new("/root/chromium-150.0.7871.114.3-pro/Chromium.app/Contents/MacOS/Chromium");
+        let local = Path::new(
+            "/root/chromium-150.0.7871.114.3-pro-notrace/Chromium.app/Contents/MacOS/Chromium",
+        );
 
         assert!(version_sort_key(newer) > version_sort_key(older));
-        assert_eq!(version_sort_key(newer), vec![145, 0, 7632, 109, 2]);
+        assert_eq!(
+            version_sort_key(newer),
+            (vec![145, 0, 7632, 109, 2], false, false)
+        );
+        assert_eq!(
+            version_sort_key(keyed),
+            (vec![150, 0, 7871, 114, 3], true, false)
+        );
+        assert_eq!(
+            version_sort_key(local),
+            (vec![150, 0, 7871, 114, 3], true, true)
+        );
+        assert!(version_sort_key(local) > version_sort_key(keyed));
+        assert!(is_local_notrace_runtime(local));
     }
 
     #[test]
@@ -3967,6 +4086,107 @@ mod tests {
     }
 
     #[test]
+    fn modern_engine_keeps_native_identity_surfaces_authoritative() {
+        let mut argv = Vec::new();
+        let engine = EngineVersion {
+            major: "150".to_string(),
+            full: "150.0.7871.114".to_string(),
+            distribution: "150.0.7871.114.4".to_string(),
+        };
+        append_native_fingerprint_args(
+            &mut argv,
+            &GeoPlan {
+                exit_ip: Some("203.0.113.24".to_string()),
+                country: Some("JP".to_string()),
+                timezone: Some("Asia/Tokyo".to_string()),
+            },
+            Some("ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7"),
+            &engine,
+            "54321",
+        );
+
+        assert_eq!(
+            argv,
+            vec![
+                "--fingerprint-timezone=Asia/Tokyo",
+                "--lang=ja-JP",
+                "--fingerprint-locale=ja-JP",
+                "--accept-lang=ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
+                "--fingerprint-webrtc-ip=203.0.113.24",
+            ]
+        );
+        assert_eq!(
+            launch_capabilities(true, false).last().map(String::as_str),
+            Some("native-coherent-engine-identity")
+        );
+        assert_eq!(
+            launch_capabilities(true, true).last().map(String::as_str),
+            Some("local-tcc-runtime")
+        );
+
+        let fixed_148 = EngineVersion {
+            major: "148".to_string(),
+            full: "148.0.7778.215".to_string(),
+            distribution: "148.0.7778.215.3".to_string(),
+        };
+        let regressed_148 = EngineVersion {
+            distribution: "148.0.7778.215.2".to_string(),
+            ..fixed_148.clone()
+        };
+        assert!(fixed_148.uses_native_identity());
+        assert!(!regressed_148.uses_native_identity());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn modern_launch_plan_omits_legacy_identity_overrides() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = CloakConfig {
+            repo_root: dir.path().to_path_buf(),
+            account_base: dir.path().join("accounts"),
+            extension_source: dir.path().join("extension"),
+            cloakbrowser_root: dir.path().join("browser"),
+        };
+        fs::create_dir_all(&config.extension_source).unwrap();
+        fs::create_dir_all(config.profile_dir("work")).unwrap();
+        let version_dir = config
+            .cloakbrowser_root
+            .join("chromium-150.0.7871.114.4-pro");
+        let browser = version_dir.join(browser_relative_in_version_dir());
+        fs::create_dir_all(browser.parent().unwrap()).unwrap();
+        fs::write(&browser, "").unwrap();
+        symlink(&version_dir, config.cloakbrowser_root.join("current")).unwrap();
+
+        let plan = build_launch_plan(
+            &config,
+            "work",
+            &LaunchOptions {
+                dry_run: true,
+                skip_geo: true,
+                ..LaunchOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.engine_major, "150");
+        for prefix in [
+            "--user-agent=",
+            "--fingerprint-brand=",
+            "--fingerprint-brand-version=",
+            "--fingerprint-platform-version=",
+            "--fingerprint-gpu-vendor=",
+            "--fingerprint-gpu-renderer=",
+        ] {
+            assert!(
+                !plan.argv.iter().any(|arg| arg.starts_with(prefix)),
+                "modern launch plan unexpectedly contained {prefix}"
+            );
+        }
+    }
+
+    #[test]
     fn skip_geo_locale_does_not_invent_accept_language() {
         let dir = tempfile::tempdir().unwrap();
         let config = CloakConfig {
@@ -4301,6 +4521,13 @@ mod tests {
         let path2 = Path::new("/home/user/.cloakbrowser/chromium-149/chrome");
         let v2 = extract_version_from_path(path2).unwrap();
         assert_eq!(v2.major, "149");
+
+        let path3 = Path::new(
+            "/home/user/.cloakbrowser/chromium-148.0.7778.215.3-pro-notrace/Chromium.app/Contents/MacOS/Chromium",
+        );
+        let v3 = extract_version_from_path(path3).unwrap();
+        assert_eq!(v3.distribution, "148.0.7778.215.3");
+        assert!(v3.uses_native_identity());
     }
 
     #[test]

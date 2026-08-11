@@ -54,12 +54,34 @@ EXT_SRC="$ROOT/extension/cloak-companion"
 CB="${CLOAK_BROWSER_ROOT:-$HOME/.cloakbrowser}"
 BIN="${CLOAK_BROWSER_BIN:-$CB/current/Chromium.app/Contents/MacOS/Chromium}"
 if [[ ! -x "$BIN" ]]; then
-  BIN="$(/bin/ls -d "$CB"/chromium-*/Chromium.app/Contents/MacOS/Chromium 2>/dev/null | sort -V | tail -1 || true)"
+  fallback_bins=()
+  for fallback_bin in "$CB"/chromium-*/Chromium.app/Contents/MacOS/Chromium; do
+    [[ -x "$fallback_bin" ]] || continue
+    fallback_name="$(basename "${fallback_bin%/Chromium.app/Contents/MacOS/Chromium}")"
+    if [[ ! "$fallback_name" =~ ^chromium-[0-9]+([.][0-9]+){3,4}(-pro)?(-notrace)?$ ]]; then
+      continue
+    fi
+    fallback_distribution="${fallback_name%-notrace}"
+    if [[ "$fallback_distribution" == *-pro \
+          && -z "${CLOAKBROWSER_LICENSE_KEY:-}" \
+          && ! -s "$CB/license.key" ]]; then
+      continue
+    fi
+    fallback_bins+=("$fallback_bin")
+  done
+  if [[ ${#fallback_bins[@]} -gt 0 ]]; then
+    BIN="$(printf '%s\n' "${fallback_bins[@]}" | sort -V | tail -1)"
+  else
+    BIN=""
+  fi
 fi
 [[ -n "$BIN" && -x "$BIN" ]] || { printf 'error: CloakBrowser binary not found under %s\n' "$CB" >&2; exit 1; }
+BIN_DIR="$(cd "$(dirname "$BIN")" && pwd -P)"
+BIN="$BIN_DIR/$(basename "$BIN")"
 
 CLOAK_MAC_UA_VERSION="10_15_7"
 CLOAK_MAC_PLATFORM_VERSION="15.5.0"
+CLOAK_NATIVE_IDENTITY_148_RELEASE="148.0.7778.215.3"
 
 # Detect engine version from actual binary (matches Rust detect_engine_version)
 CLOAK_CHROME_MAJOR=""
@@ -73,6 +95,19 @@ fi
 if [[ -z "$CLOAK_CHROME_MAJOR" ]]; then
   CLOAK_CHROME_MAJOR="145"
   CLOAK_CHROME_FULL="145.0.0.0"
+fi
+
+CLOAK_DISTRIBUTION_VERSION="$(printf '%s\n' "$BIN" | sed -E -n \
+  's#^.*/chromium-([0-9]+([.][0-9]+){3,4})(-pro)?(-notrace)?/Chromium[.]app/.*#\1#p')"
+CLOAK_NATIVE_IDENTITY=0
+if (( CLOAK_CHROME_MAJOR >= 150 )); then
+  CLOAK_NATIVE_IDENTITY=1
+elif [[ "$CLOAK_CHROME_MAJOR" == "148" && -n "$CLOAK_DISTRIBUTION_VERSION" ]]; then
+  newest_identity_release="$(printf '%s\n%s\n' \
+    "$CLOAK_NATIVE_IDENTITY_148_RELEASE" "$CLOAK_DISTRIBUTION_VERSION" | sort -V | tail -1)"
+  if [[ "$newest_identity_release" == "$CLOAK_DISTRIBUTION_VERSION" ]]; then
+    CLOAK_NATIVE_IDENTITY=1
+  fi
 fi
 
 CLOAK_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X $CLOAK_MAC_UA_VERSION) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$CLOAK_CHROME_MAJOR.0.0.0 Safari/537.36"
@@ -821,7 +856,11 @@ args=(
   "--user-data-dir=$UDD"
   "--fingerprint=$seed"
   "--fingerprint-platform=macos"
-  "--user-agent=$CLOAK_USER_AGENT"
+)
+if [[ "$CLOAK_NATIVE_IDENTITY" == "0" ]]; then
+  args+=("--user-agent=$CLOAK_USER_AGENT")
+fi
+args+=(
   "--load-extension=$load_extensions"
   # Clash-style fake-IP DNS uses reserved IPv4/IPv6 ranges. Treat only those
   # ranges as public while Chromium keeps real LAN and loopback access blocked.
@@ -834,14 +873,18 @@ args=(
   # Suppress Chromium's bad-flags infobar without enabling automation mode.
   "--test-type"
   "--disable-blink-features=AutomationControlled"
-  # CloakBrowser accepts the product token "Chrome" here; "Google Chrome" is
-  # the emitted Client-Hints label and leaves native full-version entries empty.
-  "--fingerprint-brand=Chrome"
-  "--fingerprint-brand-version=$CLOAK_CHROME_FULL"
-  "--fingerprint-platform-version=$CLOAK_MAC_PLATFORM_VERSION"
-  "--fingerprint-gpu-vendor=Google Inc. (Apple)"
-  "--fingerprint-gpu-renderer=$(gpu_renderer_for_seed "$seed")"
 )
+# Fixed macOS 148.0.7778.215.3+ and 150+ builds own UA, Client Hints,
+# platform and GPU coherence inside the engine. Older builds keep overrides.
+if [[ "$CLOAK_NATIVE_IDENTITY" == "0" ]]; then
+  args+=(
+    "--fingerprint-brand=Chrome"
+    "--fingerprint-brand-version=$CLOAK_CHROME_FULL"
+    "--fingerprint-platform-version=$CLOAK_MAC_PLATFORM_VERSION"
+    "--fingerprint-gpu-vendor=Google Inc. (Apple)"
+    "--fingerprint-gpu-renderer=$(gpu_renderer_for_seed "$seed")"
+  )
+fi
 [[ -n "${TZ:-}" ]] && args+=("--fingerprint-timezone=$TZ")
 if [[ -n "$accept_lang" ]]; then
   primary_locale="${accept_lang%%,*}"

@@ -1,0 +1,12 @@
+{
+  "name": "notrace-cloakbrowser-wrapper",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinned official CloakBrowser binary installer used by NoTrace update staging.",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "cloakbrowser": "0.5.7"
+  }
+}

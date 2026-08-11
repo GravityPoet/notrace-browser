@@ -5,7 +5,7 @@
 NoTrace Browser 是一个源码可见、专注 macOS 的编排与多账号管理客户端，用于启动用户单独安装的 **CloakBrowser C++ 补丁 Chromium 内核**。本仓库包含原生选择器、CLI、账号目录隔离、代理中继、伴侣扩展和打包脚本；不包含、也不重新分发 CloakBrowser 二进制内核。
 
 > [!IMPORTANT]
-> **NoTrace 客户端与浏览器内核的分发条款彼此独立。** 请从 CloakBrowser [官方仓库](https://github.com/CloakHQ/CloakBrowser)、[官方 Releases](https://github.com/CloakHQ/CloakBrowser/releases) 或 [官网](https://cloakbrowser.dev/) 获取内核。上游目前声明 wrapper 采用 MIT 许可，二进制采用延迟免费发布模式（较旧版免费，最新版为 Pro）。使用或再分发前请核对上游当前条款。本 NoTrace 仓库目前未包含项目许可证，“源码可见”本身不等于授予复用或再分发权。
+> **NoTrace 客户端、官方 wrapper 与浏览器内核的分发条款彼此独立。** 请通过 CloakBrowser [官方仓库](https://github.com/CloakHQ/CloakBrowser)、[官方 Releases](https://github.com/CloakHQ/CloakBrowser/releases) 或 [官网](https://cloakbrowser.dev/) 获取。上游目前以 MIT 许可发布 wrapper；经验证的免费 GitHub key 可获取最新 keyed 二进制，但限制为单会话，无 key 路径仍使用较旧版本。这不等于二进制已经开源。使用、修改或再分发前请核对当前二进制条款。本 NoTrace 仓库目前未包含项目许可证，“源码可见”本身不等于授予复用或再分发权。
 
 ---
 
@@ -23,7 +23,7 @@ graph TD
     B -->|C++ 底层指纹补丁| C[伪装的 Canvas, WebGL, Audio 与 Client Hints]
     B -->|内置代理中转| D[独享且带认证的 SOCKS5 出口]
     B -->|TZ 环境变量 + 引擎时区参数| E[主页面与 Worker 一致的 Intl 时区]
-    B -->|TCC 权限修复引擎| F[麦克风语音输入 / 蓝牙 Passkey 登录]
+    B -->|具备 TCC 声明的签名引擎| F[麦克风语音输入 / 蓝牙 Passkey 登录]
     D -->|目标网络| G[目标网站 / AI / Web3 / 社交 / 电商]
 ```
 
@@ -47,13 +47,13 @@ NoTrace Browser 将 CloakBrowser 的源代码级内核补丁、伴侣扩展和�
 正常启动采用 **native-first**：依赖 CloakBrowser 内核与稳定 Seed，不向所有网页注入 Navigator/Canvas/Audio hook，也不修改页面的 `Function.prototype.toString`。旧的页面级伪装仅用于兼容对比，可通过 `CLOAK_COMPANION_PAGE_SPOOF=1` 显式启用；严格 Bot 检测场景不建议开启。
 
 ### 1. WebGL/GPU 渲染器伪装
-隐去真实的 GPU 型号（如 `Apple M4 Pro`），基于账号 Seed 注入随机化的 Apple M1–M4 渲染配置，统一上报为通用的 Metal 渲染字符串（`ANGLE (Apple, ANGLE Metal Renderer: Apple M1-M4, Unspecified Version)`，Vendor 为 `Google Inc. (Apple)`），用于减少可能导致 CreepJS 出现“like headless”提示的渲染特征矛盾。
+旧版 macOS 145 内核继续使用其所需的 Seed 稳定 Apple Metal 兼容参数。已修复的 macOS `148.0.7778.215.3` 发行版与 CloakBrowser 150 及以上版本以引擎原生 GPU 身份为准，NoTrace 不再把外部 renderer 覆盖叠加到这些源代码级补丁上。
 
 ### 2. WebRTC IP 泄露物理隔离
 利用 CloakBrowser 底层的 `--fingerprint-webrtc-ip` 参数，NoTrace 会请求受支持的内核版本在 WebRTC candidate 中呈现已配置的代理出口 IP。浏览器、网络和代理行为仍可能影响泄漏测试，每次更换内核或代理后都应重新运行实时审计。
 
 ### 3. UA 与客户端提示 (Client Hints) 一致性
-如果只修改 User Agent 却不改 Client Hints，会产生版本一致性矛盾。NoTrace 使用内核支持的 `Chrome` 品牌参数同步 UA、品牌主版本、`fullVersionList`、`platformVersion` 和 `architecture`；显式启用伴侣请求头规则时，也只生成浏览器原本会主动发送的低熵提示，不把高熵提示强塞给所有请求。当前 macOS 145 内核仍会返回空 `bitness`，实时审计会明确报告该上游限制。
+如果只修改 User Agent 却不改 Client Hints，会产生版本一致性矛盾。NoTrace 为 macOS 145 和较早的 148 修订保留显式 UA、品牌和平台参数；已修复的 `148.0.7778.215.3` 发行版与 CloakBrowser 150 及以上版本按上游对应指导使用引擎原生身份。显式启用伴侣请求头规则时，也只生成浏览器原本会主动发送的低熵提示，不把高熵提示强塞给所有请求。macOS 145 内核仍会返回空 `bitness`，实时审计会明确报告该上游限制。
 
 ### 4. 可选的旧版 Canvas 与 Audio 噪声扰动
 以下页面 hook 仅在 `CLOAK_COMPANION_PAGE_SPOOF=1` 时启用；默认由内核 Seed 负责原生指纹隔离。
@@ -116,7 +116,7 @@ NoTrace Browser 的每个账号工作区都可以通过编译生成的 `cloak` �
 - **挑战信号**：实机审计同时检查挑战页 DOM/iframe 与 [Cloudflare 官方响应信号](https://developers.cloudflare.com/cloudflare-challenges/challenge-types/challenge-pages/detect-response/) `cf-mitigated: challenge`；嵌入式 Turnstile widget 与阻断式 Challenge Page 分开报告，不把正常控件误判成整页阻断。
 - **官方测试密钥回归**：`--site cloudflare-turnstile-test` 只在本地合成页面使用 [Cloudflare 官方 dummy sitekey/secret](https://developers.cloudflare.com/turnstile/troubleshooting/testing/)，验证 widget、dummy token 与 Siteverify；测试凭据不会进入生产账号配置。
 - **界面可见**：账号页的“挑战兼容”按钮在后台启动临时 profile，并显示版本一致性、widget、Siteverify 与阻断页四个结果；失败后可直接重试，临时目录自动清理。
-- **固定版本与回滚**：更新器支持 `CLOAK_BROWSER_PIN=版本号` 作为本地版本上限；已安装版本之间可执行：
+- **签名更新与回滚**：更新器把官方 JavaScript wrapper 精确锁定为 `0.5.7`，由它完成许可证路由、SHA256 与 Ed25519 清单验签；NoTrace 只负责候选隔离、本地/实时门禁和 `current` 原子切换。`CLOAK_BROWSER_PIN=完整版本号` 表示请求该精确版本；已安装版本之间可执行：
 
   ```bash
   # 仅查看已安装版本
@@ -127,7 +127,7 @@ NoTrace Browser 的每个账号工作区都可以通过编译生成的 `cloak` �
   ./packaging/rollback-chromium.sh 145.0.7632.109.2
   ```
 
-  该脚本只切换本机已有且版本自洽的目录，不下载 Chromium 148、不伪造 UA，也不改动账号 Seed、时区、WebRTC 或伴侣扩展隐私契约。
+  该脚本只切换本机已有且版本自洽的目录，支持 `<版本>-pro`、`<版本>-notrace` 与 `<版本>-pro-notrace`，不改动账号 Seed、时区、WebRTC 或伴侣扩展隐私契约。已确认存在 `browserTampering` 回归的 macOS `150.0.7871.114.3` 被精确禁用；只有后续修复版通过本地门和有头实时门后才会提升为 `current`。
 
 - **可替换引擎边界**：核心通过 `CLOAK_BROWSER_BIN` / `CLOAK_BROWSER_ROOT` 解析外部 Chromium-compatible 二进制，并始终以真实 `--version` 生成 UA/Client Hints 与诊断。未来自有引擎只需满足同一启动/版本/隐私契约，不需要把选择器耦合到 CloakBrowser 私有补丁。
 - **兼容边界透明**：[Cloudflare 官方仅支持当前及前两个主版本，并说明深度修改的浏览器支持有限](https://developers.cloudflare.com/cloudflare-challenges/reference/supported-browsers/)。因此本轮不把 145 伪装成新版本；兼容测试通过代表当前合成链路正常，不承诺所有真实站点永不发起挑战。
@@ -139,14 +139,15 @@ NoTrace Browser 的每个账号工作区都可以通过编译生成的 `cloak` �
 NoTrace Browser 针对 macOS 系统环境进行了深度的专属适配：
 
 - **顽固的绿色桌面图标**：Chromium 在更新 PWA 快捷方式时会自动重写并覆盖 `app.icns`，导致自定义图标丢失。NoTrace 通过 `NSWorkspace setIcon:forFile:` 接口，强行在 Bundle 根目录下设置 Finder 级的自定义 Custom Icon (`kHasCustomIcon` 属性与 `Icon\r` 资源文件)。这使得 LaunchServices 和 Dock 能持久锁定绿色的应用图标，**即使浏览器内核重构更新也不会丢失**。
-- **稳定的 TCC 权限身份**：ad-hoc 签名的 Chromium 不仅缺少麦克风、摄像头和蓝牙隐私描述，而且每次 CDHash 变化都会被 macOS 当成新应用。NoTrace 会写入 `NSMicrophoneUsageDescription`、`NSCameraUsageDescription` 与 `NSBluetoothAlwaysUsageDescription`，优先使用长期本地签名身份，并让所有账号入口通过 LaunchServices 启动 Chromium。这样 Picker、CLI 和账号启动器共用同一个 Chromium TCC 身份，不再为每个启动器单独申请蓝牙权限。
+- **稳定的 TCC 权限身份**：更新器绝不改写 wrapper 管理的 `chromium-<版本>[-pro]` 来源目录，而是为本机复制一份明确标记的 `chromium-<版本>[-pro]-notrace` 运行副本，补入麦克风、摄像头和蓝牙隐私描述，并使用长期本地证书签名。新下载的官方压缩包由锁定的 wrapper 校验 checksum 与签名 manifest；已存在的缓存命中只能重新检查包体签名结构，不会被误称为“刚刚重新验签”。来源缓存独立保留，本地运行副本不会被打包或分发。所有账号入口仍统一通过 LaunchServices 启动。
 
 ---
 
 ## 📁 运行时路径与目录说明
 
 * **日常 PWA 应用路径**：`~/Applications/Chromium Apps.localized/NoTrace Browser.app`
-* **CloakBrowser 内核路径**：`~/.cloakbrowser/chromium-<version>/Chromium.app/Contents/MacOS/Chromium`
+* **wrapper 管理的 CloakBrowser 来源缓存**：`~/.cloakbrowser/chromium-<version>[-pro]/Chromium.app/Contents/MacOS/Chromium`
+* **本机 TCC 运行副本**：`~/.cloakbrowser/chromium-<version>[-pro]-notrace/Chromium.app/Contents/MacOS/Chromium`
 * **主账号默认 Profile 路径**：`~/Library/Application Support/NoTrace Browser/Profiles/main`
 * **多账号隔离沙盒目录**：`~/Library/Application Support/NoTrace Browser/Accounts/<name>`
 
@@ -155,7 +156,7 @@ NoTrace Browser 针对 macOS 系统环境进行了深度的专属适配：
 ## 🚀 安装与部署
 
 ### 前置步骤：单独获取 CloakBrowser 内核
-请按当前[官方安装说明](https://github.com/CloakHQ/CloakBrowser#install)完成首次下载或启动，确保 Chromium 应用包存在于 `~/.cloakbrowser/chromium-*` 下（也支持可选的 `~/.cloakbrowser/current` 软链接）。请根据上游当前授权条款选择免费或 Pro 内核。NoTrace 安装脚本不会为您下载或授权该二进制文件。
+请按当前[官方安装说明](https://github.com/CloakHQ/CloakBrowser#install)完成首次下载或启动，确保 Chromium 应用包存在于 `~/.cloakbrowser/chromium-*` 下（也支持可选的 `~/.cloakbrowser/current` 软链接）。请根据上游当前条款选择无 key、免费 key 或付费层级。NoTrace 不会创建或内嵌许可证 key；后续更新由精确锁定的官方 wrapper 完成下载与许可证验证。
 
 ### 第一步：克隆仓库并编译账号选择器
 构建前需要 macOS 12 或更高版本、Xcode Command Line Tools、稳定版 Rust 工具链，以及带 npm 的 Node.js 20 或更高版本。当前端依赖缺失或与 `package.json` 不一致时，安装脚本会自动执行 `npm ci`。
@@ -166,20 +167,35 @@ NoTrace Browser 针对 macOS 系统环境进行了深度的专属适配：
 ./packaging/install-cloak-picker-app.sh
 ```
 
-### 第二步：修补 Chromium TCC 系统权限
-执行权限修补和证书签名，以启用语音输入及 Passkey 登录功能，防止崩溃：
+### 第二步：修护带标记的本机 TCC 运行副本
+更新器会自动处理 `-notrace` 副本。以下命令也可幂等修复这个本机运行副本，或处理位于官方缓存之外的自备 Chromium：
 ```bash
 ./packaging/patch-chromium.sh
 ```
-*提示：每当 CloakBrowser 大版本更新后，请重新运行一次该脚本。已安装 `ChatGPT Cloak Local Code Signing` 时会自动使用它，也可通过 `CLOAK_CODESIGN_IDENTITY=<名称>` 指定；没有长期签名身份时会回退为 ad-hoc，并提示内核更新后可能再次询问权限。*
+*提示：CloakHQ 当前二进制许可文字禁止修改所有官方版本，且没有“个人自用”例外。脚本因此拒绝改写无后缀的 wrapper 缓存 `chromium-<版本>[-pro]` 目录。本机 `-notrace` 派生副本是用户明确选择的本地行为，不会进入本仓库或被重新分发；使用者仍需自行承担上游条款责任。*
 
-### 第三步：应用原生绿色 Dock 图标
+### 第三步：安装签名更新候选链
+
+```bash
+# 只读判断，不下载、不切换
+DRY_RUN=1 ./packaging/update-chromium.sh
+# 安装或刷新每日候选检查
+./packaging/install-updater.sh
+# 关闭所有 Cloak 窗口后，运行有头门禁并提升合格候选
+CLOAK_UPDATE_LIVE_GATE=1 ./packaging/update-chromium.sh
+# 查看保留的所有可回滚版本
+./packaging/rollback-chromium.sh --list
+```
+
+更新器不会静默提升候选：官方 wrapper 对新下载的官方压缩包执行 SHA256 与 Ed25519 签名 manifest 校验，NoTrace 不改写 wrapper 来源缓存，只生成带长期本地签名的 `-notrace` 副本；只有该副本通过本地契约和有头挑战审计，才会原子切换 `current`。macOS `150.0.7871.114.3` 已因可复现的 `browserTampering` 回归被精确禁用。
+
+### 第四步：应用原生绿色 Dock 图标
 默认的 PWA 图标会在白底中内嵌一个绿色的缩略图。通过以下脚本将其替换为精美、全画幅的 macOS 绿底图标：
 ```bash
 ./packaging/set-pwa-icon.sh
 ```
 
-### 第四步：安装时区同步浏览器插件
+### 第五步：安装时区同步浏览器插件
 1. 在浏览器中打开 `chrome://extensions`。
 2. 开启右上角的 **开发者模式 (Developer mode)**。
 3. 点击 **加载已解压的扩展程序 (Load unpacked)**，并选择本仓库下的 `extension/cloak-companion/` 目录。
@@ -230,4 +246,4 @@ node selftest/run-live-challenge-audit.mjs --headed --proxy-server http://127.0.
 
 ## 🤝 致谢与致敬 (Credits & Acknowledgements)
 
-NoTrace Browser 负责编排用户单独获取的 **CloakBrowser** Chromium 内核，并增加 macOS 原生选择器、账号工作区管理、代理工具和伴侣扩展集成。上游 wrapper 与二进制有各自的授权和发布条款；NoTrace 不捆绑内核二进制，用户与分发者必须遵守当前 [CloakBrowser 条款](https://github.com/CloakHQ/CloakBrowser#cloakbrowser-pro)。
+NoTrace Browser 负责编排用户单独获取的 **CloakBrowser** Chromium 内核，并增加 macOS 原生选择器、账号工作区管理、代理工具和伴侣扩展集成。上游 wrapper 与二进制有各自的授权和发布条款；NoTrace 不捆绑内核二进制，用户与分发者应查阅当前 [CloakBrowser 二进制许可](https://github.com/CloakHQ/CloakBrowser/blob/main/BINARY-LICENSE.md)。

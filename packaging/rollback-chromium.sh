@@ -1,12 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-# Switch only between already-installed, verified CloakBrowser builds. This
-# never downloads, rebuilds, patches, or changes fingerprint/privacy settings.
-# The previous version remains on disk and `current` is swapped atomically.
+# Switch only between already-installed, verified CloakBrowser builds or marked
+# local `-notrace` runtime copies. This never downloads, rebuilds, patches, or
+# changes fingerprint/privacy settings. The previous version remains on disk
+# and `current` is swapped atomically.
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 CB="${CLOAKBROWSER_DIR:-$HOME/.cloakbrowser}"
+DEFAULT_CB="$HOME/.cloakbrowser"
 LOG="$CB/update.log"
 DRY_RUN="${DRY_RUN:-}"
 
@@ -45,8 +47,11 @@ fi
 
 target="${1:-${CLOAK_BROWSER_ROLLBACK_VERSION:-}}"
 [[ -n "$target" ]] || die "用法：$0 [--dry-run] <已安装版本号>；可用 --list 查看"
+target="${target#chromium-v}"
 target="${target#chromium-}"
-[[ "$target" =~ ^[0-9]+([.][0-9]+){0,4}$ ]] || die "版本号无效：$target"
+[[ "$target" =~ ^[0-9]+([.][0-9]+){0,4}(-pro)?(-notrace)?$ ]] || die "版本号无效：$target"
+target_distribution="${target%-notrace}"
+target_version="${target_distribution%-pro}"
 
 dest="$CB/chromium-$target"
 case "$dest" in
@@ -54,15 +59,27 @@ case "$dest" in
   *) die "目标不在 CloakBrowser 根目录内" ;;
 esac
 [[ -d "$dest" ]] || die "目标版本未安装：$dest"
+[[ ! -L "$dest" ]] || die "目标版本目录不能是符号链接：$dest"
 app="$dest/Chromium.app"
 bin="$app/Contents/MacOS/Chromium"
 [[ -x "$bin" ]] || die "目标 Chromium 不可执行：$bin"
+/usr/bin/codesign --verify --deep --strict "$app" >/dev/null 2>&1 \
+  || die "目标 Chromium 签名校验失败：$app"
+
+if [[ "$target" == *-notrace ]]; then
+  [[ -f "$dest/.notrace-local-runtime" ]] \
+    || die "本机运行副本缺少来源标记：$dest"
+  for usage_key in NSMicrophoneUsageDescription NSCameraUsageDescription NSBluetoothAlwaysUsageDescription; do
+    usage_value="$(/usr/libexec/PlistBuddy -c "Print :$usage_key" "$app/Contents/Info.plist" 2>/dev/null || true)"
+    [[ -n "$usage_value" ]] || die "本机运行副本缺少 $usage_key：$app"
+  done
+fi
 
 version_output="$($bin --version 2>/dev/null || true)"
 actual_version="$(printf '%s\n' "$version_output" | sed -E -n 's/^Chromium ([0-9]+([.][0-9]+){1,3}).*/\1/p')"
 [[ -n "$actual_version" ]] || die "无法读取目标二进制版本：$version_output"
-[[ "$target" == "$actual_version" || "$target" == "$actual_version".* ]] \
-  || die "目标目录版本 $target 与二进制版本 $actual_version 不一致"
+[[ "$target_version" == "$actual_version" || "$target_version" == "$actual_version".* ]] \
+  || die "目标目录版本 $target_version 与二进制版本 $actual_version 不一致"
 
 current="$CB/current"
 if [[ -L "$current" ]]; then
@@ -78,8 +95,25 @@ else
   log "current 不存在，将建立新的稳定指针"
 fi
 
-if pgrep -f "user-data-dir=.*NoTrace Browser" >/dev/null 2>&1 || \
-   pgrep -f "$CB/.*/Chromium.app/Contents/MacOS/Chromium" >/dev/null 2>&1; then
+browser_running() {
+  local listing
+  listing="$(ps axww -o command= 2>/dev/null || true)"
+  if printf '%s\n' "$listing" | awk -v root="$CB/" '
+    index($0, root) && index($0, "/Chromium.app/Contents/MacOS/Chromium") { found = 1 }
+    END { exit(found ? 0 : 1) }
+  '; then
+    return 0
+  fi
+  if [[ "$CB" == "$DEFAULT_CB" ]] && printf '%s\n' "$listing" | awk '
+    index($0, "--user-data-dir=") && index($0, "NoTrace Browser") { found = 1 }
+    END { exit(found ? 0 : 1) }
+  '; then
+    return 0
+  fi
+  return 1
+}
+
+if browser_running; then
   die "Cloak Chromium 正在运行；关闭浏览器后重试"
 fi
 
