@@ -413,9 +413,14 @@ describe("Cloak Picker dialog regressions", () => {
     await click(buttonWithText("多选"));
     await click(accountRow("demo-beta"));
     await click(accountRow("demo-gamma-copy"));
-    await click(buttonWithText("操作"));
-    const activeMenu = document.querySelector<HTMLElement>('[role="menu"][aria-label="批量操作选项"]');
-    await click(buttonWithText("移入回收站…", activeMenu ?? document));
+    const activeDetail = document.querySelector<HTMLElement>(".detail");
+    expect(activeDetail?.textContent).toContain("已选择 2 个账号");
+    expect(
+      Array.from(activeDetail?.querySelectorAll("button") ?? []).some(
+        (button) => button.textContent?.trim() === "删除",
+      ),
+    ).toBe(false);
+    await click(buttonWithText("移入回收站", activeDetail ?? document));
 
     const deleteDialog = document.querySelector<HTMLElement>('[role="dialog"]');
     expect(deleteDialog?.textContent).toContain("移入回收站 2 个账号");

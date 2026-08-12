@@ -938,8 +938,9 @@ export default function App() {
   }, [accountContextMenu, bulkActionMenuOpen, groupContextMenu, manageMenuOpen]);
 
   useEffect(() => {
-    if (!selected) {
+    if (bulkSelectionMode || !selected) {
       setPlan(null);
+      setPlanLoading(false);
       return;
     }
     if (selected.trashed) {
@@ -970,7 +971,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [selected?.name, selected?.trashed]);
+  }, [bulkSelectionMode, selected?.name, selected?.trashed]);
 
   async function submitDialog(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -2945,7 +2946,106 @@ export default function App() {
         />
 
         <section className="detail">
-          {selected ? (
+          {bulkSelectionMode ? (
+            <>
+              <header className="detailHeader">
+                <div className="titleBlock">
+                  <span className="eyebrow">批量操作</span>
+                  <h1>
+                    {bulkSelectedAccounts.length > 0
+                      ? `已选择 ${bulkSelectedAccounts.length} 个账号`
+                      : "选择要操作的账号"}
+                  </h1>
+                </div>
+                <div className="detailHeaderControl">
+                  <button className="secondaryButton" disabled={busy} type="button" onClick={exitBulkSelection}>
+                    <Check size={16} />
+                    完成
+                  </button>
+                </div>
+              </header>
+
+              <div className="detailScroll">
+                <div className="emptyState detailEmpty">
+                  <ListChecks size={28} />
+                  <strong>
+                    {bulkSelectedAccounts.length > 0
+                      ? `已选中 ${bulkSelectedAccounts.length} 个账号`
+                      : "请在左侧勾选账号"}
+                  </strong>
+                  <p className="emptyStateDetail">
+                    {accountView === "active"
+                      ? "下方按钮只会操作已勾选的账号；移入回收站前会再次确认。"
+                      : "下方按钮只会操作已勾选的回收站账号；彻底删除前会再次确认。"}
+                  </p>
+                </div>
+              </div>
+
+              <footer className="detailFooter">
+                <div aria-label="所选账号的批量操作" className="actionBar">
+                  {accountView === "active" ? (
+                    <>
+                      <ActionButton
+                        disabled={busy || bulkSelectedAccounts.length === 0}
+                        icon={<Folder size={15} />}
+                        label="移动分组"
+                        onClick={(event) => openDialog(
+                          { kind: "bulkGroup", accounts: bulkSelectedAccounts, value: "" },
+                          event.currentTarget,
+                        )}
+                      />
+                      <ActionButton
+                        disabled={busy || bulkSelectedAccounts.length === 0}
+                        icon={<Tag size={15} />}
+                        label="设置标记"
+                        onClick={(event) => openDialog(
+                          { kind: "bulkMark", accounts: bulkSelectedAccounts, value: "", color: "green" },
+                          event.currentTarget,
+                        )}
+                      />
+                      {bulkSelectedAccounts.some((account) => account.marked) ? (
+                        <ActionButton
+                          disabled={busy}
+                          icon={<X size={15} />}
+                          label="取消已有标记"
+                          onClick={() => void clearBulkMarks(bulkSelectedAccounts)}
+                        />
+                      ) : null}
+                      <ActionButton
+                        danger
+                        disabled={busy || bulkSelectedAccounts.length === 0}
+                        icon={<Trash2 size={15} />}
+                        label="移入回收站"
+                        onClick={(event) => openDialog(
+                          { kind: "bulkDelete", accounts: bulkSelectedAccounts },
+                          event.currentTarget,
+                        )}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <ActionButton
+                        disabled={busy || bulkSelectedAccounts.length === 0}
+                        icon={<ArchiveRestore size={15} />}
+                        label="恢复账号"
+                        onClick={() => void restoreBulkAccounts(bulkSelectedAccounts)}
+                      />
+                      <ActionButton
+                        danger
+                        disabled={busy || bulkSelectedAccounts.length === 0}
+                        icon={<Trash2 size={15} />}
+                        label="彻底删除"
+                        onClick={(event) => openDialog(
+                          { kind: "bulkPermanentDelete", accounts: bulkSelectedAccounts },
+                          event.currentTarget,
+                        )}
+                      />
+                    </>
+                  )}
+                </div>
+              </footer>
+            </>
+          ) : selected ? (
             <>
               <header className="detailHeader">
                 <div className="titleBlock">
