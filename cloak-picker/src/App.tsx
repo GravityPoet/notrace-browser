@@ -11,8 +11,10 @@ import {
   GripVertical,
   Globe2,
   KeyRound,
+  ListChecks,
   Loader2,
   MessageSquareText,
+  MoreHorizontal,
   Network,
   Pencil,
   Play,
@@ -166,6 +168,10 @@ type DialogState =
   | { kind: "note"; account: Account; value: string }
   | { kind: "delete"; account: Account }
   | { kind: "permanentDelete"; account: Account }
+  | { kind: "bulkGroup"; accounts: Account[]; value: string }
+  | { kind: "bulkMark"; accounts: Account[]; value: string; color: MarkColor }
+  | { kind: "bulkDelete"; accounts: Account[] }
+  | { kind: "bulkPermanentDelete"; accounts: Account[] }
   | { kind: "deleteGroup"; groupLabel: string; count: number; returnToManage?: boolean };
 
 type GroupContextMenuState = {
@@ -244,6 +250,8 @@ const mockGroupOverrides = new Map<string, string | null>();
 const mockCommandCounts = new Map<string, number>();
 const mockCommandFailures = new Map<string, number>();
 const mockCancelledLaunches = new Set<string>();
+const mockTrashedOverrides = new Map<string, boolean>();
+const mockPermanentlyDeletedAccounts = new Set<string>();
 let mockChallengeAuditCancelled = false;
 
 export function resetMockCommandsForTest() {
@@ -253,6 +261,8 @@ export function resetMockCommandsForTest() {
   mockCommandCounts.clear();
   mockCommandFailures.clear();
   mockCancelledLaunches.clear();
+  mockTrashedOverrides.clear();
+  mockPermanentlyDeletedAccounts.clear();
   mockChallengeAuditCancelled = false;
 }
 
@@ -428,6 +438,10 @@ export default function App() {
   const [plan, setPlan] = useState<LaunchPlan | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [manageMenuOpen, setManageMenuOpen] = useState(false);
+  const [bulkSelectionMode, setBulkSelectionMode] = useState(false);
+  const [bulkSelectedNames, setBulkSelectedNames] = useState<string[]>([]);
+  const [bulkActionMenuOpen, setBulkActionMenuOpen] = useState(false);
+  const [bulkStatus, setBulkStatus] = useState("");
   const [groupContextMenu, setGroupContextMenu] = useState<GroupContextMenuState | null>(null);
   const [accountContextMenu, setAccountContextMenu] = useState<AccountContextMenuState | null>(null);
   const groupPointerDragRef = useRef<GroupPointerDrag | null>(null);
@@ -451,6 +465,7 @@ export default function App() {
   const resizingPaneRef = useRef(false);
   const dialogTriggerRef = useRef<HTMLElement | null>(null);
   const manageButtonRef = useRef<HTMLButtonElement | null>(null);
+  const bulkActionButtonRef = useRef<HTMLButtonElement | null>(null);
   const markSaveInFlightRef = useRef(false);
   const noteSaveInFlightRef = useRef(false);
 
@@ -513,6 +528,14 @@ export default function App() {
     () => buildManagedGroups(activeAccounts, trashedAccounts, groupOrder, hiddenGroups),
     [activeAccounts, groupOrder, hiddenGroups, trashedAccounts],
   );
+  const bulkSelectedNameSet = useMemo(() => new Set(bulkSelectedNames), [bulkSelectedNames]);
+  const bulkSelectedAccounts = useMemo(
+    () => accounts.filter((account) => bulkSelectedNameSet.has(account.name)),
+    [accounts, bulkSelectedNameSet],
+  );
+  const allVisibleAccountsSelected = visibleAccounts.length > 0
+    && visibleAccounts.every((account) => bulkSelectedNameSet.has(account.name));
+  const someVisibleAccountsSelected = visibleAccounts.some((account) => bulkSelectedNameSet.has(account.name));
 
   async function refresh(preferredName?: string, view: AccountView = accountView) {
     setError("");
@@ -559,6 +582,7 @@ export default function App() {
   }
 
   function handleAccountSearchChange(value: string) {
+    if (bulkSelectionMode) exitBulkSelection();
     setAccountSearch(value);
     const normalizedSearch = normalizeAccountSearch(value);
     if (!normalizedSearch) return;
@@ -606,14 +630,47 @@ export default function App() {
   }
 
   function handleAccountViewChange(view: AccountView) {
+    exitBulkSelection();
     setAccountSearch("");
     setAccountView(view);
   }
 
   function handleAccountSelection(name: string) {
     if (accountDragSuppressClickRef.current) return;
+    if (bulkSelectionMode) {
+      setBulkSelectedNames((current) => toggleStringInArray(current, name));
+      setBulkActionMenuOpen(false);
+      return;
+    }
     setAccountSearch("");
     setSelectedName(name);
+  }
+
+  function enterBulkSelection() {
+    setAccountSearch("");
+    setManageMenuOpen(false);
+    setGroupContextMenu(null);
+    setAccountContextMenu(null);
+    setBulkActionMenuOpen(false);
+    setBulkSelectedNames([]);
+    setBulkSelectionMode(true);
+  }
+
+  function exitBulkSelection() {
+    setBulkActionMenuOpen(false);
+    setBulkSelectedNames([]);
+    setBulkSelectionMode(false);
+  }
+
+  function toggleAllVisibleAccounts() {
+    const visibleNames = visibleAccounts.map((account) => account.name);
+    setBulkSelectedNames((current) => {
+      if (visibleNames.length > 0 && visibleNames.every((name) => current.includes(name))) {
+        return current.filter((name) => !visibleNames.includes(name));
+      }
+      return Array.from(new Set([...current, ...visibleNames]));
+    });
+    setBulkActionMenuOpen(false);
   }
 
   async function copyAccountName(accountName: string) {
@@ -830,6 +887,17 @@ export default function App() {
   }, [copiedAccountName]);
 
   useEffect(() => {
+    if (!bulkStatus) return;
+    const timer = window.setTimeout(() => setBulkStatus(""), 2600);
+    return () => window.clearTimeout(timer);
+  }, [bulkStatus]);
+
+  useEffect(() => {
+    const accountNames = new Set(accounts.map((account) => account.name));
+    setBulkSelectedNames((current) => current.filter((name) => accountNames.has(name)));
+  }, [accounts]);
+
+  useEffect(() => {
     if (webStoreStatus?.phase !== "opened") return;
     let cancelled = false;
     const checkRunning = () => {
@@ -849,11 +917,12 @@ export default function App() {
   }, [webStoreStatus]);
 
   useEffect(() => {
-    if (!groupContextMenu && !accountContextMenu && !manageMenuOpen) return;
+    if (!groupContextMenu && !accountContextMenu && !manageMenuOpen && !bulkActionMenuOpen) return;
     const close = () => {
       setGroupContextMenu(null);
       setAccountContextMenu(null);
       setManageMenuOpen(false);
+      setBulkActionMenuOpen(false);
     };
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") close();
@@ -866,7 +935,7 @@ export default function App() {
       window.removeEventListener("contextmenu", close);
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [accountContextMenu, groupContextMenu, manageMenuOpen]);
+  }, [accountContextMenu, bulkActionMenuOpen, groupContextMenu, manageMenuOpen]);
 
   useEffect(() => {
     if (!selected) {
@@ -914,6 +983,16 @@ export default function App() {
 
     if (dialog.kind === "permanentDelete") {
       await confirmPermanentDeleteAccount(dialog.account);
+      return;
+    }
+
+    if (dialog.kind === "bulkDelete") {
+      await confirmBulkDelete(dialog.accounts);
+      return;
+    }
+
+    if (dialog.kind === "bulkPermanentDelete") {
+      await confirmBulkPermanentDelete(dialog.accounts);
       return;
     }
 
@@ -998,6 +1077,11 @@ export default function App() {
       return;
     }
 
+    if (dialog.kind === "bulkGroup") {
+      await applyBulkGroup(dialog.accounts, value);
+      return;
+    }
+
     if (dialog.kind === "note") {
       await saveAccountNote(dialog.account, value);
       return;
@@ -1005,6 +1089,11 @@ export default function App() {
 
     if (dialog.kind === "mark") {
       await saveAccountMark(dialog.account, value, dialog.color);
+      return;
+    }
+
+    if (dialog.kind === "bulkMark") {
+      await applyBulkMark(dialog.accounts, value, dialog.color);
       return;
     }
 
@@ -1812,8 +1901,13 @@ export default function App() {
       groupDragSuppressClickRef.current = false;
       return;
     }
+    if (bulkSelectionMode) {
+      setBulkSelectedNames([]);
+      setBulkActionMenuOpen(false);
+    }
     setAccountSearch("");
     if (group.value === allGroupsValue && selectedGroup === allGroupsValue) {
+      if (bulkSelectionMode) return;
       toggleAllGroupsCollapsed();
       return;
     }
@@ -2021,6 +2115,209 @@ export default function App() {
         },
       };
     });
+  }
+
+  async function runAtomicBulkMutation({
+    targets,
+    actionLabel,
+    successMessage,
+    refreshView,
+    preferredName,
+    apply,
+    rollback,
+    onSuccess,
+  }: {
+    targets: Account[];
+    actionLabel: string;
+    successMessage: string;
+    refreshView: AccountView;
+    preferredName?: string;
+    apply: (account: Account) => Promise<unknown>;
+    rollback: (account: Account) => Promise<unknown>;
+    onSuccess?: () => void;
+  }): Promise<boolean> {
+    if (targets.length === 0) return false;
+    setBusy(true);
+    setError("");
+    setDialogError("");
+    setBulkStatus("");
+    setBulkActionMenuOpen(false);
+    const applied: Account[] = [];
+    try {
+      for (const account of targets) {
+        await apply(account);
+        applied.push(account);
+      }
+    } catch (caught) {
+      const rollbackResults = await Promise.allSettled(
+        [...applied].reverse().map((account) => rollback(account)),
+      );
+      const rollbackFailed = rollbackResults.some((result) => result.status === "rejected");
+      const message = `${actionLabel}失败：${errorMessage(caught)}${
+        applied.length === 0
+          ? "；尚未改动任何账号。"
+          : rollbackFailed
+            ? "；部分账号回滚失败，请刷新后逐项核对。"
+            : "；已回滚本轮已完成的账号。"
+      }`;
+      setDialogError(message);
+      setError(message);
+      await refresh(selectedNameRef.current || undefined, accountView);
+      setBusy(false);
+      return false;
+    }
+
+    onSuccess?.();
+    setDialog(null);
+    setPlan(null);
+    exitBulkSelection();
+    await refresh(preferredName, refreshView);
+    setBulkStatus(successMessage);
+    setBusy(false);
+    return true;
+  }
+
+  async function applyBulkGroup(targets: Account[], rawValue: string) {
+    const nextGroup = rawValue.trim() || null;
+    const changedTargets = targets.filter((account) => (account.group?.trim() || null) !== nextGroup);
+    if (changedTargets.length === 0) {
+      setDialog(null);
+      exitBulkSelection();
+      setBulkStatus(`${targets.length} 个账号已在${nextGroup ? `“${nextGroup}”` : "“未分组”"}。`);
+      return;
+    }
+    await runAtomicBulkMutation({
+      targets: changedTargets,
+      actionLabel: "批量移动分组",
+      successMessage: `已将 ${targets.length} 个账号移到${nextGroup ? `“${nextGroup}”` : "“未分组”"}。`,
+      refreshView: accountView,
+      preferredName: targets[0]?.name,
+      apply: (account) => call<Account>("set_group", { name: account.name, value: nextGroup }),
+      rollback: (account) => call<Account>("set_group", {
+        name: account.name,
+        value: account.group?.trim() || null,
+      }),
+      onSuccess: () => {
+        if (!nextGroup) return;
+        setHiddenGroups((current) => current.filter((label) => label !== nextGroup));
+        setGroupOrder((current) => appendNewGroup(current, groupFilters, nextGroup));
+      },
+    });
+  }
+
+  async function applyBulkMark(targets: Account[], rawValue: string, color: MarkColor) {
+    const note = rawValue.trim() || null;
+    await runAtomicBulkMutation({
+      targets,
+      actionLabel: "批量设置标记",
+      successMessage: `已为 ${targets.length} 个账号设置标记。`,
+      refreshView: accountView,
+      preferredName: targets[0]?.name,
+      apply: (account) => call<Account>("set_mark", {
+        name: account.name,
+        marked: true,
+        note,
+        color,
+      }),
+      rollback: (account) => call<Account>("set_mark", {
+        name: account.name,
+        marked: account.marked,
+        note: account.marked ? account.mark_note : null,
+        color: account.marked ? account.mark_color : null,
+      }),
+    });
+  }
+
+  async function clearBulkMarks(targets: Account[]) {
+    const markedTargets = targets.filter((account) => account.marked);
+    if (markedTargets.length === 0) return;
+    await runAtomicBulkMutation({
+      targets: markedTargets,
+      actionLabel: "批量取消标记",
+      successMessage: `已取消 ${markedTargets.length} 个账号的标记。`,
+      refreshView: accountView,
+      preferredName: targets[0]?.name,
+      apply: (account) => call<Account>("set_mark", {
+        name: account.name,
+        marked: false,
+        note: null,
+        color: null,
+      }),
+      rollback: (account) => call<Account>("set_mark", {
+        name: account.name,
+        marked: true,
+        note: account.mark_note,
+        color: account.mark_color,
+      }),
+    });
+  }
+
+  async function confirmBulkDelete(targets: Account[]) {
+    await runAtomicBulkMutation({
+      targets,
+      actionLabel: "批量移入回收站",
+      successMessage: `已将 ${targets.length} 个账号移入回收站。`,
+      refreshView: "active",
+      apply: (account) => call<void>("delete_account", { name: account.name }),
+      rollback: (account) => call<Account>("restore_account", { name: account.name }),
+    });
+  }
+
+  async function restoreBulkAccounts(targets: Account[]) {
+    await runAtomicBulkMutation({
+      targets,
+      actionLabel: "批量恢复账号",
+      successMessage: `已恢复 ${targets.length} 个账号。`,
+      refreshView: "active",
+      preferredName: targets[0]?.name,
+      apply: (account) => call<Account>("restore_account", { name: account.name }),
+      rollback: (account) => call<void>("delete_account", { name: account.name }),
+      onSuccess: () => setAccountView("active"),
+    });
+  }
+
+  async function confirmBulkPermanentDelete(targets: Account[]) {
+    if (targets.length === 0) return;
+    setBusy(true);
+    setError("");
+    setDialogError("");
+    setBulkStatus("");
+    setBulkActionMenuOpen(false);
+    let deletedCount = 0;
+    try {
+      const runningStates = await Promise.all(
+        targets.map(async (account) => ({
+          account,
+          running: await call<boolean>("account_is_running", { name: account.name }),
+        })),
+      );
+      const runningNames = runningStates.filter((state) => state.running).map((state) => state.account.name);
+      if (runningNames.length > 0) {
+        throw new Error(`请先关闭正在运行的账号：${runningNames.map((name) => middleTruncate(name, 24)).join("、")}`);
+      }
+      for (const account of targets) {
+        await call<void>("permanently_delete_account", { name: account.name });
+        deletedCount += 1;
+      }
+      setDialog(null);
+      setPlan(null);
+      exitBulkSelection();
+      await refresh(undefined, "trash");
+      setBulkStatus(`已彻底删除 ${targets.length} 个账号。`);
+    } catch (caught) {
+      const message = deletedCount > 0
+        ? `已彻底删除 ${deletedCount} 个账号，其余账号未处理：${errorMessage(caught)}`
+        : `批量彻底删除失败：${errorMessage(caught)}`;
+      if (deletedCount > 0) {
+        setDialog(null);
+        setBulkSelectedNames(targets.slice(deletedCount).map((account) => account.name));
+      }
+      setDialogError(message);
+      setError(message);
+      await refresh(undefined, "trash");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function confirmDeleteAccount(account: Account) {
@@ -2267,6 +2564,16 @@ export default function App() {
           <div className="sidebarHeader">
             <span>账号</span>
             <div className="sidebarHeaderActions">
+              <button
+                aria-pressed={bulkSelectionMode}
+                className={`sidebarSelectButton ${bulkSelectionMode ? "active" : ""}`}
+                disabled={busy || visibleAccounts.length === 0}
+                type="button"
+                onClick={bulkSelectionMode ? exitBulkSelection : enterBulkSelection}
+              >
+                <ListChecks aria-hidden="true" size={13} />
+                {bulkSelectionMode ? "退出" : "多选"}
+              </button>
               <IconButton label="重新读取账号列表" disabled={busy} onClick={() => void run(() => refresh())}>
                 <RefreshCw aria-hidden="true" className={busy ? "spin" : undefined} size={13} />
               </IconButton>
@@ -2275,7 +2582,7 @@ export default function App() {
                   aria-expanded={manageMenuOpen}
                   aria-haspopup="menu"
                   className={`sidebarManageButton manageButton ${manageMenuOpen ? "active" : ""}`}
-                  disabled={busy}
+                  disabled={busy || bulkSelectionMode}
                   ref={manageButtonRef}
                   type="button"
                   onClick={(event) => {
@@ -2407,6 +2714,155 @@ export default function App() {
           </div>
 
           <div className="accountList" ref={accountListRef}>
+            {bulkSelectionMode ? (
+              <div aria-label="批量操作" className="bulkActionBar">
+                <button
+                  aria-label={allVisibleAccountsSelected ? "取消全选当前列表" : "全选当前列表"}
+                  aria-pressed={allVisibleAccountsSelected}
+                  className="bulkSelectAllButton"
+                  disabled={busy}
+                  type="button"
+                  onClick={toggleAllVisibleAccounts}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`bulkCheckbox ${allVisibleAccountsSelected ? "checked" : someVisibleAccountsSelected ? "mixed" : ""}`}
+                  >
+                    {allVisibleAccountsSelected ? <Check size={11} /> : someVisibleAccountsSelected ? "−" : null}
+                  </span>
+                  全选
+                </button>
+                <span aria-atomic="true" aria-live="polite" className="bulkSelectionCount" role="status">
+                  已选 {bulkSelectedAccounts.length}
+                </span>
+                <div className="bulkActionMenuWrap">
+                  <button
+                    aria-expanded={bulkActionMenuOpen}
+                    aria-haspopup="menu"
+                    className={`bulkActionMenuButton ${bulkActionMenuOpen ? "active" : ""}`}
+                    disabled={busy || bulkSelectedAccounts.length === 0}
+                    ref={bulkActionButtonRef}
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setManageMenuOpen(false);
+                      setGroupContextMenu(null);
+                      setAccountContextMenu(null);
+                      setBulkActionMenuOpen((current) => !current);
+                    }}
+                  >
+                    <MoreHorizontal aria-hidden="true" size={13} />
+                    操作
+                    <ChevronDown aria-hidden="true" className="manageChevron" size={10} />
+                  </button>
+                  {bulkActionMenuOpen ? (
+                    <div
+                      aria-label="批量操作选项"
+                      className="contextMenu bulkActionMenu"
+                      role="menu"
+                      onClick={(event) => event.stopPropagation()}
+                      onContextMenu={(event) => event.preventDefault()}
+                    >
+                      <div className="contextMenuTitle">{bulkSelectedAccounts.length} 个账号</div>
+                      {accountView === "active" ? (
+                        <>
+                          <button
+                            autoFocus
+                            className="contextMenuItem"
+                            role="menuitem"
+                            type="button"
+                            onClick={() => {
+                              setBulkActionMenuOpen(false);
+                              openDialog(
+                                { kind: "bulkGroup", accounts: bulkSelectedAccounts, value: "" },
+                                bulkActionButtonRef.current,
+                              );
+                            }}
+                          >
+                            <Folder aria-hidden="true" size={14} />
+                            <span className="contextMenuItemLabel">移动到分组…</span>
+                          </button>
+                          <button
+                            className="contextMenuItem"
+                            role="menuitem"
+                            type="button"
+                            onClick={() => {
+                              setBulkActionMenuOpen(false);
+                              openDialog(
+                                { kind: "bulkMark", accounts: bulkSelectedAccounts, value: "", color: "green" },
+                                bulkActionButtonRef.current,
+                              );
+                            }}
+                          >
+                            <Tag aria-hidden="true" size={14} />
+                            <span className="contextMenuItemLabel">设置标记…</span>
+                          </button>
+                          {bulkSelectedAccounts.some((account) => account.marked) ? (
+                            <button
+                              className="contextMenuItem"
+                              role="menuitem"
+                              type="button"
+                              onClick={() => void clearBulkMarks(bulkSelectedAccounts)}
+                            >
+                              <X aria-hidden="true" size={14} />
+                              <span className="contextMenuItemLabel">取消已有标记</span>
+                            </button>
+                          ) : null}
+                          <div className="contextMenuDivider" />
+                          <button
+                            className="contextMenuItem danger"
+                            role="menuitem"
+                            type="button"
+                            onClick={() => {
+                              setBulkActionMenuOpen(false);
+                              openDialog(
+                                { kind: "bulkDelete", accounts: bulkSelectedAccounts },
+                                bulkActionButtonRef.current,
+                              );
+                            }}
+                          >
+                            <Trash2 aria-hidden="true" size={14} />
+                            <span className="contextMenuItemLabel">移入回收站…</span>
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            autoFocus
+                            className="contextMenuItem"
+                            role="menuitem"
+                            type="button"
+                            onClick={() => void restoreBulkAccounts(bulkSelectedAccounts)}
+                          >
+                            <ArchiveRestore aria-hidden="true" size={14} />
+                            <span className="contextMenuItemLabel">恢复账号</span>
+                          </button>
+                          <div className="contextMenuDivider" />
+                          <button
+                            className="contextMenuItem danger"
+                            role="menuitem"
+                            type="button"
+                            onClick={() => {
+                              setBulkActionMenuOpen(false);
+                              openDialog(
+                                { kind: "bulkPermanentDelete", accounts: bulkSelectedAccounts },
+                                bulkActionButtonRef.current,
+                              );
+                            }}
+                          >
+                            <Trash2 aria-hidden="true" size={14} />
+                            <span className="contextMenuItemLabel">彻底删除…</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+                <button className="bulkDoneButton" disabled={busy} type="button" onClick={exitBulkSelection}>
+                  完成
+                </button>
+              </div>
+            ) : null}
             {visibleAccounts.length === 0 && loadError ? (
               // "暂无活跃账号" next to a full disk of accounts is a lie, and the
               // error toast has already auto-dismissed by the time anyone looks.
@@ -2443,11 +2899,12 @@ export default function App() {
               groupedAccounts.map((group) => (
                 <AccountGroupSection
                   accountDropTarget={accountDropTarget}
+                  bulkSelectedNames={bulkSelectedNameSet}
                   chronological={accountView === "trash"}
                   draggingAccountName={draggingAccountName}
                   pressedAccountName={pressedAccountName}
-                  collapsed={accountView === "active" && selectedGroup === allGroupsValue && collapsedGroups.includes(group.label)}
-                  canCollapse={accountView === "active" && selectedGroup === allGroupsValue}
+                  collapsed={!bulkSelectionMode && accountView === "active" && selectedGroup === allGroupsValue && collapsedGroups.includes(group.label)}
+                  canCollapse={!bulkSelectionMode && accountView === "active" && selectedGroup === allGroupsValue}
                   dropTarget={dropTargetGroup === group.label}
                   dropPlaceholderAtEnd={Boolean(
                     draggingAccountName && accountDropGroup === group.label && !accountDropTarget,
@@ -2464,7 +2921,8 @@ export default function App() {
                   onToggleCollapse={toggleGroupCollapse}
                   locatedName={hasAccountSearch ? accountSearchMatch?.name ?? "" : ""}
                   searching={false}
-                  selectedName={selected?.name ?? ""}
+                  selectedName={bulkSelectionMode ? "" : selected?.name ?? ""}
+                  selectionMode={bulkSelectionMode}
                 />
               ))
             )}
@@ -2915,7 +3373,13 @@ export default function App() {
         </div>
       ) : null}
       {error && !dialog ? <div className="toast errorToast" role="alert">{error}</div> : null}
-      {copyAnnouncement && !dialog && !error && !loadError ? (
+      {bulkStatus && !dialog && !error && !loadError ? (
+        <div className="toast successToast" role="status" aria-live="polite" aria-atomic="true">
+          <Check aria-hidden="true" size={14} />
+          {bulkStatus}
+        </div>
+      ) : null}
+      {copyAnnouncement && !bulkStatus && !dialog && !error && !loadError ? (
         <div className="toast copyToast accountCopyStatus" role="status" aria-live="polite" aria-atomic="true">
           <Check aria-hidden="true" size={14} />
           {copyAnnouncement}
@@ -2942,6 +3406,8 @@ export default function App() {
             );
           }}
           onConfirmDelete={confirmDeleteAccount}
+          onConfirmBulkDelete={confirmBulkDelete}
+          onConfirmBulkPermanentDelete={confirmBulkPermanentDelete}
           onConfirmDeleteGroup={(groupLabel, returnToManage) => void confirmDeleteGroup(groupLabel, returnToManage)}
           onConfirmPermanentDelete={confirmPermanentDeleteAccount}
           groupOptions={groupOptions}
@@ -2949,6 +3415,8 @@ export default function App() {
           onCreateGroup={createStandaloneGroup}
           onGroupOrderChange={setGroupOrder}
           onQuickGroup={(account, value) => void assignAccountGroup(account, value || null, true)}
+          onQuickBulkGroup={(accounts, value) => void applyBulkGroup(accounts, value)}
+          onQuickBulkMark={(accounts, value, color) => void applyBulkMark(accounts, value, color)}
           onQuickMark={(account, value, color) => void saveAccountMark(account, value, color)}
           onSubmit={submitDialog}
         />
@@ -2963,6 +3431,7 @@ function AccountDropPlaceholder() {
 
 function AccountGroupSection({
   accountDropTarget,
+  bulkSelectedNames,
   canCollapse,
   chronological,
   collapsed,
@@ -2973,6 +3442,7 @@ function AccountGroupSection({
   locatedName,
   pressedAccountName,
   searching,
+  selectionMode,
   selectedName,
   onFinishAccountDrag,
   onLaunchAccount,
@@ -2984,6 +3454,7 @@ function AccountGroupSection({
   onToggleCollapse,
 }: {
   accountDropTarget: AccountDropTarget | null;
+  bulkSelectedNames: Set<string>;
   canCollapse: boolean;
   chronological: boolean;
   collapsed: boolean;
@@ -2994,6 +3465,7 @@ function AccountGroupSection({
   locatedName: string;
   pressedAccountName: string;
   searching: boolean;
+  selectionMode: boolean;
   selectedName: string;
   onFinishAccountDrag: (event: PointerEvent<HTMLButtonElement>, cancelled: boolean) => void;
   onLaunchAccount: (account: Account) => Promise<void>;
@@ -3037,6 +3509,7 @@ function AccountGroupSection({
         <>
           {group.accounts.map((account) => {
             const isLocated = account.name === locatedName;
+            const isBulkSelected = bulkSelectedNames.has(account.name);
             const showPlaceholderBefore = !searching
               && !chronological
               && accountDropTarget?.name === account.name
@@ -3050,30 +3523,36 @@ function AccountGroupSection({
                 {showPlaceholderBefore ? <AccountDropPlaceholder /> : null}
                 <button
                   aria-current={isLocated ? "true" : undefined}
-                  aria-keyshortcuts={!searching && !account.trashed ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
-                  className={`accountRow ${searching ? "searchResult" : ""} ${chronological ? "chronological" : ""} ${account.name === selectedName ? "selected" : ""} ${isLocated ? "searchLocated" : ""} ${account.name === pressedAccountName ? "dragPressed" : ""} ${account.name === draggingAccountName ? "dragOrigin" : ""}`}
+                  aria-keyshortcuts={!selectionMode && !searching && !account.trashed ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
+                  aria-label={selectionMode ? `${isBulkSelected ? "取消选择" : "选择"}账号 ${account.name}` : undefined}
+                  aria-pressed={selectionMode ? isBulkSelected : undefined}
+                  className={`accountRow ${searching ? "searchResult" : ""} ${chronological ? "chronological" : ""} ${account.name === selectedName ? "selected" : ""} ${isBulkSelected ? "bulkSelected" : ""} ${selectionMode ? "selectionMode" : ""} ${isLocated ? "searchLocated" : ""} ${account.name === pressedAccountName ? "dragPressed" : ""} ${account.name === draggingAccountName ? "dragOrigin" : ""}`}
                   data-account-group={searching ? undefined : accountGroupLabel(account)}
                   data-account-name={searching ? undefined : account.name}
                   hidden={!searching && account.name === draggingAccountName}
-                  title={`${account.name}${isLocated ? "｜当前搜索匹配" : ""}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${account.note ? `｜备注：${account.note.replace(/\s+/g, " ")}` : ""}${searching || account.trashed ? "" : "｜拖动左侧手柄排序或移动分组；⌥↑ / ⌥↓ 微调"}`}
+                  title={`${account.name}${selectionMode ? isBulkSelected ? "｜已选择" : "｜点击选择" : ""}${isLocated ? "｜当前搜索匹配" : ""}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${account.note ? `｜备注：${account.note.replace(/\s+/g, " ")}` : ""}${selectionMode || searching || account.trashed ? "" : "｜拖动左侧手柄排序或移动分组；⌥↑ / ⌥↓ 微调"}`}
                   onClick={() => onSelectAccount(account.name)}
-                  onContextMenu={(event) => onOpenAccountContextMenu(event, account)}
-                  onDoubleClick={(event) => {
+                  onContextMenu={selectionMode ? (event) => event.preventDefault() : (event) => onOpenAccountContextMenu(event, account)}
+                  onDoubleClick={selectionMode ? undefined : (event) => {
                     const target = event.target;
                     if (target instanceof Element && target.closest(".dragHandle")) return;
                     void onLaunchAccount(account);
                   }}
-                  onKeyDown={searching ? undefined : (event) => onMoveAccountFromKeyboard(event, account)}
-                  onLostPointerCapture={searching ? undefined : (event) => onFinishAccountDrag(event, true)}
-                  onPointerCancel={searching ? undefined : (event) => onFinishAccountDrag(event, true)}
-                  onPointerDown={searching ? undefined : (event) => onStartAccountDrag(event, account)}
-                  onPointerMove={searching ? undefined : onMoveAccountDrag}
-                  onPointerUp={searching ? undefined : (event) => onFinishAccountDrag(event, false)}
+                  onKeyDown={searching || selectionMode ? undefined : (event) => onMoveAccountFromKeyboard(event, account)}
+                  onLostPointerCapture={searching || selectionMode ? undefined : (event) => onFinishAccountDrag(event, true)}
+                  onPointerCancel={searching || selectionMode ? undefined : (event) => onFinishAccountDrag(event, true)}
+                  onPointerDown={searching || selectionMode ? undefined : (event) => onStartAccountDrag(event, account)}
+                  onPointerMove={searching || selectionMode ? undefined : onMoveAccountDrag}
+                  onPointerUp={searching || selectionMode ? undefined : (event) => onFinishAccountDrag(event, false)}
                 >
                   <span className="accountRail" />
                   <span className="accountMain">
                     <span className="accountTitle">
-                      {searching ? null : isLocated ? (
+                      {selectionMode ? (
+                        <span aria-hidden="true" className={`accountSelectionCheckbox ${isBulkSelected ? "checked" : ""}`}>
+                          {isBulkSelected ? <Check size={11} /> : null}
+                        </span>
+                      ) : searching ? null : isLocated ? (
                         <Search className="searchMatchIcon" size={14} />
                       ) : account.trashed ? (
                         <Trash2 className="trashRowIcon" size={14} />
@@ -3136,6 +3615,8 @@ function EditorDialog({
   onChange,
   onClose,
   onConfirmDelete,
+  onConfirmBulkDelete,
+  onConfirmBulkPermanentDelete,
   onConfirmDeleteGroup,
   onConfirmPermanentDelete,
   groupOptions,
@@ -3143,6 +3624,8 @@ function EditorDialog({
   onCreateGroup,
   onGroupOrderChange,
   onQuickGroup,
+  onQuickBulkGroup,
+  onQuickBulkMark,
   onQuickMark,
   onSubmit,
 }: {
@@ -3153,6 +3636,8 @@ function EditorDialog({
   onChange: (next: DialogState | null) => void;
   onClose: () => void;
   onConfirmDelete: (account: Account) => void;
+  onConfirmBulkDelete: (accounts: Account[]) => void;
+  onConfirmBulkPermanentDelete: (accounts: Account[]) => void;
   onConfirmDeleteGroup: (groupLabel: string, returnToManage?: boolean) => void;
   onConfirmPermanentDelete: (account: Account) => void;
   groupOptions: GroupOption[];
@@ -3160,6 +3645,8 @@ function EditorDialog({
   onCreateGroup: (value: string) => boolean;
   onGroupOrderChange: (labels: string[]) => void;
   onQuickGroup: (account: Account, value: string) => void;
+  onQuickBulkGroup: (accounts: Account[], value: string) => void;
+  onQuickBulkMark: (accounts: Account[], value: string, color: MarkColor) => void;
   onQuickMark: (account: Account, value: string, color: MarkColor) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
@@ -3408,6 +3895,57 @@ function EditorDialog({
     );
   }
 
+  if (dialog.kind === "bulkDelete" || dialog.kind === "bulkPermanentDelete") {
+    const permanent = dialog.kind === "bulkPermanentDelete";
+    const accountPreview = dialog.accounts.slice(0, 4);
+    return (
+      <div className="modalBackdrop">
+        <div
+          aria-labelledby={dialogTitleId}
+          aria-modal="true"
+          className="modal"
+          ref={(node) => {
+            modalRef.current = node;
+          }}
+          role={permanent ? "alertdialog" : "dialog"}
+          tabIndex={-1}
+        >
+          <button className="modalClose" type="button" aria-label="关闭" onClick={onClose}>
+            <X size={15} />
+          </button>
+          <h2 id={dialogTitleId}>{permanent ? "彻底删除" : "移入回收站"} {dialog.accounts.length} 个账号？</h2>
+          <p>
+            {permanent
+              ? "将永久删除这些账号的目录、登录数据和缓存。此操作不可恢复。"
+              : "这些账号会移入回收站，账号目录、登录数据和缓存会保留，之后仍可恢复。"}
+          </p>
+          <ul aria-label="受影响账号" className="bulkDialogAccountList">
+            {accountPreview.map((account) => <li key={account.name}>{account.name}</li>)}
+            {dialog.accounts.length > accountPreview.length ? (
+              <li>以及另外 {dialog.accounts.length - accountPreview.length} 个账号</li>
+            ) : null}
+          </ul>
+          {error ? <p className="modalError">{error}</p> : null}
+          <div className="modalActions">
+            <button autoFocus className="secondaryButton" disabled={busy} type="button" onClick={onClose}>
+              取消
+            </button>
+            <button
+              className="dangerButton"
+              disabled={busy}
+              type="button"
+              onClick={() => permanent
+                ? onConfirmBulkPermanentDelete(dialog.accounts)
+                : onConfirmBulkDelete(dialog.accounts)}
+            >
+              {busy ? "处理中..." : permanent ? "彻底删除" : "移入回收站"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (dialog.kind === "deleteGroup") {
     return (
       <div className="modalBackdrop">
@@ -3453,7 +3991,7 @@ function EditorDialog({
 
   const config = dialogConfig(dialog);
   const groupPicker =
-    dialog.kind === "group" || dialog.kind === "create" ? (
+    dialog.kind === "group" || dialog.kind === "create" || dialog.kind === "bulkGroup" ? (
       <SortableGroupPicker
         activeValue={dialog.kind === "create" ? dialog.group.trim() : dialog.value.trim()}
         busy={busy}
@@ -3463,6 +4001,10 @@ function EditorDialog({
           if (dialog.kind === "create") {
             setCreatingGroup(false);
             onChange({ ...dialog, group: option.value });
+            return;
+          }
+          if (dialog.kind === "bulkGroup") {
+            onQuickBulkGroup(dialog.accounts, option.value);
             return;
           }
           onQuickGroup(dialog.account, option.value);
@@ -3532,14 +4074,16 @@ function EditorDialog({
         </button>
         <h2 id={dialogTitleId}>{config.title}</h2>
         {config.description ? <p>{config.description}</p> : null}
-        {dialog.kind === "group" ? groupPicker : null}
-        {dialog.kind === "mark" ? (
+        {dialog.kind === "group" || dialog.kind === "bulkGroup" ? groupPicker : null}
+        {dialog.kind === "mark" || dialog.kind === "bulkMark" ? (
           <MarkPresetPicker
             activeValue={dialog.value.trim()}
             activeColor={dialog.color}
             busy={busy}
             onActiveColorChange={(color) => onChange({ ...dialog, color })}
-            onApply={(value) => onQuickMark(dialog.account, value, dialog.color)}
+            onApply={(value) => dialog.kind === "bulkMark"
+              ? onQuickBulkMark(dialog.accounts, value, dialog.color)
+              : onQuickMark(dialog.account, value, dialog.color)}
           />
         ) : null}
         <label className="field">
@@ -3567,7 +4111,7 @@ function EditorDialog({
               aria-required={["create", "createGroup", "renameGroup"].includes(dialog.kind) ? true : undefined}
               autoFocus
               id={dialog.kind === "create" ? "cloak-account-name" : undefined}
-              maxLength={dialog.kind === "mark"
+              maxLength={dialog.kind === "mark" || dialog.kind === "bulkMark"
                 ? maxMarkLength
                 : dialog.kind === "createGroup" || dialog.kind === "renameGroup"
                   ? maxGroupLength
@@ -4324,7 +4868,15 @@ function MarkColorPicker({
 }
 
 function dialogConfig(
-  dialog: Exclude<DialogState, { kind: "delete" } | { kind: "permanentDelete" } | { kind: "deleteGroup" } | { kind: "manage" }>,
+  dialog: Exclude<
+    DialogState,
+    | { kind: "delete" }
+    | { kind: "permanentDelete" }
+    | { kind: "bulkDelete" }
+    | { kind: "bulkPermanentDelete" }
+    | { kind: "deleteGroup" }
+    | { kind: "manage" }
+  >,
 ): {
   title: string;
   label: string;
@@ -4379,6 +4931,14 @@ function dialogConfig(
       const accountName = middleTruncate(dialog.account.name, 28);
       return { title: `分组「${accountName}」`, label: "分组名称", placeholder: "codex / antigravity / claude", action: dialog.account.group ? "保存 / 清除" : "保存" };
     }
+    case "bulkGroup":
+      return {
+        title: `移动 ${dialog.accounts.length} 个账号`,
+        label: "目标分组",
+        placeholder: "codex / antigravity / claude",
+        action: "移动账号",
+        description: "选择已有分组，或输入新分组名称；留空会移到“未分组”。",
+      };
     case "note": {
       const accountName = middleTruncate(dialog.account.name, 28);
       return {
@@ -4399,6 +4959,14 @@ function dialogConfig(
         description: "可选择标记颜色；不输入文字时只显示圆点，输入后会显示彩色标记。",
       };
     }
+    case "bulkMark":
+      return {
+        title: `标记 ${dialog.accounts.length} 个账号`,
+        label: "标记内容（可选，最多 24 个字符）",
+        placeholder: "例如：待处理 / 备用 / 已验证",
+        action: "应用到所选账号",
+        description: "同一颜色和文字会应用到所有已选账号；失败时会回滚本轮已完成的账号。",
+      };
   }
 }
 
@@ -5001,8 +5569,22 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
     } as T;
   }
   if (command === "rename_account") return { ...accounts[0], name: String(args?.newName ?? "renamed") } as T;
-  if (command === "restore_account") return { ...accounts[0], name: String(args?.name ?? accounts[0].name), archived: false, trashed: false } as T;
-  if (command === "permanently_delete_account") return undefined as T;
+  if (command === "delete_account") {
+    const name = String(args?.name ?? accounts[0].name);
+    mockTrashedOverrides.set(name, true);
+    return undefined as T;
+  }
+  if (command === "restore_account") {
+    const name = String(args?.name ?? accounts[0].name);
+    mockTrashedOverrides.set(name, false);
+    const account = accounts.find((item) => item.name === name) ?? accounts[0];
+    return { ...account, name, archived: false, trashed: false, deleted_at: null } as T;
+  }
+  if (command === "permanently_delete_account") {
+    const name = String(args?.name ?? accounts[0].name);
+    mockPermanentlyDeletedAccounts.add(name);
+    return undefined as T;
+  }
   if (command === "set_group") {
     const name = String(args?.name ?? accounts[0].name);
     const group = (args?.value as string | null | undefined) ?? null;
@@ -5128,7 +5710,16 @@ function mockAccounts(): Account[] {
       ? mockGroupOverrides.get(account.name) ?? null
       : account.group;
     const mark = mockMarkOverrides.get(account.name);
-    const withGroup = group === account.group ? account : { ...account, group };
+    const trashOverride = mockTrashedOverrides.get(account.name);
+    const withTrash = trashOverride === undefined
+      ? account
+      : {
+          ...account,
+          archived: false,
+          trashed: trashOverride,
+          deleted_at: trashOverride ? account.deleted_at ?? Date.now() * 1000 : null,
+        };
+    const withGroup = group === withTrash.group ? withTrash : { ...withTrash, group };
     const withNote = mockNoteOverrides.has(account.name)
       ? { ...withGroup, note: mockNoteOverrides.get(account.name) ?? null }
       : withGroup;
@@ -5140,7 +5731,7 @@ function mockAccounts(): Account[] {
           mark_color: mark.marked ? mark.color : null,
         }
       : withNote;
-  });
+  }).filter((account) => !mockPermanentlyDeletedAccounts.has(account.name));
 }
 
 function mockLaunchPlan(account: Account, full: boolean): LaunchPlan {

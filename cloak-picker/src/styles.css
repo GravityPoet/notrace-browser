@@ -249,6 +249,39 @@ summary:focus-visible {
   color: var(--accent-hover);
 }
 
+.sidebarSelectButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 30px;
+  border: 1px solid rgba(0, 113, 227, 0.26);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0 9px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -0.12px;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 100ms ease;
+}
+
+.sidebarSelectButton:hover:not(:disabled) {
+  border-color: rgba(0, 113, 227, 0.48);
+  background: var(--accent-soft);
+}
+
+.sidebarSelectButton:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.sidebarSelectButton.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
 .sidebarManageButton {
   display: inline-flex;
   align-items: center;
@@ -659,6 +692,122 @@ summary:focus-visible {
   padding: 6px 0;
 }
 
+.bulkActionBar {
+  position: sticky;
+  z-index: 4;
+  top: -6px;
+  display: grid;
+  grid-template-columns: auto minmax(46px, 1fr) auto auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  margin: 0 8px 6px;
+  border: 1px solid rgba(0, 113, 227, 0.18);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.94);
+  padding: 6px;
+  box-shadow: 0 5px 18px rgba(18, 42, 74, 0.09);
+  backdrop-filter: saturate(180%) blur(18px);
+}
+
+.bulkSelectAllButton,
+.bulkActionMenuButton,
+.bulkDoneButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  min-height: 28px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 680;
+  letter-spacing: -0.12px;
+  white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 100ms ease;
+}
+
+.bulkSelectAllButton:hover:not(:disabled),
+.bulkActionMenuButton:hover:not(:disabled),
+.bulkActionMenuButton.active,
+.bulkDoneButton:hover:not(:disabled) {
+  border-color: rgba(0, 113, 227, 0.16);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.bulkSelectAllButton:active:not(:disabled),
+.bulkActionMenuButton:active:not(:disabled),
+.bulkDoneButton:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.bulkCheckbox,
+.accountSelectionCheckbox {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid rgba(0, 0, 0, 0.24);
+  background: rgba(255, 255, 255, 0.9);
+  color: #ffffff;
+  font-weight: 700;
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform 100ms ease;
+}
+
+.bulkCheckbox {
+  width: 15px;
+  height: 15px;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.bulkCheckbox.checked,
+.bulkCheckbox.mixed,
+.accountSelectionCheckbox.checked {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.1);
+}
+
+.bulkSelectionCount {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bulkActionMenuWrap {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.contextMenu.bulkActionMenu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  left: auto;
+  z-index: 45;
+  width: 190px;
+  max-height: min(320px, calc(100vh - 150px));
+  overflow-y: auto;
+  transform: none;
+}
+
+.bulkDoneButton {
+  color: var(--accent);
+}
+
 .accountGroup {
   min-width: 0;
   padding: 12px 14px 10px;
@@ -797,6 +946,19 @@ summary:focus-visible {
   box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.14);
 }
 
+.accountRow.bulkSelected {
+  background: rgba(0, 113, 227, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.3);
+}
+
+.accountRow.bulkSelected:hover {
+  background: rgba(0, 113, 227, 0.14);
+}
+
+.accountRow.selectionMode {
+  cursor: default;
+}
+
 .accountRow.searchLocated {
   background: rgba(0, 113, 227, 0.13);
   box-shadow: inset 0 0 0 2px rgba(0, 113, 227, 0.38), 0 5px 16px rgba(0, 113, 227, 0.12);
@@ -845,7 +1007,8 @@ summary:focus-visible {
   background: transparent;
 }
 
-.accountRow.selected .accountRail {
+.accountRow.selected .accountRail,
+.accountRow.bulkSelected .accountRail {
   background: var(--accent);
 }
 
@@ -878,6 +1041,17 @@ summary:focus-visible {
   touch-action: none;
   user-select: none;
   transition: background 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.accountSelectionCheckbox {
+  width: 18px;
+  height: 18px;
+  margin: 0 1px 0 -1px;
+  border-radius: 6px;
+}
+
+.accountRow.selectionMode:active .accountSelectionCheckbox {
+  transform: scale(0.92);
 }
 
 .dragHandle:hover {
@@ -1769,6 +1943,15 @@ button:disabled {
   color: #005fc2;
 }
 
+.successToast {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #a8dbb9;
+  background: #edf9f1;
+  color: #13713b;
+}
+
 .toastAction {
   margin-left: 10px;
   padding: 2px 8px;
@@ -2181,6 +2364,24 @@ button:disabled {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.bulkDialogAccountList {
+  display: grid;
+  gap: 5px;
+  max-height: 132px;
+  margin: -2px 0 0;
+  overflow: auto;
+  border-radius: 8px;
+  background: #f5f5f7;
+  padding: 8px 10px 8px 28px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.bulkDialogAccountList li {
+  overflow-wrap: anywhere;
 }
 
 .modal .modalError {
@@ -2788,6 +2989,12 @@ button:disabled {
   .accountGroupHeader,
   .accountRow,
   .dragHandle,
+  .accountSelectionCheckbox,
+  .bulkCheckbox,
+  .bulkSelectAllButton,
+  .bulkActionMenuButton,
+  .bulkDoneButton,
+  .sidebarSelectButton,
   .manageChevron,
   .manageTabs button,
   .manageRow,
