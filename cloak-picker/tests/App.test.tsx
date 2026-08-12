@@ -17,6 +17,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
+const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
 
 function installMemoryStorage() {
   const values = new Map<string, string>();
@@ -162,6 +163,11 @@ afterEach(async () => {
   container?.remove();
   root = null;
   container = null;
+  if (originalClipboardDescriptor) {
+    Object.defineProperty(navigator, "clipboard", originalClipboardDescriptor);
+  } else {
+    Reflect.deleteProperty(navigator, "clipboard");
+  }
   vi.restoreAllMocks();
 });
 
@@ -324,6 +330,26 @@ describe("Cloak Picker dialog regressions", () => {
 
     const codexRow = dialog?.querySelector('[aria-label="重命名分组 codex"]')?.closest(".manageRow");
     expect(codexRow?.textContent).toContain("3 个账号");
+  });
+
+  it("copies the complete selected account name from the detail heading", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const copyButton = document.querySelector<HTMLButtonElement>(".accountNameCopy");
+    expect(copyButton).not.toBeNull();
+
+    await click(copyButton as HTMLButtonElement);
+    await settle(0);
+
+    expect(writeText).toHaveBeenCalledWith("demo-alpha@example.test");
+    expect(copyButton?.title).toBe("已复制");
+    expect(document.querySelector(".accountCopyStatus")?.textContent).toBe(
+      "已复制账号 demo-alpha@example.test",
+    );
   });
 
   it("writes, finds, edits, and clears a multiline note from an account context menu", async () => {

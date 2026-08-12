@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  Copy,
   Folder,
   GripVertical,
   Globe2,
@@ -407,6 +408,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [planLoading, setPlanLoading] = useState(false);
   const [error, setError] = useState<string>("");
+  const [copiedAccountName, setCopiedAccountName] = useState("");
+  const [copyAnnouncement, setCopyAnnouncement] = useState("");
   const [launchStatus, setLaunchStatus] = useState<LaunchStatus | null>(null);
   const [challengeAudit, setChallengeAudit] = useState<ChallengeAuditStatus | null>(null);
   const [webStoreStatus, setWebStoreStatus] = useState<{
@@ -613,6 +616,19 @@ export default function App() {
     setSelectedName(name);
   }
 
+  async function copyAccountName(accountName: string) {
+    setError("");
+    try {
+      await copyTextToClipboard(accountName);
+      setCopiedAccountName(accountName);
+      setCopyAnnouncement(`已复制账号 ${accountName}`);
+    } catch (caught) {
+      setCopiedAccountName("");
+      setCopyAnnouncement("");
+      setError(`复制账号失败：${errorMessage(caught)}`);
+    }
+  }
+
   useEffect(() => {
     void run(() => refresh(undefined, "active"));
   }, []);
@@ -803,6 +819,15 @@ export default function App() {
     const timer = window.setTimeout(() => setError(""), 5000);
     return () => window.clearTimeout(timer);
   }, [error]);
+
+  useEffect(() => {
+    if (!copiedAccountName) return;
+    const timer = window.setTimeout(() => {
+      setCopiedAccountName("");
+      setCopyAnnouncement("");
+    }, 1800);
+    return () => window.clearTimeout(timer);
+  }, [copiedAccountName]);
 
   useEffect(() => {
     if (webStoreStatus?.phase !== "opened") return;
@@ -2467,7 +2492,24 @@ export default function App() {
               <header className="detailHeader">
                 <div className="titleBlock">
                   <span className="eyebrow">隔离身份</span>
-                  <h1 title={selected.name}>{middleTruncate(selected.name, 44)}</h1>
+                  <div className={`accountNameControl ${copiedAccountName === selected.name ? "copied" : ""}`}>
+                    <h1 className="accountNameHeading" title={selected.name}>
+                      {middleTruncate(selected.name, 44)}
+                    </h1>
+                    <button
+                      className="accountNameCopy"
+                      type="button"
+                      aria-label={`复制账号 ${selected.name}`}
+                      title={copiedAccountName === selected.name ? "已复制" : `点击复制账号：${selected.name}`}
+                      onClick={() => void copyAccountName(selected.name)}
+                    >
+                      {copiedAccountName === selected.name ? (
+                        <Check className="accountNameCopyIcon" aria-hidden="true" size={16} />
+                      ) : (
+                        <Copy className="accountNameCopyIcon" aria-hidden="true" size={16} />
+                      )}
+                    </button>
+                  </div>
                   {webStoreStatusLabel ? (
                     <span
                       className={`webStoreStatus ${webStoreStatusIsCurrent ? "current" : "other"}`}
@@ -2873,6 +2915,12 @@ export default function App() {
         </div>
       ) : null}
       {error && !dialog ? <div className="toast errorToast" role="alert">{error}</div> : null}
+      {copyAnnouncement && !dialog && !error && !loadError ? (
+        <div className="toast copyToast accountCopyStatus" role="status" aria-live="polite" aria-atomic="true">
+          <Check aria-hidden="true" size={14} />
+          {copyAnnouncement}
+        </div>
+      ) : null}
       {dialog ? (
         <EditorDialog
           dialog={dialog}
@@ -5148,6 +5196,29 @@ function middleTruncate(value: string, max: number) {
   if (value.length <= max) return value;
   const keep = Math.max(4, Math.floor((max - 1) / 2));
   return `${value.slice(0, keep)}…${value.slice(-keep)}`;
+}
+
+async function copyTextToClipboard(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.readOnly = true;
+  textarea.tabIndex = -1;
+  textarea.setAttribute("aria-hidden", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  previousFocus?.focus({ preventScroll: true });
+  if (!copied) throw new Error("系统剪贴板不可用");
 }
 
 function formatCreatedAt(createdAtMicros: number) {
