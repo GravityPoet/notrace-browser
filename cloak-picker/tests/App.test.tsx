@@ -332,6 +332,142 @@ describe("Cloak Picker dialog regressions", () => {
     expect(codexRow?.textContent).toContain("3 个账号");
   });
 
+  it("exposes multi-select with a selected count and applies a batch group move", async () => {
+    await click(buttonWithText("多选"));
+
+    const bulkBar = document.querySelector<HTMLElement>(".bulkActionBar");
+    expect(bulkBar).not.toBeNull();
+    expect(bulkBar?.textContent).toContain("已选 0");
+    expect(buttonWithText("操作", bulkBar ?? document).disabled).toBe(true);
+
+    const alpha = accountRow("demo-alpha@example.test");
+    const beta = accountRow("demo-beta");
+    await click(alpha);
+    await click(beta);
+
+    expect(alpha.getAttribute("aria-pressed")).toBe("true");
+    expect(beta.getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector(".bulkSelectionCount")?.textContent).toBe("已选 2");
+    expect(alpha.querySelector(".accountSelectionCheckbox.checked")).not.toBeNull();
+
+    await act(async () => {
+      alpha.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    await openContextMenu(alpha);
+    await settle(100);
+    expect(mockCommandCountForTest("launch_account")).toBe(0);
+    expect(document.querySelector('[role="menu"][aria-label="demo-alpha@example.test 账号菜单"]')).toBeNull();
+
+    await click(buttonWithText("操作"));
+    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="批量操作选项"]');
+    expect(menu).not.toBeNull();
+    expect(menu?.textContent).toContain("2 个账号");
+    expect(buttonWithText("移动到分组…", menu ?? document)).toBeTruthy();
+    expect(buttonWithText("设置标记…", menu ?? document)).toBeTruthy();
+    expect(buttonWithText("移入回收站…", menu ?? document)).toBeTruthy();
+
+    await click(buttonWithText("移动到分组…", menu ?? document));
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog?.textContent).toContain("移动 2 个账号");
+    await click(buttonWithText("antigravity", dialog ?? document));
+    await settle(420);
+
+    expect(mockCommandCountForTest("set_group")).toBe(2);
+    expect(document.querySelector(".bulkActionBar")).toBeNull();
+    expect(document.querySelector(".successToast")?.textContent).toContain("已将 2 个账号移到“antigravity”");
+  });
+
+  it("sets and clears a shared mark across selected accounts", async () => {
+    await click(buttonWithText("多选"));
+    await click(accountRow("demo-beta"));
+    await click(accountRow("demo-gamma-copy"));
+    await click(buttonWithText("操作"));
+    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="批量操作选项"]');
+    await click(buttonWithText("设置标记…", menu ?? document));
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    const input = dialog?.querySelector<HTMLInputElement>(".field input");
+    await click(buttonWithText("红色", dialog ?? document));
+    await inputText(input as HTMLInputElement, "批量待办");
+    await click(buttonWithText("应用到所选账号", dialog ?? document));
+    await settle(420);
+
+    expect(mockCommandCountForTest("set_mark")).toBe(2);
+    expect(accountRow("demo-beta").textContent).toContain("批量待办");
+    expect(accountRow("demo-gamma-copy").textContent).toContain("批量待办");
+
+    await click(buttonWithText("多选"));
+    await click(accountRow("demo-beta"));
+    await click(accountRow("demo-gamma-copy"));
+    await click(buttonWithText("操作"));
+    const clearMenu = document.querySelector<HTMLElement>('[role="menu"][aria-label="批量操作选项"]');
+    await click(buttonWithText("取消已有标记", clearMenu ?? document));
+    await settle(420);
+
+    expect(mockCommandCountForTest("set_mark")).toBe(4);
+    expect(accountRow("demo-beta").textContent).not.toContain("批量待办");
+    expect(accountRow("demo-gamma-copy").textContent).not.toContain("批量待办");
+  });
+
+  it("moves selected active accounts to trash and restores them as a batch", async () => {
+    await click(buttonWithText("多选"));
+    await click(accountRow("demo-beta"));
+    await click(accountRow("demo-gamma-copy"));
+    await click(buttonWithText("操作"));
+    const activeMenu = document.querySelector<HTMLElement>('[role="menu"][aria-label="批量操作选项"]');
+    await click(buttonWithText("移入回收站…", activeMenu ?? document));
+
+    const deleteDialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(deleteDialog?.textContent).toContain("移入回收站 2 个账号");
+    expect(deleteDialog?.querySelectorAll(".bulkDialogAccountList li")).toHaveLength(2);
+    await click(buttonWithText("移入回收站", deleteDialog ?? document));
+    await settle(420);
+
+    expect(mockCommandCountForTest("delete_account")).toBe(2);
+    await click(buttonWithText("回收站"));
+    await settle(160);
+    expect(accountRow("demo-beta")).toBeTruthy();
+    expect(accountRow("demo-gamma-copy")).toBeTruthy();
+
+    await click(buttonWithText("多选"));
+    await click(accountRow("demo-beta"));
+    await click(accountRow("demo-gamma-copy"));
+    await click(buttonWithText("操作"));
+    const trashMenu = document.querySelector<HTMLElement>('[role="menu"][aria-label="批量操作选项"]');
+    expect(buttonWithText("恢复账号", trashMenu ?? document)).toBeTruthy();
+    await click(buttonWithText("恢复账号", trashMenu ?? document));
+    await settle(420);
+
+    expect(mockCommandCountForTest("restore_account")).toBe(2);
+    expect(buttonWithText("活跃").getAttribute("aria-selected")).toBe("true");
+    expect(document.querySelector(".successToast")?.textContent).toContain("已恢复 2 个账号");
+  });
+
+  it("requires an explicit counted confirmation before permanent batch deletion", async () => {
+    await click(buttonWithText("回收站"));
+    await settle(140);
+    await click(buttonWithText("多选"));
+    await click(buttonWithText("全选"));
+    expect(document.querySelector(".bulkSelectionCount")?.textContent).toBe("已选 2");
+
+    await click(buttonWithText("操作"));
+    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="批量操作选项"]');
+    await click(buttonWithText("彻底删除…", menu ?? document));
+
+    const dialog = document.querySelector<HTMLElement>('[role="alertdialog"]');
+    expect(dialog?.textContent).toContain("彻底删除 2 个账号");
+    expect(dialog?.textContent).toContain("此操作不可恢复");
+    expect(mockCommandCountForTest("permanently_delete_account")).toBe(0);
+
+    await click(buttonWithText("彻底删除", dialog ?? document));
+    await settle(620);
+
+    expect(mockCommandCountForTest("account_is_running")).toBe(2);
+    expect(mockCommandCountForTest("permanently_delete_account")).toBe(2);
+    expect(document.querySelector(".bulkActionBar")).toBeNull();
+    expect(document.body.textContent).toContain("回收站为空");
+  });
+
   it("copies the complete selected account name from the detail heading", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
