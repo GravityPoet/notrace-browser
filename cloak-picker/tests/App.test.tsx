@@ -638,6 +638,16 @@ describe("Cloak Picker dialog regressions", () => {
     expect(groupFilterLabels()).toEqual([...initialGroupOrder, "client-a"]);
   });
 
+  it("defaults new accounts to the codex group", async () => {
+    await click(groupFilter("antigravity"));
+    await click(buttonWithText("新建"));
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialogGroupOption(dialog as HTMLElement, "codex").getAttribute("aria-pressed")).toBe("true");
+    expect(dialogGroupOption(dialog as HTMLElement, "antigravity").getAttribute("aria-pressed")).toBe("false");
+  });
+
   it("keeps the existing group order when creating an account inside a group", async () => {
     const initialGroupOrder = groupFilterLabels();
     await click(buttonWithText("新建"));

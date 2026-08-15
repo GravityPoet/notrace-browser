@@ -282,7 +282,8 @@ type AccountView = "active" | "trash";
 const allGroupsValue = "__all__";
 const allGroupsLabel = "全部";
 const ungroupedLabel = "未分组";
-const commonGroups = ["codex", "antigravity", "claude"];
+const defaultCreateGroup = "codex";
+const commonGroups = [defaultCreateGroup, "antigravity", "claude"];
 const groupOrderStorageKey = "cloak-picker.groupOrder.v1";
 const accountOrderStorageKey = "cloak-picker.accountOrder.v1";
 const collapsedGroupsStorageKey = "cloak-picker.collapsedGroups.v1";
@@ -1186,8 +1187,7 @@ export default function App() {
   }
 
   function defaultCreateGroupValue() {
-    if (accountView !== "active" || selectedGroup === allGroupsValue) return "";
-    return selectedGroup === ungroupedLabel ? "" : selectedGroup;
+    return defaultCreateGroup;
   }
 
   function createStandaloneGroup(rawValue: string): boolean {
