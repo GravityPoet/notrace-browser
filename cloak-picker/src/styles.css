@@ -2094,6 +2094,204 @@ button:disabled {
   min-height: min(510px, calc(100vh - 36px));
 }
 
+.workspaceMigrationModal {
+  gap: 12px;
+  width: min(620px, calc(100vw - 36px));
+}
+
+.workspaceMigrationTabs {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.workspaceSecurityNote {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px 11px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.workspaceSecurityNote svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.workspaceInlineHint {
+  margin: -6px 0 0;
+  color: var(--soft);
+  font-size: 11px;
+}
+
+.workspaceInlineHint.error {
+  color: #b42318;
+}
+
+.workspaceNotice {
+  margin: 0;
+  border: 1px solid rgba(0, 113, 227, 0.18);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  padding: 9px 10px;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.workspaceProgressBlock {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.workspaceProgress {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-3);
+}
+
+.workspaceProgress span {
+  display: block;
+  width: 38%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  animation: workspaceProgress 1.15s ease-in-out infinite alternate;
+}
+
+@keyframes workspaceProgress {
+  from { transform: translateX(-10%); }
+  to { transform: translateX(190%); }
+}
+
+.workspaceResult {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid #b7dec5;
+  border-radius: 9px;
+  background: #f3fbf5;
+  padding: 11px 12px;
+}
+
+.workspaceResult > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #1c7c45;
+}
+
+.workspaceResult > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.workspaceResult strong,
+.workspaceResult span,
+.workspaceResult code,
+.workspaceResult small {
+  min-width: 0;
+}
+
+.workspaceResult span,
+.workspaceResult small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.workspaceResult code {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspacePreview {
+  display: grid;
+  gap: 9px;
+  min-height: 0;
+}
+
+.workspacePreviewSummary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workspacePreviewSummary span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.workspaceAccountMappings {
+  display: grid;
+  max-height: min(260px, 40vh);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.workspaceMapping {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(190px, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+}
+
+.workspaceMapping + .workspaceMapping {
+  border-top: 1px solid var(--border);
+}
+
+.workspaceMapping > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.workspaceMapping strong,
+.workspaceMapping small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspaceMapping small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.workspaceMapping input {
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: #fbfcff;
+  padding: 0 9px;
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+
+.workspaceMapping input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.workspaceMapping.identityConflict {
+  background: #fff8f7;
+}
+
 .manageHeader {
   display: grid;
   gap: 3px;
@@ -2973,6 +3171,13 @@ button:disabled {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .workspaceProgress span {
+    width: 100%;
+    animation: none;
+    opacity: 0.72;
+    transform: none;
+  }
+
   .groupDragPreview {
     --group-drag-scale: 1;
   }
@@ -3035,5 +3240,15 @@ button:disabled {
   .inspectorGroup h2 {
     border-right: 0;
     border-bottom: 1px solid var(--border);
+  }
+
+  .workspacePreviewSummary,
+  .workspaceMapping {
+    grid-template-columns: 1fr;
+  }
+
+  .workspacePreviewSummary {
+    display: grid;
+    gap: 3px;
   }
 }
