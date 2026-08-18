@@ -1,4 +1,17 @@
+mod profile_metadata;
 mod relay;
+mod workspace;
+
+pub use profile_metadata::ProfileMetadata;
+pub use workspace::{
+    export_workspace, export_workspace_with_picker_state,
+    export_workspace_with_picker_state_and_cancellation, import_workspace,
+    import_workspace_with_cancellation, preview_workspace_import,
+    preview_workspace_import_with_cancellation, WorkspaceExportSummary, WorkspaceImportAccount,
+    WorkspaceImportMapping, WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
+};
+#[cfg(test)]
+pub(crate) use workspace::{should_skip_archive_path, validate_workspace_archive_path};
 
 use rand::Rng;
 use regex::Regex;
@@ -50,18 +63,42 @@ const MAX_ACCOUNT_NOTE_CHARS: usize = 1000;
 /// UNMASKED_RENDERER_WEBGL (verified against the live binary). Apple Silicon always
 /// uses the Metal backend, never OpenGL — an "OpenGL 4.1" suffix here would be an
 /// impossible/fake string that CreepJS and BrowserScan flag instantly.
-const CLOAK_GPU_RENDERERS: &[&str] = &[
-    "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
-    "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
-    "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)",
-    "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)",
+const CLOAK_GPU_BUCKETS: &[(&str, &str)] = &[
+    (
+        "bucket-m1",
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+    ),
+    (
+        "bucket-m2",
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+    ),
+    (
+        "bucket-m3",
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)",
+    ),
+    (
+        "bucket-m4",
+        "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)",
+    ),
 ];
 
-/// Deterministic GPU renderer selection from seed. Sha256("gpu:"+seed) mod pool len.
-fn gpu_renderer_for_seed(seed: &str) -> &'static str {
+/// Pin a versioned GPU bucket once per profile. Persisting the bucket prevents
+/// later pool additions from silently changing an established identity.
+fn gpu_bucket_for_seed(seed: &str) -> &'static str {
     let digest = Sha256::digest(format!("gpu:{seed}").as_bytes());
     let idx = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) as usize;
-    CLOAK_GPU_RENDERERS[idx % CLOAK_GPU_RENDERERS.len()]
+    CLOAK_GPU_BUCKETS[idx % CLOAK_GPU_BUCKETS.len()].0
+}
+
+fn gpu_renderer_for_bucket(bucket: &str) -> Option<&'static str> {
+    CLOAK_GPU_BUCKETS
+        .iter()
+        .find_map(|(id, renderer)| (*id == bucket).then_some(*renderer))
+}
+
+#[cfg(test)]
+fn gpu_renderer_for_seed(seed: &str) -> &'static str {
+    gpu_renderer_for_bucket(gpu_bucket_for_seed(seed)).expect("built-in GPU bucket")
 }
 
 /// Detected engine version from the actual CloakBrowser binary.
@@ -200,6 +237,18 @@ pub enum CloakError {
     PrivacyGate(String),
     #[error("launch cancelled")]
     LaunchCancelled,
+    #[error("profile metadata is invalid: {0}")]
+    InvalidProfileMetadata(String),
+    #[error("profile owner marker is missing or does not belong to NoTrace: {0}")]
+    ProfileOwnerMismatch(String),
+    #[error("workspace archive is invalid: {0}")]
+    InvalidWorkspaceArchive(String),
+    #[error("workspace import conflict: {0}")]
+    WorkspaceConflict(String),
+    #[error("workspace passphrase must contain 12 to 1024 characters")]
+    InvalidWorkspacePassphrase,
+    #[error("workspace operation cancelled")]
+    WorkspaceCancelled,
     #[error("io: {0}")]
     Io(#[from] io::Error),
     #[error("url: {0}")]
@@ -255,6 +304,8 @@ impl CloakConfig {
 pub struct Account {
     pub name: String,
     pub profile_path: PathBuf,
+    pub profile_id: String,
+    pub serial: u64,
     pub created_at: u64,
     #[serde(default)]
     pub deleted_at: Option<u64>,
@@ -292,11 +343,71 @@ pub enum ProxyMode {
     Relay,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum GeoConsensus {
+    Agreement,
+    SingleSource,
+    Conflict,
+    #[default]
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GeoObservation {
+    pub source: String,
+    pub exit_ip: String,
+    pub country: String,
+    pub timezone: String,
+    pub asn: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GeoPlan {
     pub exit_ip: Option<String>,
     pub country: Option<String>,
     pub timezone: Option<String>,
+    #[serde(default)]
+    pub asn: Option<String>,
+    #[serde(default)]
+    pub consensus: GeoConsensus,
+    #[serde(default)]
+    pub observations: Vec<GeoObservation>,
+}
+
+impl GeoPlan {
+    pub fn is_trusted(&self) -> bool {
+        self.consensus == GeoConsensus::Agreement
+    }
+
+    fn trusted_values(&self) -> Self {
+        if self.is_trusted() {
+            return self.clone();
+        }
+        Self {
+            consensus: self.consensus.clone(),
+            observations: self.observations.clone(),
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum IdentityTemplate {
+    HostNative,
+    StableMultiAccount,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IdentityContract {
+    pub identity_schema_version: u32,
+    pub template: IdentityTemplate,
+    pub hardware_profile_id: String,
+    pub gpu_bucket: String,
+    pub render_identity_version: u32,
+    pub kernel_version: String,
+    pub engine_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -319,6 +430,7 @@ pub struct LaunchPlan {
     pub geo_cache_hit: bool,
     pub locale: Option<String>,
     pub browser_identity: Value,
+    pub identity: IdentityContract,
     pub argv: Vec<String>,
     pub privacy_failures: Vec<String>,
 }
@@ -343,6 +455,9 @@ pub struct LaunchDiagnostics {
     pub exit_ip: Option<String>,
     pub country: Option<String>,
     pub timezone: Option<String>,
+    pub asn: Option<String>,
+    pub geo_consensus: GeoConsensus,
+    pub identity: IdentityContract,
     pub geo_cache_hit: bool,
     pub preflight_ms: u64,
     pub launch_ms: u64,
@@ -453,6 +568,7 @@ enum ExtraExtensionKind {
 
 pub fn validate_account_name(name: &str) -> Result<()> {
     if name.is_empty()
+        || name.len() > 255
         || name == "main"
         || name.starts_with('.')
         || name.ends_with('.')
@@ -509,6 +625,7 @@ fn collect_accounts(
 ) -> Result<Vec<Account>> {
     fs::create_dir_all(&config.account_base)?;
     secure_dir(&config.account_base)?;
+    profile_metadata::ensure_workspace_profile_metadata(config)?;
 
     let mut accounts = Vec::new();
     for entry in fs::read_dir(&config.account_base)? {
@@ -547,10 +664,12 @@ fn collect_accounts(
 pub fn read_account(config: &CloakConfig, name: &str) -> Result<Account> {
     validate_account_name(name)?;
     let profile_path = config.profile_dir(name);
-    if profile_path.exists() {
-        secure_account_dir(&profile_path)?;
+    if !profile_path.is_dir() {
+        return Err(CloakError::AccountMissing(name.to_string()));
     }
+    secure_account_dir(&profile_path)?;
     let seed = pinned_seed(&profile_path)?.unwrap_or_else(|| legacy_seed(name));
+    let metadata = profile_metadata::ensure_profile_metadata(config, name, &profile_path, &seed)?;
     let group = read_first_line(&profile_path.join(".cloak-group"))?;
     let mark_path = profile_path.join(".cloak-marked");
     let marked = mark_path.exists();
@@ -578,6 +697,8 @@ pub fn read_account(config: &CloakConfig, name: &str) -> Result<Account> {
     Ok(Account {
         name: name.to_string(),
         profile_path,
+        profile_id: metadata.profile_id,
+        serial: metadata.serial,
         created_at,
         deleted_at,
         archived,
@@ -644,17 +765,24 @@ pub fn create_account_with_group(
     if profile.exists() {
         return Err(CloakError::AccountExists(name.to_string()));
     }
-    secure_account_dir(&profile)?;
-    let seed = allocate_unused_seed(config);
-    write_secret_atomic(&profile.join(".cloak-seed"), &seed)?;
-    write_secret_atomic(
-        &profile.join(".cloak-created-at"),
-        &current_created_at().to_string(),
-    )?;
-    if let Some(raw) = group.map(str::trim).filter(|value| !value.is_empty()) {
-        write_secret_atomic(&profile.join(".cloak-group"), raw)?;
+    let result = (|| {
+        secure_account_dir(&profile)?;
+        let seed = allocate_unused_seed(config);
+        write_secret_atomic(&profile.join(".cloak-seed"), &seed)?;
+        write_secret_atomic(
+            &profile.join(".cloak-created-at"),
+            &current_created_at().to_string(),
+        )?;
+        profile_metadata::ensure_profile_metadata(config, name, &profile, &seed)?;
+        if let Some(raw) = group.map(str::trim).filter(|value| !value.is_empty()) {
+            write_secret_atomic(&profile.join(".cloak-group"), raw)?;
+        }
+        read_account(config, name)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&profile);
     }
-    read_account(config, name)
+    result
 }
 
 pub fn rename_account(config: &CloakConfig, old_name: &str, new_name: &str) -> Result<Account> {
@@ -673,6 +801,7 @@ pub fn rename_account(config: &CloakConfig, old_name: &str, new_name: &str) -> R
         return Err(CloakError::AccountRunning(old_name.to_string()));
     }
     let seed = pinned_seed(&old_path)?.unwrap_or_else(|| legacy_seed(old_name));
+    profile_metadata::ensure_profile_metadata(config, old_name, &old_path, &seed)?;
     write_secret_atomic(&old_path.join(".cloak-seed"), &seed)?;
     fs::rename(&old_path, &new_path)?;
     secure_account_dir(&new_path)?;
@@ -695,6 +824,7 @@ pub fn permanently_delete_account(config: &CloakConfig, name: &str) -> Result<()
     if account_profile_is_running(&profile)? {
         return Err(CloakError::AccountRunning(name.to_string()));
     }
+    profile_metadata::require_profile_owner(&profile)?;
 
     fs::remove_dir_all(profile)?;
     Ok(())
@@ -874,7 +1004,12 @@ fn build_launch_plan_for_url(
     }
 
     let profile_path = config.profile_dir(name);
+    if !profile_path.is_dir() {
+        return Err(CloakError::AccountMissing(name.to_string()));
+    }
     let seed = pinned_seed(&profile_path)?.unwrap_or_else(|| legacy_seed(name));
+    let profile_metadata =
+        profile_metadata::ensure_profile_metadata(config, name, &profile_path, &seed)?;
     let extension_runtime_path = profile_path.join(".cloak-companion");
     let extension_plan = discover_extra_extensions(config, &profile_path, &extension_runtime_path)?;
     let browser_binary = resolve_browser_binary(config)?;
@@ -895,6 +1030,8 @@ fn build_launch_plan_for_url(
                 exit_ip: None,
                 country: None,
                 timezone: env::var("TZ").ok(),
+                consensus: GeoConsensus::Unavailable,
+                ..GeoPlan::default()
             },
             false,
         )
@@ -917,6 +1054,8 @@ fn build_launch_plan_for_url(
                         exit_ip: None,
                         country: None,
                         timezone: env::var("TZ").ok(),
+                        consensus: GeoConsensus::Unavailable,
+                        ..GeoPlan::default()
                     },
                     false,
                 )
@@ -924,13 +1063,27 @@ fn build_launch_plan_for_url(
         }
     };
 
-    if geo.exit_ip.is_none() && !options.skip_geo {
+    if !options.skip_geo && !geo.is_trusted() {
+        let detail = match geo.consensus {
+            GeoConsensus::SingleSource => "仅有一个 GeoIP 来源返回完整结果",
+            GeoConsensus::Conflict => "GeoIP 来源对 IP、国家、时区或 ASN 的判断冲突",
+            GeoConsensus::Unavailable => "GeoIP 来源均不可用",
+            GeoConsensus::Agreement => "",
+        };
+        privacy_failures.push(format!("GeoIP 未达到 2/3 共识：{detail}。"));
+    }
+    let trusted_geo = if options.skip_geo {
+        geo.clone()
+    } else {
+        geo.trusted_values()
+    };
+    if trusted_geo.exit_ip.is_none() && !options.skip_geo {
         privacy_failures.push(format!(
             "无法通过账号出口获取公网 IP（proxy={}）。",
             proxy_config.display
         ));
     }
-    if let Some(tz) = geo.timezone.as_deref() {
+    if let Some(tz) = trusted_geo.timezone.as_deref() {
         if !valid_tz(tz) {
             privacy_failures.push(format!("无法通过账号出口解析有效 timezone（got={}）。", tz));
         }
@@ -940,14 +1093,14 @@ fn build_launch_plan_for_url(
     if let Some(label) = region.as_deref() {
         if !region_matches(
             label,
-            geo.country.as_deref().unwrap_or(""),
-            geo.timezone.as_deref().unwrap_or(""),
+            trusted_geo.country.as_deref().unwrap_or(""),
+            trusted_geo.timezone.as_deref().unwrap_or(""),
         ) {
             privacy_failures.push(format!(
                 "区域标签「{}」与出口 country/timezone 不一致（country={}, timezone={}）。",
                 label,
-                geo.country.as_deref().unwrap_or("unknown"),
-                geo.timezone.as_deref().unwrap_or("unknown")
+                trusted_geo.country.as_deref().unwrap_or("unknown"),
+                trusted_geo.timezone.as_deref().unwrap_or("unknown")
             ));
         }
     }
@@ -956,7 +1109,11 @@ fn build_launch_plan_for_url(
         .locale_override
         .unwrap_or_else(|| profile_path.join(".cloak-locale").exists());
     let locale = if locale_enabled {
-        if let Some(country) = geo.country.as_deref().filter(|value| !value.is_empty()) {
+        if let Some(country) = trusted_geo
+            .country
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
             let primary = language_for_country(country);
             Some(accept_language(&primary))
         } else {
@@ -973,6 +1130,7 @@ fn build_launch_plan_for_url(
     };
 
     let browser_identity = browser_identity_plan(&engine);
+    let identity = identity_contract_for(&profile_metadata, &engine, &host_kernel_version());
 
     // C5: Privacy gate — version consistency assertion (UA major == engine major)
     let ua_major = browser_identity
@@ -1025,7 +1183,13 @@ fn build_launch_plan_for_url(
         "--test-type".to_string(),
         "--disable-blink-features=AutomationControlled".to_string(),
     ]);
-    append_native_fingerprint_args(&mut argv, &geo, locale.as_deref(), &engine, &seed);
+    append_native_fingerprint_args(
+        &mut argv,
+        &trusted_geo,
+        locale.as_deref(),
+        &engine,
+        &identity,
+    );
     append_window_geometry_args(&mut argv, &profile_path);
     if let Some(proxy_arg) = &proxy_config.browser_arg {
         argv.push(format!("--proxy-server={proxy_arg}"));
@@ -1055,6 +1219,7 @@ fn build_launch_plan_for_url(
         geo_cache_hit,
         locale,
         browser_identity,
+        identity,
         argv,
         privacy_failures,
     })
@@ -1139,7 +1304,9 @@ fn launch_plan(
         &plan.browser_binary,
         &plan.profile_path,
         &argv,
-        plan.geo.timezone.as_deref(),
+        (options.skip_geo || plan.geo.is_trusted())
+            .then_some(plan.geo.timezone.as_deref())
+            .flatten(),
     )?;
     let result = LaunchResult {
         account: plan.account.clone(),
@@ -1156,6 +1323,9 @@ fn launch_plan(
             exit_ip: plan.geo.exit_ip.clone(),
             country: plan.geo.country.clone(),
             timezone: plan.geo.timezone.clone(),
+            asn: plan.geo.asn.clone(),
+            geo_consensus: plan.geo.consensus.clone(),
+            identity: plan.identity.clone(),
             geo_cache_hit: plan.geo_cache_hit,
             preflight_ms: duration_millis(preflight_duration),
             launch_ms: duration_millis(launch_started.elapsed()),
@@ -2121,6 +2291,7 @@ fn lookup_geo_cached(
             let fresh = entry.cache_key == cache_key
                 && entry.checked_at <= now
                 && now.saturating_sub(entry.checked_at) <= GEO_CACHE_TTL_SECS
+                && entry.geo.is_trusted()
                 && entry.geo.exit_ip.is_some()
                 && entry.geo.timezone.as_deref().map(valid_tz).unwrap_or(false);
             if fresh {
@@ -2152,9 +2323,23 @@ fn lookup_geo_cached(
 
 fn lookup_geo(proxy: &ProxyConfig, cancellation: Option<&AtomicBool>) -> Result<GeoPlan> {
     ensure_launch_not_cancelled(cancellation)?;
-    if let Some(geo) = first_complete_geo(GEO_LOOKUP_ATTEMPTS, || {
-        lookup_geo_attempt(proxy, cancellation)
-    })? {
+    let mut best_result: Option<GeoPlan> = None;
+    for _ in 0..GEO_LOOKUP_ATTEMPTS {
+        let Some(geo) = lookup_geo_attempt(proxy, cancellation)? else {
+            continue;
+        };
+        if geo.is_trusted() {
+            return Ok(geo);
+        }
+        let replace = best_result
+            .as_ref()
+            .map(|current| geo.observations.len() > current.observations.len())
+            .unwrap_or(true);
+        if replace {
+            best_result = Some(geo);
+        }
+    }
+    if let Some(geo) = best_result {
         return Ok(geo);
     }
     let total_timeout_secs = GEO_ATTEMPT_TIMEOUT_SECS * GEO_LOOKUP_ATTEMPTS as u64;
@@ -2166,6 +2351,7 @@ fn lookup_geo(proxy: &ProxyConfig, cancellation: Option<&AtomicBool>) -> Result<
     )))
 }
 
+#[cfg(test)]
 fn first_complete_geo<F>(attempts: usize, mut attempt: F) -> Result<Option<GeoPlan>>
 where
     F: FnMut() -> Result<Option<GeoPlan>>,
@@ -2213,7 +2399,7 @@ fn lookup_geo_attempt(
         });
     }
     drop(sender);
-    receive_first_geo(
+    receive_geo_consensus(
         &receiver,
         source_count,
         Duration::from_secs(GEO_ATTEMPT_TIMEOUT_SECS),
@@ -2221,6 +2407,42 @@ fn lookup_geo_attempt(
     )
 }
 
+fn receive_geo_consensus(
+    receiver: &mpsc::Receiver<Option<GeoObservation>>,
+    source_count: usize,
+    timeout: Duration,
+    cancellation: Option<&AtomicBool>,
+) -> Result<Option<GeoPlan>> {
+    let deadline = Instant::now() + timeout;
+    let mut completed = 0;
+    let mut observations = Vec::new();
+    while completed < source_count {
+        ensure_launch_not_cancelled(cancellation)?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let wait = remaining.min(Duration::from_millis(100));
+        match receiver.recv_timeout(wait) {
+            Ok(result) => {
+                completed += 1;
+                if let Some(observation) = result {
+                    observations.push(observation);
+                    if let Some(geo) = resolve_geo_consensus(observations.clone()) {
+                        if geo.is_trusted() {
+                            return Ok(Some(geo));
+                        }
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    Ok(resolve_geo_consensus(observations))
+}
+
+#[cfg(test)]
 fn receive_first_geo(
     receiver: &mpsc::Receiver<Option<GeoPlan>>,
     source_count: usize,
@@ -2262,14 +2484,14 @@ fn geo_cache_revision(profile_path: &Path) -> Option<String> {
     // edits change this metadata, including password-only rotations.
     let metadata = fs::metadata(profile_path.join(".cloak-proxy")).ok()?;
     let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
-    let revision = format!("geo-cache:v2:{}:{}", metadata.len(), modified.as_nanos());
+    let revision = format!("geo-cache:v3:{}:{}", metadata.len(), modified.as_nanos());
     let digest = Sha256::digest(revision.as_bytes());
     Some(hex_digest(&digest))
 }
 
-fn parse_geo_json(source: &str, body: &str) -> Option<GeoPlan> {
+fn parse_geo_json(source: &str, body: &str) -> Option<GeoObservation> {
     let value: Value = serde_json::from_str(body).ok()?;
-    let (ip, country, timezone) = match source {
+    let (ip, country, timezone, asn) = match source {
         "ipwho" => {
             if !value.get("success")?.as_bool()? {
                 return None;
@@ -2278,6 +2500,7 @@ fn parse_geo_json(source: &str, body: &str) -> Option<GeoPlan> {
                 value.get("ip")?.as_str()?,
                 value.get("country_code")?.as_str().unwrap_or(""),
                 value.get("timezone")?.get("id")?.as_str()?,
+                json_scalar_string(value.get("connection")?.get("asn")?)?,
             )
         }
         "ipinfo" => {
@@ -2288,26 +2511,130 @@ fn parse_geo_json(source: &str, body: &str) -> Option<GeoPlan> {
                 value.get("ip")?.as_str()?,
                 value.get("country").and_then(Value::as_str).unwrap_or(""),
                 value.get("timezone")?.as_str()?,
+                json_scalar_string(value.get("org")?)?,
             )
         }
-        "geojs" => (
-            value.get("ip")?.as_str()?,
-            value
-                .get("country_code")
-                .and_then(Value::as_str)
-                .unwrap_or(""),
-            value.get("timezone")?.as_str()?,
-        ),
+        "geojs" => {
+            let asn = value
+                .get("asn")
+                .and_then(json_scalar_string)
+                .or_else(|| value.get("organization").and_then(json_scalar_string))?;
+            (
+                value.get("ip")?.as_str()?,
+                value
+                    .get("country_code")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+                value.get("timezone")?.as_str()?,
+                asn,
+            )
+        }
         _ => return None,
     };
-    if ip.is_empty() || timezone.is_empty() {
+    normalize_geo_observation(GeoObservation {
+        source: source.to_string(),
+        exit_ip: ip.to_string(),
+        country: country.to_string(),
+        timezone: timezone.to_string(),
+        asn,
+    })
+}
+
+fn resolve_geo_consensus(observations: Vec<GeoObservation>) -> Option<GeoPlan> {
+    let mut by_source = std::collections::HashMap::new();
+    for observation in observations
+        .into_iter()
+        .filter_map(normalize_geo_observation)
+    {
+        by_source
+            .entry(observation.source.clone())
+            .or_insert(observation);
+    }
+    let mut observations = by_source.into_values().collect::<Vec<_>>();
+    observations.sort_by(|left, right| left.source.cmp(&right.source));
+    if observations.is_empty() {
         return None;
     }
+
+    let mut counts = std::collections::HashMap::<(String, String, String, String), usize>::new();
+    for observation in &observations {
+        *counts
+            .entry((
+                observation.exit_ip.clone(),
+                observation.country.clone(),
+                observation.timezone.clone(),
+                observation.asn.clone(),
+            ))
+            .or_default() += 1;
+    }
+    if let Some(((exit_ip, country, timezone, asn), _)) =
+        counts.into_iter().find(|(_, count)| *count >= 2)
+    {
+        return Some(GeoPlan {
+            exit_ip: Some(exit_ip),
+            country: Some(country),
+            timezone: Some(timezone),
+            asn: Some(asn),
+            consensus: GeoConsensus::Agreement,
+            observations,
+        });
+    }
+
+    if observations.len() == 1 {
+        let only = &observations[0];
+        return Some(GeoPlan {
+            exit_ip: Some(only.exit_ip.clone()),
+            country: Some(only.country.clone()),
+            timezone: Some(only.timezone.clone()),
+            asn: Some(only.asn.clone()),
+            consensus: GeoConsensus::SingleSource,
+            observations,
+        });
+    }
+
     Some(GeoPlan {
-        exit_ip: Some(ip.to_string()),
-        country: Some(country.to_string()).filter(|s| !s.is_empty()),
-        timezone: Some(timezone.to_string()),
+        consensus: GeoConsensus::Conflict,
+        observations,
+        ..GeoPlan::default()
     })
+}
+
+fn normalize_geo_observation(mut observation: GeoObservation) -> Option<GeoObservation> {
+    observation.exit_ip = observation
+        .exit_ip
+        .trim()
+        .parse::<std::net::IpAddr>()
+        .ok()?
+        .to_string();
+    observation.country = observation.country.trim().to_ascii_uppercase();
+    observation.timezone = observation.timezone.trim().to_string();
+    observation.asn = normalize_asn(&observation.asn)?;
+    if observation.source.trim().is_empty()
+        || observation.country.len() != 2
+        || !valid_tz(&observation.timezone)
+    {
+        return None;
+    }
+    Some(observation)
+}
+
+fn normalize_asn(value: &str) -> Option<String> {
+    let value = value.trim();
+    let number = if value.bytes().all(|byte| byte.is_ascii_digit()) {
+        value.parse::<u64>().ok()?
+    } else {
+        let re = Regex::new(r"(?i)\bAS\s*(\d+)\b").ok()?;
+        re.captures(value)?.get(1)?.as_str().parse::<u64>().ok()?
+    };
+    (number > 0).then(|| format!("AS{number}"))
+}
+
+fn json_scalar_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
 }
 
 fn run_selftest(
@@ -2575,7 +2902,7 @@ fn append_native_fingerprint_args(
     geo: &GeoPlan,
     locale: Option<&str>,
     engine: &EngineVersion,
-    seed: &str,
+    identity: &IdentityContract,
 ) {
     // Existing: timezone + locale + webrtc
     if let Some(tz) = geo.timezone.as_deref().filter(|value| !value.is_empty()) {
@@ -2611,10 +2938,56 @@ fn append_native_fingerprint_args(
         pv = CLOAK_MAC_PLATFORM_VERSION
     ));
     argv.push("--fingerprint-gpu-vendor=Google Inc. (Apple)".to_string());
-    argv.push(format!(
-        "--fingerprint-gpu-renderer={renderer}",
-        renderer = gpu_renderer_for_seed(seed)
-    ));
+    if let Some(renderer) = gpu_renderer_for_bucket(&identity.gpu_bucket) {
+        argv.push(format!("--fingerprint-gpu-renderer={renderer}"));
+    }
+}
+
+fn identity_contract_for(
+    metadata: &ProfileMetadata,
+    engine: &EngineVersion,
+    kernel_version: &str,
+) -> IdentityContract {
+    let native = engine.uses_native_identity();
+    IdentityContract {
+        identity_schema_version: metadata.identity_schema_version,
+        template: if native {
+            IdentityTemplate::HostNative
+        } else {
+            IdentityTemplate::StableMultiAccount
+        },
+        hardware_profile_id: if native {
+            "host-native-v1".to_string()
+        } else {
+            metadata.hardware_profile_id.clone()
+        },
+        gpu_bucket: if native {
+            "host-native".to_string()
+        } else {
+            metadata.gpu_bucket.clone()
+        },
+        render_identity_version: metadata.render_identity_version,
+        kernel_version: kernel_version.trim().to_string(),
+        engine_version: engine.distribution.clone(),
+    }
+}
+
+fn host_kernel_version() -> String {
+    #[cfg(unix)]
+    {
+        if let Ok(output) = Command::new("/usr/bin/uname")
+            .arg("-r")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+        {
+            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !value.is_empty() {
+                return value;
+            }
+        }
+    }
+    "unknown".to_string()
 }
 
 fn append_window_geometry_args(argv: &mut Vec<String>, profile_path: &Path) {
@@ -3105,6 +3478,10 @@ fn secure_account_dir(path: &Path) -> Result<()> {
         ".cloak-group",
         ".cloak-marked",
         ".cloak-mark-color",
+        ".cloak-note",
+        ".cloak-profile.json",
+        ".cloak-profile.json.bak1",
+        ".cloak-profile.json.bak2",
     ] {
         let path = path.join(file);
         if path.exists() {
@@ -3467,6 +3844,9 @@ mod tests {
                 exit_ip: Some("203.0.113.10".to_string()),
                 country: Some("JP".to_string()),
                 timezone: Some("Asia/Tokyo".to_string()),
+                asn: Some("AS64501".to_string()),
+                consensus: GeoConsensus::Agreement,
+                observations: Vec::new(),
             },
         };
         let cache_path = profile.join(".cloak-geo-cache.json");
@@ -3508,6 +3888,9 @@ mod tests {
                 exit_ip: Some("203.0.113.20".to_string()),
                 country: Some("JP".to_string()),
                 timezone: Some("Asia/Tokyo".to_string()),
+                asn: Some("AS64501".to_string()),
+                consensus: GeoConsensus::Agreement,
+                observations: Vec::new(),
             }))
         })
         .unwrap();
@@ -3524,13 +3907,41 @@ mod tests {
         let body = r#"{
             "ip": "203.0.113.21",
             "country_code": "JP",
-            "timezone": "Asia/Tokyo"
+            "timezone": "Asia/Tokyo",
+            "asn": 64501
         }"#;
         let geo = parse_geo_json("geojs", body).unwrap();
 
-        assert_eq!(geo.exit_ip.as_deref(), Some("203.0.113.21"));
-        assert_eq!(geo.country.as_deref(), Some("JP"));
-        assert_eq!(geo.timezone.as_deref(), Some("Asia/Tokyo"));
+        assert_eq!(geo.exit_ip, "203.0.113.21");
+        assert_eq!(geo.country, "JP");
+        assert_eq!(geo.timezone, "Asia/Tokyo");
+        assert_eq!(geo.asn, "AS64501");
+
+        let ipwho = parse_geo_json(
+            "ipwho",
+            r#"{
+                "success": true,
+                "ip": "203.0.113.21",
+                "country_code": "jp",
+                "timezone": {"id": "Asia/Tokyo"},
+                "connection": {"asn": 64501}
+            }"#,
+        )
+        .unwrap();
+        let ipinfo = parse_geo_json(
+            "ipinfo",
+            r#"{
+                "ip": "203.0.113.21",
+                "country": "JP",
+                "timezone": "Asia/Tokyo",
+                "org": "AS64501 Example Network"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(ipwho.exit_ip, ipinfo.exit_ip);
+        assert_eq!(ipwho.country, ipinfo.country);
+        assert_eq!(ipwho.timezone, ipinfo.timezone);
+        assert_eq!(ipwho.asn, ipinfo.asn);
     }
 
     #[test]
@@ -4052,16 +4463,19 @@ mod tests {
     fn native_fingerprint_args_follow_cloakbrowser_wrapper_contract() {
         let mut argv = Vec::new();
         let engine = EngineVersion::fallback();
+        let metadata = ProfileMetadata::new_for_test(1, "profile-id", gpu_bucket_for_seed("54321"));
+        let identity = identity_contract_for(&metadata, &engine, "25.5.0");
         append_native_fingerprint_args(
             &mut argv,
             &GeoPlan {
                 exit_ip: Some("203.0.113.24".to_string()),
                 country: Some("JP".to_string()),
                 timezone: Some("Asia/Tokyo".to_string()),
+                ..GeoPlan::default()
             },
             Some("ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7"),
             &engine,
-            "54321",
+            &identity,
         );
 
         let expected: Vec<String> = vec![
@@ -4093,16 +4507,19 @@ mod tests {
             full: "150.0.7871.114".to_string(),
             distribution: "150.0.7871.114.4".to_string(),
         };
+        let metadata = ProfileMetadata::new_for_test(1, "profile-id", "bucket-m3");
+        let identity = identity_contract_for(&metadata, &engine, "25.5.0");
         append_native_fingerprint_args(
             &mut argv,
             &GeoPlan {
                 exit_ip: Some("203.0.113.24".to_string()),
                 country: Some("JP".to_string()),
                 timezone: Some("Asia/Tokyo".to_string()),
+                ..GeoPlan::default()
             },
             Some("ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7"),
             &engine,
-            "54321",
+            &identity,
         );
 
         assert_eq!(
@@ -4606,10 +5023,16 @@ mod tests {
                 exit_ip: None,
                 country: None,
                 timezone: None,
+                ..GeoPlan::default()
             },
             geo_cache_hit: false,
             locale: None,
             browser_identity: browser_identity_plan(&EngineVersion::fallback()),
+            identity: identity_contract_for(
+                &ProfileMetadata::new_for_test(1, "profile-id", "bucket-m3"),
+                &EngineVersion::fallback(),
+                "25.5.0",
+            ),
             argv: Vec::new(),
             privacy_failures: Vec::new(),
         };
@@ -4752,5 +5175,328 @@ mod tests {
         assert!(selftest.contains("Cookies.crx"));
         assert!(!selftest.contains("Chromium Web Store"));
         assert!(!selftest.contains("-_AI_PDF_1.30.1.crx"));
+    }
+
+    #[test]
+    fn geo_consensus_requires_two_matching_complete_sources() {
+        let matching = GeoObservation {
+            source: "ipwho".to_string(),
+            exit_ip: "203.0.113.9".to_string(),
+            country: "jp".to_string(),
+            timezone: "Asia/Tokyo".to_string(),
+            asn: "AS64501".to_string(),
+        };
+        let mut second = matching.clone();
+        second.source = "ipinfo".to_string();
+        second.country = "JP".to_string();
+        second.asn = "AS64501 Example Network".to_string();
+        let conflicting = GeoObservation {
+            source: "geojs".to_string(),
+            exit_ip: "198.51.100.4".to_string(),
+            country: "US".to_string(),
+            timezone: "America/Los_Angeles".to_string(),
+            asn: "AS64599".to_string(),
+        };
+
+        let geo = resolve_geo_consensus(vec![matching, second, conflicting]).unwrap();
+
+        assert_eq!(geo.consensus, GeoConsensus::Agreement);
+        assert_eq!(geo.exit_ip.as_deref(), Some("203.0.113.9"));
+        assert_eq!(geo.country.as_deref(), Some("JP"));
+        assert_eq!(geo.timezone.as_deref(), Some("Asia/Tokyo"));
+        assert_eq!(geo.asn.as_deref(), Some("AS64501"));
+        assert_eq!(geo.observations.len(), 3);
+    }
+
+    #[test]
+    fn geo_consensus_distinguishes_single_source_from_conflict() {
+        let tokyo = GeoObservation {
+            source: "ipwho".to_string(),
+            exit_ip: "203.0.113.9".to_string(),
+            country: "JP".to_string(),
+            timezone: "Asia/Tokyo".to_string(),
+            asn: "AS64501".to_string(),
+        };
+        let single = resolve_geo_consensus(vec![tokyo.clone()]).unwrap();
+        assert_eq!(single.consensus, GeoConsensus::SingleSource);
+        assert!(!single.is_trusted());
+
+        let conflict = resolve_geo_consensus(vec![
+            tokyo,
+            GeoObservation {
+                source: "ipinfo".to_string(),
+                exit_ip: "198.51.100.4".to_string(),
+                country: "US".to_string(),
+                timezone: "America/Los_Angeles".to_string(),
+                asn: "AS64599".to_string(),
+            },
+        ])
+        .unwrap();
+        assert_eq!(conflict.consensus, GeoConsensus::Conflict);
+        assert!(!conflict.is_trusted());
+
+        let duplicate_source = resolve_geo_consensus(vec![
+            GeoObservation {
+                source: "ipwho".to_string(),
+                exit_ip: "203.0.113.9".to_string(),
+                country: "JP".to_string(),
+                timezone: "Asia/Tokyo".to_string(),
+                asn: "AS64501".to_string(),
+            },
+            GeoObservation {
+                source: "ipwho".to_string(),
+                exit_ip: "203.0.113.9".to_string(),
+                country: "JP".to_string(),
+                timezone: "Asia/Tokyo".to_string(),
+                asn: "AS64501".to_string(),
+            },
+        ])
+        .unwrap();
+        assert_eq!(duplicate_source.consensus, GeoConsensus::SingleSource);
+    }
+
+    #[test]
+    fn permanent_profile_metadata_survives_rename_and_recovers_from_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = CloakConfig {
+            repo_root: dir.path().to_path_buf(),
+            account_base: dir.path().join("accounts"),
+            extension_source: dir.path().join("extension"),
+            cloakbrowser_root: dir.path().join("browser"),
+        };
+
+        let created = create_account(&config, "before").unwrap();
+        assert_eq!(created.serial, 1);
+        assert!(!created.profile_id.is_empty());
+        assert!(created
+            .profile_path
+            .join(".cloak-profile.json.bak1")
+            .is_file());
+        assert!(created
+            .profile_path
+            .join(".cloak-profile.json.bak2")
+            .is_file());
+
+        let renamed = rename_account(&config, "before", "after").unwrap();
+        assert_eq!(renamed.serial, created.serial);
+        assert_eq!(renamed.profile_id, created.profile_id);
+
+        fs::write(renamed.profile_path.join(".cloak-profile.json"), "{broken").unwrap();
+        let recovered = read_account(&config, "after").unwrap();
+        assert_eq!(recovered.serial, created.serial);
+        assert_eq!(recovered.profile_id, created.profile_id);
+        assert!(fs::read_dir(&recovered.profile_path)
+            .unwrap()
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().contains(".corrupt.")));
+
+        fs::write(
+            recovered.profile_path.join(".cloak-profile.json.bak1"),
+            "{broken",
+        )
+        .unwrap();
+        let healed = read_account(&config, "after").unwrap();
+        let backup: ProfileMetadata = serde_json::from_str(
+            &fs::read_to_string(healed.profile_path.join(".cloak-profile.json.bak1")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(backup.profile_id, healed.profile_id);
+    }
+
+    #[test]
+    fn identity_contract_pins_legacy_gpu_but_yields_to_native_engine_identity() {
+        let metadata = ProfileMetadata::new_for_test(7, "profile-id", "bucket-m3");
+        let legacy = identity_contract_for(&metadata, &EngineVersion::fallback(), "25.5.0");
+        assert_eq!(legacy.identity_schema_version, 1);
+        assert_eq!(legacy.template, IdentityTemplate::StableMultiAccount);
+        assert_eq!(legacy.hardware_profile_id, "mac-apple-silicon-base-v1");
+        assert_eq!(legacy.gpu_bucket, "bucket-m3");
+        assert_eq!(legacy.kernel_version, "25.5.0");
+
+        let native_engine = EngineVersion {
+            major: "150".to_string(),
+            full: "150.0.7871.114".to_string(),
+            distribution: "150.0.7871.114.4".to_string(),
+        };
+        let native = identity_contract_for(&metadata, &native_engine, "25.5.0");
+        assert_eq!(native.template, IdentityTemplate::HostNative);
+        assert_eq!(native.gpu_bucket, "host-native");
+    }
+
+    #[test]
+    fn encrypted_workspace_round_trip_previews_conflicts_and_renames_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = CloakConfig {
+            repo_root: dir.path().join("source-repo"),
+            account_base: dir.path().join("source-accounts"),
+            extension_source: dir.path().join("source-extension"),
+            cloakbrowser_root: dir.path().join("source-browser"),
+        };
+        create_account(&source, "alpha").unwrap();
+        create_account(&source, "beta").unwrap();
+        fs::create_dir_all(source.profile_dir("alpha").join("Default")).unwrap();
+        fs::write(
+            source.profile_dir("alpha").join("Default/Cookies"),
+            b"encrypted session data",
+        )
+        .unwrap();
+
+        let archive = dir.path().join("workspace.ntrace");
+        let migration_fixture = "public-test-only-passphrase";
+        let exported = export_workspace_with_picker_state(
+            &source,
+            &archive,
+            migration_fixture,
+            Some(WorkspacePickerState {
+                schema_version: 1,
+                group_order: vec!["codex".to_string()],
+                account_order: vec!["alpha".to_string(), "beta".to_string()],
+                collapsed_groups: vec!["codex".to_string()],
+                hidden_groups: Vec::new(),
+                sidebar_width: 326,
+                mark_presets: vec!["Plus".to_string(), "自用".to_string()],
+            }),
+        )
+        .unwrap();
+        assert_eq!(exported.account_count, 2);
+        assert!(exported.file_count > 0);
+        assert_eq!(exported.archive_sha256.len(), 64);
+
+        let destination = CloakConfig {
+            repo_root: dir.path().join("destination-repo"),
+            account_base: dir.path().join("destination-accounts"),
+            extension_source: dir.path().join("destination-extension"),
+            cloakbrowser_root: dir.path().join("destination-browser"),
+        };
+        create_account(&destination, "alpha").unwrap();
+
+        let preview = preview_workspace_import(&destination, &archive, migration_fixture).unwrap();
+        assert!(preview.includes_picker_state);
+        let alpha = preview
+            .accounts
+            .iter()
+            .find(|account| account.source_name == "alpha")
+            .unwrap();
+        assert!(alpha.name_conflict);
+        assert_ne!(alpha.suggested_name, "alpha");
+        assert!(!preview
+            .accounts
+            .iter()
+            .any(|account| account.profile_id_conflict));
+
+        let mappings = preview
+            .accounts
+            .iter()
+            .map(|account| WorkspaceImportMapping {
+                source_name: account.source_name.clone(),
+                target_name: account.suggested_name.clone(),
+            })
+            .collect::<Vec<_>>();
+        let imported =
+            import_workspace(&destination, &archive, migration_fixture, &mappings).unwrap();
+        assert_eq!(imported.imported_accounts.len(), 2);
+        assert_eq!(
+            imported.picker_state.as_ref().unwrap().account_order,
+            vec![alpha.suggested_name.clone(), "beta".to_string()]
+        );
+        assert_eq!(
+            fs::read(
+                destination
+                    .profile_dir(&alpha.suggested_name)
+                    .join("Default/Cookies")
+            )
+            .unwrap(),
+            b"encrypted session data"
+        );
+        assert!(destination.profile_dir("alpha").is_dir());
+        assert!(destination.profile_dir("beta").is_dir());
+    }
+
+    #[test]
+    fn encrypted_workspace_rejects_wrong_password_and_tampering_without_pollution() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = CloakConfig {
+            repo_root: dir.path().join("source-repo"),
+            account_base: dir.path().join("source-accounts"),
+            extension_source: dir.path().join("source-extension"),
+            cloakbrowser_root: dir.path().join("source-browser"),
+        };
+        create_account(&source, "alpha").unwrap();
+        fs::write(source.profile_dir("alpha").join("payload"), b"private").unwrap();
+        let cancelled_archive = dir.path().join("cancelled.ntrace");
+        let cancellation = AtomicBool::new(true);
+        assert!(matches!(
+            export_workspace_with_picker_state_and_cancellation(
+                &source,
+                &cancelled_archive,
+                "correct horse battery staple",
+                None,
+                Some(&cancellation),
+            ),
+            Err(CloakError::WorkspaceCancelled)
+        ));
+        assert!(!cancelled_archive.exists());
+        let invalid_picker_archive = dir.path().join("invalid-picker-state.ntrace");
+        assert!(export_workspace_with_picker_state(
+            &source,
+            &invalid_picker_archive,
+            "correct horse battery staple",
+            Some(WorkspacePickerState {
+                schema_version: 1,
+                group_order: Vec::new(),
+                account_order: vec!["alpha".to_string()],
+                collapsed_groups: Vec::new(),
+                hidden_groups: Vec::new(),
+                sidebar_width: 0,
+                mark_presets: Vec::new(),
+            }),
+        )
+        .is_err());
+        assert!(!invalid_picker_archive.exists());
+        let archive = dir.path().join("workspace.ntrace");
+        export_workspace(&source, &archive, "correct horse battery staple").unwrap();
+
+        let destination = CloakConfig {
+            repo_root: dir.path().join("destination-repo"),
+            account_base: dir.path().join("destination-accounts"),
+            extension_source: dir.path().join("destination-extension"),
+            cloakbrowser_root: dir.path().join("destination-browser"),
+        };
+        assert!(preview_workspace_import(&destination, &archive, "wrong password").is_err());
+
+        let tampered = dir.path().join("tampered.ntrace");
+        let mut bytes = fs::read(&archive).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x40;
+        fs::write(&tampered, bytes).unwrap();
+        assert!(
+            preview_workspace_import(&destination, &tampered, "correct horse battery staple")
+                .is_err()
+        );
+        assert!(!destination.account_base.exists());
+        assert!(!fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".notrace-import-")));
+    }
+
+    #[test]
+    fn workspace_archive_paths_reject_traversal_and_absolute_components() {
+        assert!(validate_workspace_archive_path("alpha/Default/Cookies").is_ok());
+        assert!(validate_workspace_archive_path("alpha").is_err());
+        assert!(validate_workspace_archive_path("../escape").is_err());
+        assert!(validate_workspace_archive_path("alpha/../../escape").is_err());
+        assert!(validate_workspace_archive_path("/absolute/path").is_err());
+        assert!(validate_workspace_archive_path("alpha//payload").is_err());
+        assert!(should_skip_archive_path(Path::new("Default/Cache/data")));
+        assert!(should_skip_archive_path(Path::new(
+            ".cloak-companion/manifest.json"
+        )));
+        assert!(!should_skip_archive_path(Path::new(
+            "Default/Service Worker/CacheStorage/index"
+        )));
     }
 }

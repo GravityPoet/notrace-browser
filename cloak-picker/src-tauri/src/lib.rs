@@ -1,15 +1,19 @@
 use cloak_core::{
     account_is_running as core_account_is_running, build_launch_plan,
     create_account_with_group as core_create_account_with_group,
-    delete_account as core_delete_account, launch_account as core_launch_account,
-    launch_chrome_web_store as core_launch_chrome_web_store, list_accounts as core_list_accounts,
-    list_trashed_accounts as core_list_trashed_accounts,
+    delete_account as core_delete_account,
+    export_workspace_with_picker_state_and_cancellation as core_export_workspace,
+    import_workspace_with_cancellation as core_import_workspace,
+    launch_account as core_launch_account, launch_chrome_web_store as core_launch_chrome_web_store,
+    list_accounts as core_list_accounts, list_trashed_accounts as core_list_trashed_accounts,
     permanently_delete_account as core_permanently_delete_account,
+    preview_workspace_import_with_cancellation as core_preview_workspace_import,
     rename_account as core_rename_account, set_account_trashed as core_set_account_trashed,
     set_group as core_set_group, set_mark as core_set_mark, set_note as core_set_note,
     set_proxy as core_set_proxy, set_region as core_set_region,
     toggle_locale as core_toggle_locale, Account, CloakConfig, LaunchOptions, LaunchPlan,
-    LaunchResult,
+    LaunchResult, WorkspaceExportSummary, WorkspaceImportMapping, WorkspaceImportPreview,
+    WorkspaceImportSummary, WorkspacePickerState,
 };
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -19,6 +23,8 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_dialog::DialogExt;
+use zeroize::Zeroizing;
 
 fn config() -> Result<CloakConfig, String> {
     CloakConfig::from_env().map_err(|err| err.to_string())
@@ -44,6 +50,51 @@ struct PickerInstanceGuard {
 #[derive(Clone, Default)]
 struct LaunchCancellationRegistry {
     active: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+}
+
+#[derive(Clone, Default)]
+struct WorkspaceCancellationRegistry {
+    active: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+}
+
+impl WorkspaceCancellationRegistry {
+    fn begin(&self) -> Result<Arc<AtomicBool>, String> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "工作区取消状态已损坏".to_string())?;
+        if let Some(previous) = active.replace(Arc::new(AtomicBool::new(false))) {
+            previous.store(true, Ordering::Release);
+        }
+        Ok(active
+            .as_ref()
+            .expect("active flag was just inserted")
+            .clone())
+    }
+
+    fn finish(&self, cancellation_flag: &Arc<AtomicBool>) {
+        if let Ok(mut active) = self.active.lock() {
+            if active
+                .as_ref()
+                .map(|current| Arc::ptr_eq(current, cancellation_flag))
+                .unwrap_or(false)
+            {
+                *active = None;
+            }
+        }
+    }
+
+    fn cancel(&self) -> Result<bool, String> {
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| "工作区取消状态已损坏".to_string())?;
+        let Some(cancellation_flag) = active.as_ref() else {
+            return Ok(false);
+        };
+        cancellation_flag.store(true, Ordering::Release);
+        Ok(true)
+    }
 }
 
 impl LaunchCancellationRegistry {
@@ -209,6 +260,136 @@ async fn list_accounts() -> Result<Vec<Account>, String> {
 #[tauri::command]
 async fn list_trashed_accounts() -> Result<Vec<Account>, String> {
     run_blocking(|| core_list_trashed_accounts(&config()?).map_err(|err| err.to_string())).await
+}
+
+#[tauri::command]
+async fn choose_workspace_export_path(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    run_blocking(move || {
+        let file_name = format!("NoTrace-Workspace-{}.ntrace", workspace_timestamp());
+        let selected = app
+            .dialog()
+            .file()
+            .add_filter("NoTrace 加密工作区", &["ntrace"])
+            .set_file_name(file_name)
+            .blocking_save_file();
+        selected
+            .map(|path| {
+                path.into_path()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .map_err(|err| format!("无法读取备份保存路径：{err}"))
+            })
+            .transpose()
+    })
+    .await
+}
+
+#[tauri::command]
+async fn choose_workspace_import_path(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    run_blocking(move || {
+        let selected = app
+            .dialog()
+            .file()
+            .add_filter("NoTrace 加密工作区", &["ntrace"])
+            .blocking_pick_file();
+        selected
+            .map(|path| {
+                path.into_path()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .map_err(|err| format!("无法读取备份文件路径：{err}"))
+            })
+            .transpose()
+    })
+    .await
+}
+
+#[tauri::command]
+async fn export_workspace(
+    path: String,
+    passphrase: String,
+    picker_state: WorkspacePickerState,
+    cancellations: State<'_, WorkspaceCancellationRegistry>,
+) -> Result<WorkspaceExportSummary, String> {
+    let registry = cancellations.inner().clone();
+    let cancellation_flag = registry.begin()?;
+    let worker_cancellation = Arc::clone(&cancellation_flag);
+    let result = run_blocking(move || {
+        let passphrase = Zeroizing::new(passphrase);
+        core_export_workspace(
+            &config()?,
+            Path::new(&path),
+            passphrase.as_str(),
+            Some(picker_state),
+            Some(worker_cancellation.as_ref()),
+        )
+        .map_err(|err| err.to_string())
+    })
+    .await;
+    registry.finish(&cancellation_flag);
+    result
+}
+
+#[tauri::command]
+async fn preview_workspace_import(
+    path: String,
+    passphrase: String,
+    cancellations: State<'_, WorkspaceCancellationRegistry>,
+) -> Result<WorkspaceImportPreview, String> {
+    let registry = cancellations.inner().clone();
+    let cancellation_flag = registry.begin()?;
+    let worker_cancellation = Arc::clone(&cancellation_flag);
+    let result = run_blocking(move || {
+        let passphrase = Zeroizing::new(passphrase);
+        core_preview_workspace_import(
+            &config()?,
+            Path::new(&path),
+            passphrase.as_str(),
+            Some(worker_cancellation.as_ref()),
+        )
+        .map_err(|err| err.to_string())
+    })
+    .await;
+    registry.finish(&cancellation_flag);
+    result
+}
+
+#[tauri::command]
+async fn import_workspace(
+    path: String,
+    passphrase: String,
+    mappings: Vec<WorkspaceImportMapping>,
+    cancellations: State<'_, WorkspaceCancellationRegistry>,
+) -> Result<WorkspaceImportSummary, String> {
+    let registry = cancellations.inner().clone();
+    let cancellation_flag = registry.begin()?;
+    let worker_cancellation = Arc::clone(&cancellation_flag);
+    let result = run_blocking(move || {
+        let passphrase = Zeroizing::new(passphrase);
+        core_import_workspace(
+            &config()?,
+            Path::new(&path),
+            passphrase.as_str(),
+            &mappings,
+            Some(worker_cancellation.as_ref()),
+        )
+        .map_err(|err| err.to_string())
+    })
+    .await;
+    registry.finish(&cancellation_flag);
+    result
+}
+
+#[tauri::command]
+fn cancel_workspace_operation(
+    cancellations: State<'_, WorkspaceCancellationRegistry>,
+) -> Result<bool, String> {
+    cancellations.cancel()
+}
+
+fn workspace_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[tauri::command]
@@ -542,8 +723,10 @@ pub fn run() {
         }
     };
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(instance_guard)
         .manage(LaunchCancellationRegistry::default())
+        .manage(WorkspaceCancellationRegistry::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
@@ -569,6 +752,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_accounts,
             list_trashed_accounts,
+            choose_workspace_export_path,
+            choose_workspace_import_path,
+            export_workspace,
+            preview_workspace_import,
+            import_workspace,
+            cancel_workspace_operation,
             create_account,
             rename_account,
             delete_account,
@@ -677,6 +866,19 @@ mod tests {
         assert!(second.load(Ordering::Acquire));
         registry.finish("work", &second);
         assert!(!registry.cancel("work").unwrap());
+    }
+
+    #[test]
+    fn workspace_cancellation_registry_cancels_and_clears_active_work() {
+        let registry = WorkspaceCancellationRegistry::default();
+        let first = registry.begin().unwrap();
+        let second = registry.begin().unwrap();
+        assert!(first.load(Ordering::Acquire));
+        assert!(!second.load(Ordering::Acquire));
+        assert!(registry.cancel().unwrap());
+        assert!(second.load(Ordering::Acquire));
+        registry.finish(&second);
+        assert!(!registry.cancel().unwrap());
     }
 
     #[test]

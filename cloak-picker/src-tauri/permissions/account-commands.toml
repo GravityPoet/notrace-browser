@@ -4,6 +4,12 @@ description = "Allows the main Cloak Picker window to manage local account metad
 commands.allow = [
   "list_accounts",
   "list_trashed_accounts",
+  "choose_workspace_export_path",
+  "choose_workspace_import_path",
+  "export_workspace",
+  "preview_workspace_import",
+  "import_workspace",
+  "cancel_workspace_operation",
   "create_account",
   "rename_account",
   "delete_account",

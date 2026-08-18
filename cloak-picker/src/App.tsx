@@ -51,6 +51,8 @@ type MarkColor = (typeof markColorValues)[number];
 type Account = {
   name: string;
   profile_path: string;
+  profile_id: string;
+  serial: number;
   created_at: number;
   deleted_at: number | null;
   archived: boolean;
@@ -88,9 +90,27 @@ type LaunchPlan = {
     exit_ip: string | null;
     country: string | null;
     timezone: string | null;
+    asn: string | null;
+    consensus: "agreement" | "single-source" | "conflict" | "unavailable";
+    observations: Array<{
+      source: string;
+      exit_ip: string;
+      country: string;
+      timezone: string;
+      asn: string;
+    }>;
   };
   geo_cache_hit: boolean;
   locale: string | null;
+  identity: {
+    identity_schema_version: number;
+    template: "host-native" | "stable-multi-account";
+    hardware_profile_id: string;
+    gpu_bucket: string;
+    render_identity_version: number;
+    kernel_version: string;
+    engine_version: string;
+  };
   argv: string[];
   privacy_failures: string[];
 };
@@ -110,6 +130,9 @@ type LaunchResult = {
     exit_ip: string | null;
     country: string | null;
     timezone: string | null;
+    asn: string | null;
+    geo_consensus: "agreement" | "single-source" | "conflict" | "unavailable";
+    identity: LaunchPlan["identity"];
     geo_cache_hit: boolean;
     preflight_ms: number;
     launch_ms: number;
@@ -155,12 +178,58 @@ type ChallengeAuditStatus = {
   error?: string;
 };
 
+type WorkspaceExportSummary = {
+  path: string;
+  account_count: number;
+  file_count: number;
+  total_bytes: number;
+  archive_sha256: string;
+  manifest_sha256: string;
+};
+
+type WorkspaceImportPreview = {
+  created_at: number;
+  account_count: number;
+  file_count: number;
+  total_bytes: number;
+  manifest_sha256: string;
+  includes_picker_state: boolean;
+  accounts: Array<{
+    source_name: string;
+    suggested_name: string;
+    name_conflict: boolean;
+    profile_id: string;
+    profile_id_conflict: boolean;
+    source_serial: number;
+    target_serial: number;
+    serial_conflict: boolean;
+  }>;
+};
+
+type WorkspacePickerState = {
+  schema_version: number;
+  group_order: string[];
+  account_order: string[];
+  collapsed_groups: string[];
+  hidden_groups: string[];
+  sidebar_width: number;
+  mark_presets: string[];
+};
+
+type WorkspaceImportSummary = {
+  imported_accounts: string[];
+  total_bytes: number;
+  remapped_serials: number;
+  picker_state: WorkspacePickerState | null;
+};
+
 type DialogState =
   | { kind: "create"; value: string; group: string }
   | { kind: "createGroup"; value: string; returnToManage?: boolean }
   | { kind: "rename"; account: Account; value: string }
   | { kind: "renameGroup"; groupLabel: string; count: number; value: string; returnToManage?: boolean }
   | { kind: "manage"; section: "groups" | "marks" }
+  | { kind: "workspace" }
   | { kind: "proxy"; account: Account; value: string }
   | { kind: "region"; account: Account; value: string }
   | { kind: "group"; account: Account; value: string }
@@ -253,6 +322,7 @@ const mockCancelledLaunches = new Set<string>();
 const mockTrashedOverrides = new Map<string, boolean>();
 const mockPermanentlyDeletedAccounts = new Set<string>();
 let mockChallengeAuditCancelled = false;
+let mockWorkspaceCancellation = false;
 
 export function resetMockCommandsForTest() {
   mockMarkOverrides.clear();
@@ -264,6 +334,7 @@ export function resetMockCommandsForTest() {
   mockTrashedOverrides.clear();
   mockPermanentlyDeletedAccounts.clear();
   mockChallengeAuditCancelled = false;
+  mockWorkspaceCancellation = false;
 }
 
 export function mockCommandCountForTest(command: string) {
@@ -564,6 +635,18 @@ export default function App() {
       if (current && selectionPool.some((account) => account.name === current)) return current;
       return orderedNext[0]?.name ?? "";
     });
+  }
+
+  async function applyImportedWorkspaceState(state: WorkspacePickerState | null) {
+    if (state?.schema_version === 1) {
+      setGroupOrder((current) => mergeUniqueStrings(current, state.group_order));
+      setAccountOrder((current) => mergeUniqueStrings(current, state.account_order));
+      setCollapsedGroups((current) => mergeUniqueStrings(current, state.collapsed_groups));
+      setHiddenGroups((current) => mergeUniqueStrings(current, state.hidden_groups));
+      setSidebarWidth(clampNumber(state.sidebar_width, minSidebarWidth, 1_200));
+      writeStoredMarkPresets(mergeUniqueStrings(readStoredMarkPresets(), state.mark_presets));
+    }
+    await refresh();
   }
 
   async function run<T>(operation: () => Promise<T>): Promise<T | null> {
@@ -1003,7 +1086,7 @@ export default function App() {
       return;
     }
 
-    if (dialog.kind === "manage") return;
+    if (dialog.kind === "manage" || dialog.kind === "workspace") return;
 
     const value = dialog.value.trim();
     if (dialog.kind === "createGroup") {
@@ -1184,6 +1267,13 @@ export default function App() {
     setGroupContextMenu(null);
     setAccountContextMenu(null);
     openDialog({ kind: "manage", section }, trigger ?? manageButtonRef.current);
+  }
+
+  function openWorkspaceDialog(trigger?: HTMLElement | null) {
+    setManageMenuOpen(false);
+    setGroupContextMenu(null);
+    setAccountContextMenu(null);
+    openDialog({ kind: "workspace" }, trigger ?? manageButtonRef.current);
   }
 
   function defaultCreateGroupValue() {
@@ -2113,7 +2203,11 @@ export default function App() {
           exit_ip: result.diagnostics.exit_ip,
           country: result.diagnostics.country,
           timezone: result.diagnostics.timezone,
+          asn: result.diagnostics.asn,
+          consensus: result.diagnostics.geo_consensus,
+          observations: current.geo.observations,
         },
+        identity: result.diagnostics.identity,
       };
     });
   }
@@ -2623,6 +2717,16 @@ export default function App() {
                     >
                       <Tags aria-hidden="true" size={14} />
                       <span className="contextMenuItemLabel">管理标签</span>
+                    </button>
+                    <div className="contextMenuDivider" />
+                    <button
+                      className="contextMenuItem"
+                      role="menuitem"
+                      type="button"
+                      onClick={() => openWorkspaceDialog(manageButtonRef.current)}
+                    >
+                      <ArchiveRestore aria-hidden="true" size={14} />
+                      <span className="contextMenuItemLabel">工作区备份</span>
                     </button>
                   </div>
                 ) : null}
@@ -3145,7 +3249,13 @@ export default function App() {
               <div className="detailScroll">
                 <section className="inspector">
                   <InspectorGroup title="身份">
+                    <InfoRow icon={<ShieldCheck size={15} />} label="环境编号" value={`#${selected.serial}`} mono />
                     <InfoRow icon={<KeyRound size={15} />} label="指纹" value={selected.seed} mono />
+                    <InfoRow label="身份 ID" value={selected.profile_id} mono />
+                    <InfoRow
+                      label="身份模板"
+                      value={plan ? identityTemplateLabel(plan.identity) : "未解析"}
+                    />
                     <InfoRow icon={<Folder size={15} />} label="分组" value={accountGroupLabel(selected)} />
                     <InfoRow
                       icon={<MessageSquareText size={15} />}
@@ -3167,6 +3277,8 @@ export default function App() {
                     <InfoRow icon={<Network size={15} />} label="代理" value={proxyLabel} />
                     <InfoRow label="出口 IP" value={plan?.geo.exit_ip ?? "启动时解析"} />
                     <InfoRow label="时区" value={plan?.geo.timezone ?? "启动时解析"} />
+                    <InfoRow label="ASN" value={plan?.geo.asn ?? "启动时解析"} />
+                    <InfoRow label="GeoIP 交叉确认" value={plan ? geoConsensusLabel(plan.geo.consensus) : "未解析"} />
                   </InspectorGroup>
 
                   <InspectorGroup title="运行">
@@ -3518,6 +3630,16 @@ export default function App() {
           onQuickBulkGroup={(accounts, value) => void applyBulkGroup(accounts, value)}
           onQuickBulkMark={(accounts, value, color) => void applyBulkMark(accounts, value, color)}
           onQuickMark={(account, value, color) => void saveAccountMark(account, value, color)}
+          onWorkspaceImported={applyImportedWorkspaceState}
+          workspacePickerState={{
+            schema_version: 1,
+            group_order: groupOrder,
+            account_order: accountOrder,
+            collapsed_groups: collapsedGroups,
+            hidden_groups: hiddenGroups,
+            sidebar_width: Math.round(sidebarWidth),
+            mark_presets: readStoredMarkPresets(),
+          }}
           onSubmit={submitDialog}
         />
       ) : null}
@@ -3727,6 +3849,8 @@ function EditorDialog({
   onQuickBulkGroup,
   onQuickBulkMark,
   onQuickMark,
+  onWorkspaceImported,
+  workspacePickerState,
   onSubmit,
 }: {
   dialog: DialogState;
@@ -3748,6 +3872,8 @@ function EditorDialog({
   onQuickBulkGroup: (accounts: Account[], value: string) => void;
   onQuickBulkMark: (accounts: Account[], value: string, color: MarkColor) => void;
   onQuickMark: (account: Account, value: string, color: MarkColor) => void;
+  onWorkspaceImported: (state: WorkspacePickerState | null) => Promise<void>;
+  workspacePickerState: WorkspacePickerState;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const modalRef = useRef<HTMLElement | null>(null);
@@ -3807,6 +3933,20 @@ function EditorDialog({
       });
     };
   }, []);
+
+  if (dialog.kind === "workspace") {
+    return (
+      <WorkspaceMigrationDialog
+        dialogTitleId={dialogTitleId}
+        onClose={onClose}
+        onImported={onWorkspaceImported}
+        pickerState={workspacePickerState}
+        setModalRef={(node) => {
+          modalRef.current = node;
+        }}
+      />
+    );
+  }
 
   if (dialog.kind === "manage") {
     return (
@@ -4241,6 +4381,365 @@ function EditorDialog({
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function WorkspaceMigrationDialog({
+  dialogTitleId,
+  onClose,
+  onImported,
+  pickerState,
+  setModalRef,
+}: {
+  dialogTitleId: string;
+  onClose: () => void;
+  onImported: (state: WorkspacePickerState | null) => Promise<void>;
+  pickerState: WorkspacePickerState;
+  setModalRef: (node: HTMLElement | null) => void;
+}) {
+  const [mode, setMode] = useState<"export" | "import">("export");
+  const [passphrase, setPassphrase] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [status, setStatus] = useState("");
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+  const [archivePath, setArchivePath] = useState("");
+  const [exported, setExported] = useState<WorkspaceExportSummary | null>(null);
+  const [preview, setPreview] = useState<WorkspaceImportPreview | null>(null);
+  const [imported, setImported] = useState<WorkspaceImportSummary | null>(null);
+  const [targetNames, setTargetNames] = useState<Record<string, string>>({});
+
+  const passphraseValid = passphrase.length >= 12 && passphrase.length <= 1024;
+  const exportReady = passphraseValid && passphrase === confirmation;
+  const hasIdentityConflict = preview?.accounts.some((account) => account.profile_id_conflict) ?? false;
+  const targetValues = preview?.accounts.map((account) => targetNames[account.source_name]?.trim() ?? "") ?? [];
+  const targetNamesValid = targetValues.length > 0
+    && targetValues.every(Boolean)
+    && new Set(targetValues).size === targetValues.length;
+
+  function changeMode(next: "export" | "import") {
+    if (busy) return;
+    setMode(next);
+    setPassphrase("");
+    setConfirmation("");
+    setStatus("");
+    setNotice("");
+    setError("");
+    setArchivePath("");
+    setExported(null);
+    setPreview(null);
+    setImported(null);
+    setTargetNames({});
+  }
+
+  async function runExport() {
+    if (!exportReady || busy) return;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    setExported(null);
+    setStatus("正在选择备份位置…");
+    try {
+      const path = await call<string | null>("choose_workspace_export_path");
+      if (!path) {
+        setStatus("");
+        return;
+      }
+      setArchivePath(path);
+      setStatus("正在扫描、校验并加密工作区…");
+      const summary = await call<WorkspaceExportSummary>("export_workspace", {
+        path,
+        passphrase,
+        pickerState,
+      });
+      setExported(summary);
+      setPassphrase("");
+      setConfirmation("");
+      setStatus("");
+    } catch (caught) {
+      handleWorkspaceOperationError(caught, setError, setNotice);
+      setStatus("");
+    } finally {
+      setCancelling(false);
+      setBusy(false);
+    }
+  }
+
+  async function runPreview() {
+    if (!passphraseValid || busy) return;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    setPreview(null);
+    setImported(null);
+    setStatus("正在选择加密备份…");
+    try {
+      const path = await call<string | null>("choose_workspace_import_path");
+      if (!path) {
+        setStatus("");
+        return;
+      }
+      setArchivePath(path);
+      setStatus("正在验证口令、清单与所有文件摘要…");
+      const nextPreview = await call<WorkspaceImportPreview>("preview_workspace_import", {
+        path,
+        passphrase,
+      });
+      setPreview(nextPreview);
+      setTargetNames(Object.fromEntries(
+        nextPreview.accounts.map((account) => [account.source_name, account.suggested_name]),
+      ));
+      setStatus("");
+    } catch (caught) {
+      handleWorkspaceOperationError(caught, setError, setNotice);
+      setStatus("");
+    } finally {
+      setCancelling(false);
+      setBusy(false);
+    }
+  }
+
+  async function runImport() {
+    if (!preview || !archivePath || hasIdentityConflict || !targetNamesValid || busy) return;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    setStatus("正在解密到隔离暂存区并执行原子恢复…");
+    try {
+      const summary = await call<WorkspaceImportSummary>("import_workspace", {
+        path: archivePath,
+        passphrase,
+        mappings: preview.accounts.map((account) => ({
+          source_name: account.source_name,
+          target_name: targetNames[account.source_name],
+        })),
+      });
+      setImported(summary);
+      setPassphrase("");
+      setStatus("");
+      await onImported(summary.picker_state);
+    } catch (caught) {
+      handleWorkspaceOperationError(caught, setError, setNotice);
+      setStatus("");
+    } finally {
+      setCancelling(false);
+      setBusy(false);
+    }
+  }
+
+  async function cancelCurrentOperation() {
+    if (!busy || cancelling) return;
+    setCancelling(true);
+    setStatus("正在安全停止并清理临时文件…");
+    try {
+      const cancellationStarted = await call<boolean>("cancel_workspace_operation");
+      if (!cancellationStarted) {
+        setCancelling(false);
+        setStatus("当前步骤即将完成…");
+      }
+    } catch (caught) {
+      setCancelling(false);
+      setError(`取消失败：${errorMessage(caught)}`);
+    }
+  }
+
+  return (
+    <div className="modalBackdrop">
+      <section
+        aria-labelledby={dialogTitleId}
+        aria-modal="true"
+        className="modal workspaceMigrationModal"
+        ref={setModalRef}
+        role="dialog"
+        tabIndex={-1}
+      >
+        <button className="modalClose" disabled={busy} type="button" aria-label="关闭" onClick={onClose}>
+          <X size={15} />
+        </button>
+        <div className="manageHeader">
+          <h2 id={dialogTitleId}>加密备份与恢复</h2>
+          <p>完整迁移账号目录、登录状态与 NoTrace 元数据；不会打包浏览器内核。</p>
+        </div>
+        <div className="manageTabs workspaceMigrationTabs" role="tablist" aria-label="工作区迁移方式">
+          <button
+            aria-selected={mode === "export"}
+            autoFocus={mode === "export"}
+            className={mode === "export" ? "active" : ""}
+            role="tab"
+            type="button"
+            onClick={() => changeMode("export")}
+          >
+            <ShieldCheck aria-hidden="true" size={14} />
+            导出备份
+          </button>
+          <button
+            aria-selected={mode === "import"}
+            autoFocus={mode === "import"}
+            className={mode === "import" ? "active" : ""}
+            role="tab"
+            type="button"
+            onClick={() => changeMode("import")}
+          >
+            <ArchiveRestore aria-hidden="true" size={14} />
+            导入恢复
+          </button>
+        </div>
+        <div className="workspaceSecurityNote">
+          <KeyRound aria-hidden="true" size={15} />
+          <span><strong>AES-256-GCM</strong> 分帧认证 · scrypt N=32768 · 路径、文件数、容量与摘要校验</span>
+        </div>
+
+        {mode === "export" ? (
+          <>
+            <label className="field">
+              <span>备份口令</span>
+              <input
+                autoComplete="new-password"
+                disabled={busy}
+                minLength={12}
+                type="password"
+                value={passphrase}
+                onChange={(event) => setPassphrase(event.currentTarget.value)}
+              />
+            </label>
+            <label className="field">
+              <span>再次输入口令</span>
+              <input
+                autoComplete="new-password"
+                disabled={busy}
+                minLength={12}
+                type="password"
+                value={confirmation}
+                onChange={(event) => setConfirmation(event.currentTarget.value)}
+              />
+            </label>
+            {confirmation && passphrase !== confirmation ? (
+              <p className="workspaceInlineHint error">两次口令不一致。</p>
+            ) : (
+              <p className="workspaceInlineHint">至少 12 个字符。口令不写入磁盘，也无法找回。</p>
+            )}
+            {exported ? (
+              <div className="workspaceResult success" role="status">
+                <ShieldCheck aria-hidden="true" size={17} />
+                <div>
+                  <strong>备份已完成</strong>
+                  <span>{exported.account_count} 个账号 · {exported.file_count} 个文件 · {formatByteCount(exported.total_bytes)}</span>
+                  <code title={exported.path}>{middleTruncate(exported.path, 62)}</code>
+                  <small>SHA256 {exported.archive_sha256.slice(0, 16)}…</small>
+                </div>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <>
+            {!preview && !imported ? (
+              <label className="field">
+                <span>备份口令</span>
+                <input
+                  autoComplete="current-password"
+                  disabled={busy}
+                  minLength={12}
+                  type="password"
+                  value={passphrase}
+                  onChange={(event) => setPassphrase(event.currentTarget.value)}
+                />
+              </label>
+            ) : null}
+            {preview && !imported ? (
+              <div className="workspacePreview">
+                <div className="workspacePreviewSummary">
+                  <strong>发现 {preview.account_count} 个账号</strong>
+                  <span>
+                    {preview.file_count} 个文件 · {formatByteCount(preview.total_bytes)}
+                    {preview.includes_picker_state ? " · 含 Picker 布局" : ""}
+                  </span>
+                </div>
+                <div className="workspaceAccountMappings">
+                  {preview.accounts.map((account) => (
+                    <label className={account.profile_id_conflict ? "workspaceMapping identityConflict" : "workspaceMapping"} key={account.source_name}>
+                      <span>
+                        <strong>{account.source_name}</strong>
+                        <small>
+                          {account.profile_id_conflict
+                            ? "相同身份已存在，不能重复导入"
+                            : account.name_conflict
+                              ? "名称冲突，已建议重命名"
+                              : account.serial_conflict
+                                ? `环境编号将调整为 #${account.target_serial}`
+                                : `保留环境编号 #${account.target_serial}`}
+                        </small>
+                      </span>
+                      <input
+                        aria-label={`${account.source_name} 导入名称`}
+                        disabled={busy || account.profile_id_conflict}
+                        value={targetNames[account.source_name] ?? account.suggested_name}
+                        onChange={(event) => setTargetNames((current) => ({
+                          ...current,
+                          [account.source_name]: event.currentTarget.value,
+                        }))}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {imported ? (
+              <div className="workspaceResult success" role="status">
+                <ShieldCheck aria-hidden="true" size={17} />
+                <div>
+                  <strong>恢复已完成</strong>
+                  <span>{imported.imported_accounts.length} 个账号已原子写入工作区</span>
+                  {imported.remapped_serials > 0 ? (
+                    <small>{imported.remapped_serials} 个环境编号因本机冲突已重新分配</small>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+          </>
+        )}
+
+        {busy ? (
+          <div className="workspaceProgressBlock" role="status" aria-live="polite">
+            <div aria-label={status} className="workspaceProgress" role="progressbar"><span /></div>
+            <span>{status}</span>
+          </div>
+        ) : null}
+        {notice ? <p className="workspaceNotice" role="status">{notice}</p> : null}
+        {error ? <p className="modalError" role="alert">{error}</p> : null}
+        <div className="modalActions">
+          <button
+            className="secondaryButton"
+            disabled={cancelling}
+            type="button"
+            onClick={busy ? () => void cancelCurrentOperation() : onClose}
+          >
+            {busy ? (cancelling ? "正在取消…" : "取消操作") : exported || imported ? "完成" : "取消"}
+          </button>
+          {mode === "export" && !exported ? (
+            <button className="primaryButton" disabled={!exportReady || busy} type="button" onClick={() => void runExport()}>
+              {busy ? "正在导出…" : "选择位置并导出"}
+            </button>
+          ) : null}
+          {mode === "import" && !preview && !imported ? (
+            <button className="primaryButton" disabled={!passphraseValid || busy} type="button" onClick={() => void runPreview()}>
+              {busy ? "正在验证…" : "选择备份并预览"}
+            </button>
+          ) : null}
+          {mode === "import" && preview && !imported ? (
+            <button
+              className="primaryButton"
+              disabled={busy || hasIdentityConflict || !targetNamesValid}
+              type="button"
+              onClick={() => void runImport()}
+            >
+              {busy ? "正在恢复…" : `导入 ${preview.account_count} 个账号`}
+            </button>
+          ) : null}
+        </div>
+      </section>
     </div>
   );
 }
@@ -4976,6 +5475,7 @@ function dialogConfig(
     | { kind: "bulkPermanentDelete" }
     | { kind: "deleteGroup" }
     | { kind: "manage" }
+    | { kind: "workspace" }
   >,
 ): {
   title: string;
@@ -5550,6 +6050,18 @@ function writeStoredNumber(key: string, value: number) {
   }
 }
 
+function mergeUniqueStrings(current: readonly string[], incoming: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const value of [...current, ...incoming]) {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    merged.push(normalized);
+  }
+  return merged;
+}
+
 function clampNumber(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
@@ -5582,7 +6094,18 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
     if (requestedName) mockCancelledLaunches.add(requestedName);
     return true as T;
   }
+  if (command === "cancel_workspace_operation") {
+    mockWorkspaceCancellation = true;
+    return true as T;
+  }
   await new Promise((resolve) => window.setTimeout(resolve, 80));
+  if (
+    mockWorkspaceCancellation
+    && ["export_workspace", "preview_workspace_import", "import_workspace"].includes(command)
+  ) {
+    mockWorkspaceCancellation = false;
+    throw new Error("workspace operation cancelled");
+  }
   const failures = mockCommandFailures.get(command) ?? 0;
   if (failures > 0) {
     mockCommandFailures.set(command, failures - 1);
@@ -5617,6 +6140,70 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
       ],
     } as T;
   }
+  if (command === "choose_workspace_export_path") {
+    return "/Users/example/Desktop/NoTrace-Workspace.ntrace" as T;
+  }
+  if (command === "export_workspace") {
+    return {
+      path: String(args?.path ?? "/Users/example/Desktop/NoTrace-Workspace.ntrace"),
+      account_count: 2,
+      file_count: 128,
+      total_bytes: 24_000_000,
+      archive_sha256: "a".repeat(64),
+      manifest_sha256: "b".repeat(64),
+    } as T;
+  }
+  if (command === "choose_workspace_import_path") {
+    return "/Users/example/Desktop/NoTrace-Workspace.ntrace" as T;
+  }
+  if (command === "preview_workspace_import") {
+    return {
+      created_at: 1_700_000_000,
+      account_count: 2,
+      file_count: 128,
+      total_bytes: 24_000_000,
+      manifest_sha256: "b".repeat(64),
+      includes_picker_state: true,
+      accounts: [
+        {
+          source_name: "alpha",
+          suggested_name: "alpha-imported",
+          name_conflict: true,
+          profile_id: "ntp_alpha",
+          profile_id_conflict: false,
+          source_serial: 1,
+          target_serial: 6,
+          serial_conflict: true,
+        },
+        {
+          source_name: "beta",
+          suggested_name: "beta",
+          name_conflict: false,
+          profile_id: "ntp_beta",
+          profile_id_conflict: false,
+          source_serial: 7,
+          target_serial: 7,
+          serial_conflict: false,
+        },
+      ],
+    } as T;
+  }
+  if (command === "import_workspace") {
+    return {
+      imported_accounts: ["alpha-imported", "beta"],
+      total_bytes: 24_000_000,
+      remapped_serials: 1,
+      picker_state: {
+        schema_version: 1,
+        group_order: ["restored-group"],
+        account_order: ["alpha-imported", "beta"],
+        collapsed_groups: [],
+        hidden_groups: [],
+        sidebar_width: 340,
+        mark_presets: ["迁移标签"],
+      },
+    } as T;
+  }
   if (command === "list_accounts") return accounts.filter((account) => !account.archived && !account.trashed) as T;
   if (command === "list_trashed_accounts") return accounts.filter((account) => account.trashed || account.archived) as T;
   if (command === "launch_dry_run" || command === "launch_preflight") {
@@ -5646,6 +6233,9 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
         exit_ip: plan.geo.exit_ip,
         country: plan.geo.country,
         timezone: plan.geo.timezone,
+        asn: plan.geo.asn,
+        geo_consensus: plan.geo.consensus,
+        identity: plan.identity,
         geo_cache_hit: plan.geo_cache_hit,
         preflight_ms: 420,
         launch_ms: 180,
@@ -5717,6 +6307,8 @@ function mockAccounts(): Account[] {
     {
       name: "demo-alpha@example.test",
       profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-alpha@example.test",
+      profile_id: "ntp_demo_alpha",
+      serial: 1,
       created_at: 1_700_000_001_000_000,
       deleted_at: null,
       archived: false,
@@ -5735,6 +6327,8 @@ function mockAccounts(): Account[] {
     {
       name: "demo-beta",
       profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-beta",
+      profile_id: "ntp_demo_beta",
+      serial: 2,
       created_at: 1_700_000_002_000_000,
       deleted_at: null,
       archived: false,
@@ -5753,6 +6347,8 @@ function mockAccounts(): Account[] {
     {
       name: "demo-gamma",
       profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-gamma",
+      profile_id: "ntp_demo_gamma",
+      serial: 3,
       created_at: 1_700_000_003_000_000,
       deleted_at: 1_700_100_000_000_000,
       archived: true,
@@ -5771,6 +6367,8 @@ function mockAccounts(): Account[] {
     {
       name: "demo-gamma-copy",
       profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-gamma-copy",
+      profile_id: "ntp_demo_gamma_copy",
+      serial: 4,
       created_at: 1_700_000_003_500_000,
       deleted_at: null,
       archived: false,
@@ -5789,6 +6387,8 @@ function mockAccounts(): Account[] {
     {
       name: "old-lab",
       profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/old-lab",
+      profile_id: "ntp_old_lab",
+      serial: 5,
       created_at: 1_700_000_004_000_000,
       deleted_at: 1_700_200_000_000_000,
       archived: false,
@@ -5865,10 +6465,33 @@ function mockLaunchPlan(account: Account, full: boolean): LaunchPlan {
       relay_needed: account.has_proxy,
     },
     geo: full
-      ? { exit_ip: "45.92.159.246", country: account.region, timezone: account.region === "JP" ? "Asia/Tokyo" : "America/Los_Angeles" }
-      : { exit_ip: null, country: null, timezone: null },
+      ? {
+          exit_ip: "45.92.159.246",
+          country: account.region,
+          timezone: account.region === "JP" ? "Asia/Tokyo" : "America/Los_Angeles",
+          asn: "AS64501",
+          consensus: "agreement",
+          observations: [],
+        }
+      : {
+          exit_ip: null,
+          country: null,
+          timezone: null,
+          asn: null,
+          consensus: "unavailable",
+          observations: [],
+        },
     geo_cache_hit: false,
     locale: account.locale_enabled ? "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7" : null,
+    identity: {
+      identity_schema_version: 1,
+      template: "stable-multi-account",
+      hardware_profile_id: "mac-apple-silicon-base-v1",
+      gpu_bucket: "bucket-m3",
+      render_identity_version: 1,
+      kernel_version: "25.5.0",
+      engine_version: "145.0.7632.109.2",
+    },
     argv: [
       `--user-data-dir=${account.profile_path}`,
       `--fingerprint=${account.seed}`,
@@ -5921,6 +6544,25 @@ function formatCreatedAt(createdAtMicros: number) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(Math.floor(createdAtMicros / 1000)));
+}
+
+function formatByteCount(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / 1024 ** exponent;
+  return `${value >= 10 || exponent === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[exponent]}`;
+}
+
+function geoConsensusLabel(consensus: LaunchPlan["geo"]["consensus"]) {
+  if (consensus === "agreement") return "一致（2/3 或 3/3）";
+  if (consensus === "single-source") return "单源（不用于身份匹配）";
+  if (consensus === "conflict") return "冲突（已阻止自动匹配）";
+  return "未取得";
+}
+
+function identityTemplateLabel(identity: LaunchPlan["identity"]) {
+  return identity.template === "host-native" ? "本机原生" : "稳定多账号";
 }
 
 function formatLaunchClock(launchedAtMicros: number) {
@@ -6003,4 +6645,19 @@ function errorMessage(caught: unknown) {
     return "启动已取消";
   }
   return raw;
+}
+
+function handleWorkspaceOperationError(
+  caught: unknown,
+  setError: (value: string) => void,
+  setNotice: (value: string) => void,
+) {
+  const message = errorMessage(caught);
+  if (message.toLowerCase().includes("workspace operation cancelled")) {
+    setError("");
+    setNotice("操作已取消，临时文件已清理，本机工作区未被部分改写。");
+    return;
+  }
+  setNotice("");
+  setError(message);
 }

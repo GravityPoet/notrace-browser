@@ -55,6 +55,8 @@ Utilizing CloakBrowser's `--fingerprint-webrtc-ip`, NoTrace asks supported engin
 ### 3. UA & Client Hints Consistency
 Modifying the User Agent alone creates a version-consistency discrepancy. NoTrace retains its explicit UA/brand/platform compatibility flags for macOS 145 and earlier 148 revisions. The fixed `148.0.7778.215.3` distribution and CloakBrowser 150+ use the native engine identity, matching the official guidance for those builds. When companion header rules are explicitly enabled, they emit only the low-entropy hints Chrome sends proactively and never force high-entropy hints onto every request. The macOS 145 engine still reports an empty `bitness`, which the live audit records as an upstream limitation.
 
+Each profile also owns a versioned identity contract: an immutable `profile_id`, permanent environment number, `hardware_profile_id`, pinned GPU bucket, render-identity version, actual kernel version, and actual engine build. The picker exposes only two coherent modes: engine-native identity on supported builds, or the stable multi-account compatibility template on legacy builds. It does not expose independent CPU/GPU/screen/UA sliders that can create impossible combinations.
+
 ### 4. Optional Legacy Canvas & Audio Noise
 The page hooks below run only with `CLOAK_COMPANION_PAGE_SPOOF=1`; native seed isolation is the default.
 
@@ -107,6 +109,19 @@ The compatibility launcher also accepts an optional HTTPS destination:
 existing `https://chatgpt.com/` default. Arguments are passed directly to
 Chromium without shell interpolation.
 | **Self Check** | `cloak self-check [--json]` | Verifies local engine integrity and unpacked extensions path. |
+
+## 🔐 Encrypted Workspace Backup & Recovery
+
+Open **Manage → Workspace Backup** in Cloak Picker to export or restore one `.ntrace` archive. A backup contains all active and trashed account directories plus Picker group/account ordering, collapsed and hidden groups, sidebar width, and custom mark presets. It deliberately excludes the separately installed browser engine and rebuildable browser caches, relay, and companion runtime files.
+
+- Data is streamed through independently authenticated 1 MiB AES-256-GCM frames. The key is derived with scrypt (`N=32768`, `r=8`, `p=1`); the passphrase must contain 12–1024 characters and is never written to disk.
+- The encrypted manifest records every portable path, file size, SHA-256 digest, permanent profile identity, and environment number. Import fully authenticates and hashes the archive before showing its conflict preview.
+- Unsafe paths, symlinks, duplicate identities, undeclared bytes, truncation, trailing data, and oversized archives are rejected. Current limits are 2,000 accounts, 500,000 entries, 64 GiB per file, and 1 TiB total payload.
+- Name conflicts receive editable rename suggestions. Environment-number conflicts are remapped, while a duplicate immutable `profile_id` is blocked instead of cloning one identity twice.
+- Restore decrypts into an isolated same-volume staging directory, then commits with atomic renames. A failed multi-profile commit rolls back already moved profiles; existing local profiles are never overwritten.
+- Long scans, verification, and encryption/decryption passes can be cancelled from the dialog. Cancellation is checked between bounded chunks and removes temporary output; once the short atomic commit begins, it is allowed to finish instead of being killed mid-rename.
+
+Every profile carries `.cloak-profile.json` plus two private backup replicas. A damaged primary or backup replica is repaired automatically from a valid copy. The permanent environment number follows the profile through rename and appears in the inspector without adding a distracting Dock badge.
 
 ---
 
@@ -196,6 +211,8 @@ node selftest/run-live-challenge-audit.mjs --headed --proxy-server http://127.0.
 ```
 
 Normal account launches keep the GeoIP, proxy, and privacy gates but do not run the two-profile headless browser self-test. Run checks explicitly from Cloak Picker (`检查出口` / `挑战兼容`), or opt in for CLI and legacy-script launches with `CLOAK_PREFLIGHT=async` or `CLOAK_PREFLIGHT=strict`.
+
+GeoIP now requires a 2-of-3 agreement across `ipwho.is`, `ipinfo.io`, and `geojs.io`. A vote matches only when normalized public IP, country, timezone, and ASN all match. Picker and JSON diagnostics explicitly report `agreement`, `single-source`, `conflict`, or `unavailable`; only `agreement` may drive automatic timezone, locale, and WebRTC fingerprint arguments or enter the five-minute proxy cache.
 
 ### Verification Pipeline
 Validate CLI arguments, contract hooks, and headless privacy engines:

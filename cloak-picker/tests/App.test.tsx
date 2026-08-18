@@ -332,6 +332,72 @@ describe("Cloak Picker dialog regressions", () => {
     expect(codexRow?.textContent).toContain("3 个账号");
   });
 
+  it("exports an encrypted workspace and previews renamed imports before restoring", async () => {
+    await click(buttonWithText("管理"));
+    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="管理选项"]');
+    expect(buttonWithText("工作区备份", menu ?? document)).toBeTruthy();
+    await click(buttonWithText("工作区备份", menu ?? document));
+
+    let dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog?.textContent).toContain("加密备份与恢复");
+    expect(dialog?.textContent).toContain("AES-256-GCM");
+    const exportPasswords = dialog?.querySelectorAll<HTMLInputElement>('input[type="password"]');
+    expect(exportPasswords).toHaveLength(2);
+    await inputText(exportPasswords?.[0] as HTMLInputElement, "correct horse battery staple");
+    await inputText(exportPasswords?.[1] as HTMLInputElement, "correct horse battery staple");
+    await click(buttonWithText("选择位置并导出", dialog ?? document));
+    await settle(420);
+
+    expect(mockCommandCountForTest("choose_workspace_export_path")).toBe(1);
+    expect(mockCommandCountForTest("export_workspace")).toBe(1);
+    dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog?.textContent).toContain("备份已完成");
+    expect(dialog?.textContent).toContain("2 个账号");
+
+    await click(buttonWithText("导入恢复", dialog ?? document));
+    dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    const importPassword = dialog?.querySelector<HTMLInputElement>('input[type="password"]');
+    await inputText(importPassword as HTMLInputElement, "correct horse battery staple");
+    await click(buttonWithText("选择备份并预览", dialog ?? document));
+    await settle(420);
+
+    expect(mockCommandCountForTest("choose_workspace_import_path")).toBe(1);
+    expect(mockCommandCountForTest("preview_workspace_import")).toBe(1);
+    dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog?.textContent).toContain("发现 2 个账号");
+    expect(dialog?.textContent).toContain("含 Picker 布局");
+    expect(dialog?.textContent).toContain("名称冲突，已建议重命名");
+    const rename = dialog?.querySelector<HTMLInputElement>('input[aria-label="alpha 导入名称"]');
+    expect(rename?.value).toBe("alpha-imported");
+
+    await click(buttonWithText("导入 2 个账号", dialog ?? document));
+    await settle(520);
+    expect(mockCommandCountForTest("import_workspace")).toBe(1);
+    expect(document.querySelector<HTMLElement>('[role="dialog"]')?.textContent).toContain("恢复已完成");
+    expect(window.localStorage.getItem("cloak-picker.groupOrder.v1")).toContain("restored-group");
+    expect(window.localStorage.getItem("cloak-picker.accountOrder.v1")).toContain("alpha-imported");
+    expect(window.localStorage.getItem("cloak-picker.markPresets.v3")).toContain("迁移标签");
+  });
+
+  it("cancels a workspace export without reporting a partial backup", async () => {
+    await click(buttonWithText("管理"));
+    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="管理选项"]');
+    await click(buttonWithText("工作区备份", menu ?? document));
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    const passwords = dialog?.querySelectorAll<HTMLInputElement>('input[type="password"]');
+    await inputText(passwords?.[0] as HTMLInputElement, "correct horse battery staple");
+    await inputText(passwords?.[1] as HTMLInputElement, "correct horse battery staple");
+    await click(buttonWithText("选择位置并导出", dialog ?? document));
+    await settle(100);
+    await click(buttonWithText("取消操作", dialog ?? document));
+    await settle(180);
+
+    expect(mockCommandCountForTest("cancel_workspace_operation")).toBe(1);
+    expect(dialog?.textContent).toContain("操作已取消");
+    expect(dialog?.textContent).not.toContain("备份已完成");
+  });
+
   it("exposes multi-select with a selected count and applies a batch group move", async () => {
     await click(buttonWithText("多选"));
 
