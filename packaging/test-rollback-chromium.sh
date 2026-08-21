@@ -48,6 +48,15 @@ test "$(readlink "$tmp/current")" = "$tmp/chromium-145.0.0.0"
 test -s "$tmp/current.sha256"
 test "$(awk '{print $1}' "$tmp/current.sha256")" = "$(shasum -a 256 "$tmp/chromium-145.0.0.0/Chromium.app/Contents/MacOS/Chromium" | awk '{print $1}')"
 
+rm -f "$tmp/current.sha256"
+DRY_RUN=1 CLOAKBROWSER_DIR="$tmp" "$ROOT/packaging/rollback-chromium.sh" 145.0.0.0
+test ! -e "$tmp/current.sha256"
+CLOAKBROWSER_DIR="$tmp" "$ROOT/packaging/rollback-chromium.sh" 145.0.0.0
+test "$(awk '{print $1}' "$tmp/current.sha256")" = "$(shasum -a 256 "$tmp/chromium-145.0.0.0/Chromium.app/Contents/MacOS/Chromium" | awk '{print $1}')"
+printf '%064d\n' 0 > "$tmp/current.sha256"
+CLOAKBROWSER_DIR="$tmp" "$ROOT/packaging/rollback-chromium.sh" 145.0.0.0
+test "$(awk '{print $1}' "$tmp/current.sha256")" = "$(shasum -a 256 "$tmp/chromium-145.0.0.0/Chromium.app/Contents/MacOS/Chromium" | awk '{print $1}')"
+
 CLOAKBROWSER_DIR="$tmp" "$ROOT/packaging/rollback-chromium.sh" 150.0.7871.114.4-pro
 test "$(readlink "$tmp/current")" = "$tmp/chromium-150.0.7871.114.4-pro"
 test "$(awk '{print $1}' "$tmp/current.sha256")" = "$(shasum -a 256 "$tmp/chromium-150.0.7871.114.4-pro/Chromium.app/Contents/MacOS/Chromium" | awk '{print $1}')"

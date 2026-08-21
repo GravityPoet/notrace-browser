@@ -21,7 +21,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::env;
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::io::Cursor;
 use std::io::{Read, Write};
@@ -107,6 +107,12 @@ struct EngineVersion {
     major: String,
     full: String,
     distribution: String,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedBrowser {
+    binary: PathBuf,
+    selection: BrowserRuntimeSelection,
 }
 
 impl EngineVersion {
@@ -420,6 +426,7 @@ pub struct LaunchPlan {
     pub extra_extension_paths: Vec<PathBuf>,
     pub selftest_extension_paths: Vec<PathBuf>,
     pub browser_binary: PathBuf,
+    pub runtime: BrowserRuntimeStatus,
     #[serde(default)]
     pub engine_major: String,
     #[serde(default)]
@@ -461,10 +468,56 @@ pub struct LaunchDiagnostics {
     pub geo_cache_hit: bool,
     pub preflight_ms: u64,
     pub launch_ms: u64,
+    pub runtime: BrowserRuntimeStatus,
     /// Capabilities provided by the wrapper/current binary contract. This is
     /// deliberately explicit so a legacy engine is never presented as a newer
     /// native-identity distribution merely because a UI feature exists.
     pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BrowserRuntimeKind {
+    SourceCache,
+    LocalTccRuntime,
+    CustomBinary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BrowserRuntimeSelection {
+    Current,
+    ExplicitOverride,
+    Fallback,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BrowserRuntimeProvenance {
+    Verified,
+    Missing,
+    Invalid,
+    Mismatch,
+    Unmanaged,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserRuntimeStatus {
+    pub kind: BrowserRuntimeKind,
+    pub selection: BrowserRuntimeSelection,
+    pub provenance: BrowserRuntimeProvenance,
+    pub blocks_launch: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SelfCheckReport {
+    pub ok: bool,
+    pub message: String,
+    pub account_count: usize,
+    pub browser_binary: PathBuf,
+    pub extension_path: PathBuf,
+    pub runtime: BrowserRuntimeStatus,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -765,8 +818,18 @@ pub fn create_account_with_group(
     if profile.exists() {
         return Err(CloakError::AccountExists(name.to_string()));
     }
+    // The existence check above is only an early, user-friendly fast path.
+    // Claim the directory with a single mkdir so a concurrent Picker/CLI
+    // caller cannot both initialise the same account.  In particular, do not
+    // let a losing caller's cleanup remove the winner's profile.
+    match create_account_dir(&profile) {
+        Ok(()) => {}
+        Err(CloakError::Io(err)) if err.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(CloakError::AccountExists(name.to_string()));
+        }
+        Err(err) => return Err(err),
+    }
     let result = (|| {
-        secure_account_dir(&profile)?;
         let seed = allocate_unused_seed(config);
         write_secret_atomic(&profile.join(".cloak-seed"), &seed)?;
         write_secret_atomic(
@@ -804,6 +867,7 @@ pub fn rename_account(config: &CloakConfig, old_name: &str, new_name: &str) -> R
     profile_metadata::ensure_profile_metadata(config, old_name, &old_path, &seed)?;
     write_secret_atomic(&old_path.join(".cloak-seed"), &seed)?;
     fs::rename(&old_path, &new_path)?;
+    sync_directory(&config.account_base)?;
     secure_account_dir(&new_path)?;
     read_account(config, new_name)
 }
@@ -1012,7 +1076,9 @@ fn build_launch_plan_for_url(
         profile_metadata::ensure_profile_metadata(config, name, &profile_path, &seed)?;
     let extension_runtime_path = profile_path.join(".cloak-companion");
     let extension_plan = discover_extra_extensions(config, &profile_path, &extension_runtime_path)?;
-    let browser_binary = resolve_browser_binary(config)?;
+    let resolved_browser = resolve_browser(config)?;
+    let runtime = browser_runtime_status(config, &resolved_browser)?;
+    let browser_binary = resolved_browser.binary;
     let engine = detect_engine_version(&browser_binary);
 
     let region = read_first_line(&profile_path.join(".cloak-region"))?;
@@ -1024,6 +1090,9 @@ fn build_launch_plan_for_url(
         .unwrap_or_else(no_proxy_config);
 
     let mut privacy_failures = Vec::new();
+    if runtime.blocks_launch {
+        privacy_failures.push(runtime.message.clone());
+    }
     let (geo, geo_cache_hit) = if options.skip_geo {
         (
             GeoPlan {
@@ -1206,6 +1275,7 @@ fn build_launch_plan_for_url(
         extra_extension_paths: extension_plan.extra_extension_paths,
         selftest_extension_paths: extension_plan.selftest_extension_paths,
         browser_binary,
+        runtime,
         engine_major: engine.major,
         engine_version: engine.full,
         proxy: ProxyPlan {
@@ -1252,6 +1322,9 @@ fn launch_plan(
     preflight_started: Instant,
 ) -> Result<LaunchResult> {
     ensure_launch_not_cancelled(options.cancellation.as_deref())?;
+    if plan.runtime.blocks_launch {
+        return Err(CloakError::PrivacyGate(plan.runtime.message.clone()));
+    }
     if !plan.privacy_failures.is_empty() && !options.allow_privacy_fail {
         return Err(CloakError::PrivacyGate(plan.privacy_failures.join("\n")));
     }
@@ -1329,6 +1402,7 @@ fn launch_plan(
             geo_cache_hit: plan.geo_cache_hit,
             preflight_ms: duration_millis(preflight_duration),
             launch_ms: duration_millis(launch_started.elapsed()),
+            runtime: plan.runtime.clone(),
             capabilities: launch_capabilities(
                 !plan.argv.iter().any(|arg| arg.starts_with("--user-agent=")),
                 is_local_notrace_runtime(&plan.browser_binary),
@@ -1740,19 +1814,39 @@ fn prepare_companion_extension(
 }
 
 pub fn self_check(config: &CloakConfig) -> Result<String> {
+    let report = self_check_report(config)?;
+    if !report.ok {
+        return Err(CloakError::PrivacyGate(report.runtime.message));
+    }
+    Ok(report.message)
+}
+
+pub fn self_check_report(config: &CloakConfig) -> Result<SelfCheckReport> {
     let accounts = list_accounts(config)?;
-    let browser = resolve_browser_binary(config)?;
     if !config.extension_source.is_dir() {
         return Err(CloakError::ExtensionMissing(
             config.extension_source.clone(),
         ));
     }
-    Ok(format!(
-        "cloak: ok ({} account(s)); browser={}; extension={}",
+    let resolved = resolve_browser(config)?;
+    let runtime = browser_runtime_status(config, &resolved)?;
+    let ok = !runtime.blocks_launch;
+    let message = format!(
+        "cloak: {} ({} account(s)); runtime={}; browser={}; extension={}",
+        if ok { "ok" } else { "blocked" },
         accounts.len(),
-        browser.display(),
+        runtime.message,
+        resolved.binary.display(),
         config.extension_source.display()
-    ))
+    );
+    Ok(SelfCheckReport {
+        ok,
+        message,
+        account_count: accounts.len(),
+        browser_binary: resolved.binary,
+        extension_path: config.extension_source.clone(),
+        runtime,
+    })
 }
 
 /// Profile directory of an account that must already exist. Every caller is a
@@ -2716,17 +2810,23 @@ fn real_browser_path(path: PathBuf) -> PathBuf {
     fs::canonicalize(&path).unwrap_or(path)
 }
 
-fn resolve_browser_binary(config: &CloakConfig) -> Result<PathBuf> {
+fn resolve_browser(config: &CloakConfig) -> Result<ResolvedBrowser> {
     if let Some(path) = env::var_os("CLOAK_BROWSER_BIN").map(PathBuf::from) {
         if is_executable(&path) {
-            return Ok(real_browser_path(path));
+            return Ok(ResolvedBrowser {
+                binary: real_browser_path(path),
+                selection: BrowserRuntimeSelection::ExplicitOverride,
+            });
         }
     }
     let current = config
         .cloakbrowser_root
         .join(current_browser_relative_path());
     if is_executable(&current) {
-        return Ok(real_browser_path(current));
+        return Ok(ResolvedBrowser {
+            binary: real_browser_path(current),
+            selection: BrowserRuntimeSelection::Current,
+        });
     }
     let mut candidates = Vec::new();
     let licensed_binary_available = cloakbrowser_license_configured(config);
@@ -2749,8 +2849,135 @@ fn resolve_browser_binary(config: &CloakConfig) -> Result<PathBuf> {
     candidates.sort_by_key(|path| version_sort_key(path));
     candidates
         .pop()
-        .map(real_browser_path)
+        .map(|path| ResolvedBrowser {
+            binary: real_browser_path(path),
+            selection: BrowserRuntimeSelection::Fallback,
+        })
         .ok_or(CloakError::BrowserMissing)
+}
+
+fn browser_runtime_status(
+    config: &CloakConfig,
+    resolved: &ResolvedBrowser,
+) -> Result<BrowserRuntimeStatus> {
+    let managed_root = fs::canonicalize(&config.cloakbrowser_root)
+        .unwrap_or_else(|_| config.cloakbrowser_root.clone());
+    let kind = if resolved.selection == BrowserRuntimeSelection::ExplicitOverride {
+        BrowserRuntimeKind::CustomBinary
+    } else if is_local_notrace_runtime(&resolved.binary) {
+        BrowserRuntimeKind::LocalTccRuntime
+    } else if resolved.binary.starts_with(&managed_root) {
+        BrowserRuntimeKind::SourceCache
+    } else {
+        BrowserRuntimeKind::CustomBinary
+    };
+
+    if resolved.selection == BrowserRuntimeSelection::ExplicitOverride {
+        return Ok(BrowserRuntimeStatus {
+            kind,
+            selection: resolved.selection.clone(),
+            provenance: BrowserRuntimeProvenance::Unmanaged,
+            blocks_launch: false,
+            message: "显式指定的自定义浏览器（不由 current.sha256 管理）".to_string(),
+        });
+    }
+
+    if resolved.selection == BrowserRuntimeSelection::Fallback {
+        return Ok(BrowserRuntimeStatus {
+            kind,
+            selection: resolved.selection.clone(),
+            provenance: BrowserRuntimeProvenance::Missing,
+            blocks_launch: true,
+            message: "未找到 current 指针，已停止启动；请先通过更新或回滚流程选择并校验运行时"
+                .to_string(),
+        });
+    }
+
+    let marker = config.cloakbrowser_root.join("current.sha256");
+    match fs::symlink_metadata(&marker) {
+        Ok(metadata) if metadata.file_type().is_file() && metadata.len() <= 4096 => {}
+        Ok(_) => {
+            return Ok(BrowserRuntimeStatus {
+                kind,
+                selection: resolved.selection.clone(),
+                provenance: BrowserRuntimeProvenance::Invalid,
+                blocks_launch: true,
+                message: "current.sha256 不是有效的普通文件，已停止启动".to_string(),
+            });
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Ok(BrowserRuntimeStatus {
+                kind,
+                selection: resolved.selection.clone(),
+                provenance: BrowserRuntimeProvenance::Missing,
+                blocks_launch: true,
+                message: "current.sha256 缺失，无法确认当前浏览器来源，已停止启动".to_string(),
+            });
+        }
+        Err(err) => return Err(err.into()),
+    }
+    let expected = fs::read_to_string(&marker)?
+        .split_whitespace()
+        .next()
+        .map(str::to_ascii_lowercase)
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let Some(expected) = expected else {
+        return Ok(BrowserRuntimeStatus {
+            kind,
+            selection: resolved.selection.clone(),
+            provenance: BrowserRuntimeProvenance::Invalid,
+            blocks_launch: true,
+            message: "current.sha256 内容无效，已停止启动".to_string(),
+        });
+    };
+    let actual = sha256_file(&resolved.binary)?;
+    if expected != actual {
+        return Ok(BrowserRuntimeStatus {
+            kind,
+            selection: resolved.selection.clone(),
+            provenance: BrowserRuntimeProvenance::Mismatch,
+            blocks_launch: true,
+            message: "当前浏览器 SHA-256 与 current.sha256 不一致，已停止启动".to_string(),
+        });
+    }
+    if kind == BrowserRuntimeKind::LocalTccRuntime {
+        if let Some(issue) = local_tcc_runtime_contract_issue(&resolved.binary)? {
+            return Ok(BrowserRuntimeStatus {
+                kind,
+                selection: resolved.selection.clone(),
+                provenance: BrowserRuntimeProvenance::Invalid,
+                blocks_launch: true,
+                message: format!("本机 TCC 运行副本声明无效（{issue}），已停止启动"),
+            });
+        }
+    }
+
+    let message = match kind {
+        BrowserRuntimeKind::SourceCache => "上游源缓存（SHA-256 已验证；不含本机 TCC 声明）",
+        BrowserRuntimeKind::LocalTccRuntime => "本机 TCC 运行副本（SHA-256 与权限声明已验证）",
+        BrowserRuntimeKind::CustomBinary => "自定义浏览器（SHA-256 已验证）",
+    };
+    Ok(BrowserRuntimeStatus {
+        kind,
+        selection: resolved.selection.clone(),
+        provenance: BrowserRuntimeProvenance::Verified,
+        blocks_launch: false,
+        message: message.to_string(),
+    })
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex_digest(&hasher.finalize()))
 }
 
 fn cloakbrowser_license_configured(config: &CloakConfig) -> bool {
@@ -2792,16 +3019,63 @@ fn version_sort_key(path: &Path) -> (Vec<u64>, bool, bool) {
     (Vec::new(), false, false)
 }
 
+fn local_notrace_runtime_root(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .find(|ancestor| {
+            ancestor
+                .file_name()
+                .map(|name| {
+                    let name = name.to_string_lossy();
+                    name.starts_with("chromium-") && name.ends_with("-notrace")
+                })
+                .unwrap_or(false)
+        })
+        .map(Path::to_path_buf)
+}
+
 fn is_local_notrace_runtime(path: &Path) -> bool {
-    path.ancestors().any(|ancestor| {
-        ancestor
-            .file_name()
-            .map(|name| {
-                let name = name.to_string_lossy();
-                name.starts_with("chromium-") && name.ends_with("-notrace")
-            })
-            .unwrap_or(false)
-    })
+    local_notrace_runtime_root(path).is_some()
+}
+
+fn local_tcc_runtime_contract_issue(path: &Path) -> Result<Option<String>> {
+    let Some(root) = local_notrace_runtime_root(path) else {
+        return Ok(Some("目录名称没有 -notrace 标记".to_string()));
+    };
+    let marker = root.join(".notrace-local-runtime");
+    let marker_valid = fs::symlink_metadata(&marker)
+        .is_ok_and(|metadata| metadata.file_type().is_file() && metadata.len() <= 4096)
+        && fs::read_to_string(&marker)
+            .is_ok_and(|value| value.trim().starts_with("NoTrace local runtime v1"));
+    if !marker_valid {
+        return Ok(Some("缺少有效的 .notrace-local-runtime 标记".to_string()));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let plist = root.join("Chromium.app/Contents/Info.plist");
+        if !plist.is_file() {
+            return Ok(Some("缺少 Chromium.app/Contents/Info.plist".to_string()));
+        }
+        for key in [
+            "NSMicrophoneUsageDescription",
+            "NSCameraUsageDescription",
+            "NSBluetoothAlwaysUsageDescription",
+        ] {
+            let output = Command::new("/usr/libexec/PlistBuddy")
+                .arg("-c")
+                .arg(format!("Print :{key}"))
+                .arg(&plist)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()?;
+            if !output.status.success() || String::from_utf8_lossy(&output.stdout).trim().is_empty()
+            {
+                return Ok(Some(format!("缺少 {key}")));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 #[cfg(target_os = "macos")]
@@ -3441,19 +3715,37 @@ fn write_secret_atomic(path: &Path, value: &str) -> Result<()> {
         fs::create_dir_all(parent)?;
         secure_dir(parent)?;
     }
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    fs::write(
-        &tmp,
-        if value.ends_with('\n') {
-            value.to_string()
-        } else {
-            format!("{value}\n")
-        },
-    )?;
-    secure_file(&tmp)?;
-    fs::rename(tmp, path)?;
-    secure_file(path)?;
-    Ok(())
+    // A PID-only temporary name collides when two Tauri commands (or a CLI
+    // and the Picker) update the same marker concurrently.  `create_new`
+    // makes the temporary file itself exclusive, while the random suffix
+    // keeps independent writers from contending on one pathname.
+    let tmp = path.with_extension(format!(
+        "tmp.{}.{}",
+        std::process::id(),
+        rand::thread_rng().gen::<u128>()
+    ));
+    let encoded = if value.ends_with('\n') {
+        value.to_string()
+    } else {
+        format!("{value}\n")
+    };
+    let result = (|| {
+        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        file.write_all(encoded.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        secure_file(&tmp)?;
+        fs::rename(&tmp, path)?;
+        if let Some(parent) = path.parent() {
+            sync_directory(parent)?;
+        }
+        secure_file(path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 fn remove_if_present(path: &Path) -> Result<()> {
@@ -3491,6 +3783,19 @@ fn secure_account_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn create_account_dir(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+        secure_dir(parent)?;
+    }
+    fs::create_dir(path)?;
+    if let Some(parent) = path.parent() {
+        sync_directory(parent)?;
+    }
+    secure_dir(path)?;
+    Ok(())
+}
+
 fn secure_dir_recursive(path: &Path) -> Result<()> {
     for entry in WalkDir::new(path) {
         let entry = entry.map_err(io::Error::other)?;
@@ -3524,6 +3829,44 @@ fn secure_file(path: &Path) -> Result<()> {
 
 #[cfg(not(unix))]
 fn secure_file(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn sync_directory(path: &Path) -> Result<()> {
+    use std::ffi::c_int;
+    use std::os::fd::AsRawFd;
+
+    const F_FULLFSYNC: c_int = 51;
+    unsafe extern "C" {
+        fn fcntl(file_descriptor: c_int, command: c_int, ...) -> c_int;
+    }
+
+    let directory = File::open(path)?;
+    // macOS rejects fsync(2) for directory descriptors with EPERM. Its
+    // supported durability primitive is F_FULLFSYNC, which also asks the drive
+    // to flush buffered metadata before the rename is considered committed.
+    // SAFETY: directory owns a valid descriptor for the duration of the call;
+    // F_FULLFSYNC takes no variadic third argument.
+    if unsafe { fcntl(directory.as_raw_fd(), F_FULLFSYNC) } == -1 {
+        let err = io::Error::last_os_error();
+        return Err(io::Error::new(
+            err.kind(),
+            format!("F_FULLFSYNC failed for {}: {err}", path.display()),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn sync_directory(path: &Path) -> Result<()> {
+    File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn sync_directory(_path: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -3665,6 +4008,130 @@ mod tests {
         );
         assert!(version_sort_key(local) > version_sort_key(keyed));
         assert!(is_local_notrace_runtime(local));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_runtime_requires_matching_sha256_and_reports_its_source() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = CloakConfig {
+            repo_root: dir.path().to_path_buf(),
+            account_base: dir.path().join("accounts"),
+            extension_source: dir.path().join("extension"),
+            cloakbrowser_root: dir.path().join("browser"),
+        };
+        let version_dir = config.cloakbrowser_root.join("chromium-145.0.7632.109.2");
+        let browser = version_dir.join(browser_relative_in_version_dir());
+        fs::create_dir_all(browser.parent().unwrap()).unwrap();
+        fs::create_dir_all(&config.extension_source).unwrap();
+        fs::write(&browser, b"verified source cache fixture").unwrap();
+        symlink(&version_dir, config.cloakbrowser_root.join("current")).unwrap();
+
+        let resolved = resolve_browser(&config).unwrap();
+        let missing = browser_runtime_status(&config, &resolved).unwrap();
+        assert_eq!(missing.kind, BrowserRuntimeKind::SourceCache);
+        assert_eq!(missing.provenance, BrowserRuntimeProvenance::Missing);
+        assert!(missing.blocks_launch);
+        let missing_report = self_check_report(&config).unwrap();
+        assert!(!missing_report.ok);
+        assert_eq!(
+            missing_report.runtime.provenance,
+            BrowserRuntimeProvenance::Missing
+        );
+        create_account(&config, "blocked-runtime").unwrap();
+        let blocked_launch = launch_account(
+            &config,
+            "blocked-runtime",
+            &LaunchOptions {
+                skip_geo: true,
+                allow_privacy_fail: true,
+                ..LaunchOptions::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            blocked_launch,
+            CloakError::PrivacyGate(message) if message.contains("current.sha256 缺失")
+        ));
+
+        fs::write(
+            config.cloakbrowser_root.join("current.sha256"),
+            format!("{}  current browser\n", "0".repeat(64)),
+        )
+        .unwrap();
+        let mismatch = browser_runtime_status(&config, &resolved).unwrap();
+        assert_eq!(mismatch.provenance, BrowserRuntimeProvenance::Mismatch);
+        assert!(mismatch.blocks_launch);
+
+        fs::write(
+            config.cloakbrowser_root.join("current.sha256"),
+            format!("{}  current browser\n", sha256_file(&browser).unwrap()),
+        )
+        .unwrap();
+        let verified = browser_runtime_status(&config, &resolved).unwrap();
+        assert_eq!(verified.provenance, BrowserRuntimeProvenance::Verified);
+        assert!(!verified.blocks_launch);
+        assert!(verified.message.contains("上游源缓存"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_runtime_is_not_misreported_as_upstream_source_cache() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = CloakConfig {
+            repo_root: dir.path().to_path_buf(),
+            account_base: dir.path().join("accounts"),
+            extension_source: dir.path().join("extension"),
+            cloakbrowser_root: dir.path().join("browser"),
+        };
+        let version_dir = config
+            .cloakbrowser_root
+            .join("chromium-150.0.7871.114.4-pro-notrace");
+        let browser = version_dir.join(browser_relative_in_version_dir());
+        fs::create_dir_all(browser.parent().unwrap()).unwrap();
+        fs::write(&browser, b"verified local TCC fixture").unwrap();
+        symlink(&version_dir, config.cloakbrowser_root.join("current")).unwrap();
+        fs::write(
+            config.cloakbrowser_root.join("current.sha256"),
+            format!("{}  current browser\n", sha256_file(&browser).unwrap()),
+        )
+        .unwrap();
+
+        let resolved = resolve_browser(&config).unwrap();
+        let missing_marker = browser_runtime_status(&config, &resolved).unwrap();
+        assert_eq!(missing_marker.kind, BrowserRuntimeKind::LocalTccRuntime);
+        assert_eq!(missing_marker.provenance, BrowserRuntimeProvenance::Invalid);
+        assert!(missing_marker.blocks_launch);
+
+        fs::write(
+            version_dir.join(".notrace-local-runtime"),
+            "NoTrace local runtime v1; do not redistribute\n",
+        )
+        .unwrap();
+        #[cfg(target_os = "macos")]
+        fs::write(
+            version_dir.join("Chromium.app/Contents/Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>NSMicrophoneUsageDescription</key><string>microphone</string>
+<key>NSCameraUsageDescription</key><string>camera</string>
+<key>NSBluetoothAlwaysUsageDescription</key><string>bluetooth</string>
+</dict></plist>
+"#,
+        )
+        .unwrap();
+
+        let status = browser_runtime_status(&config, &resolved).unwrap();
+        assert_eq!(status.kind, BrowserRuntimeKind::LocalTccRuntime);
+        assert_eq!(status.provenance, BrowserRuntimeProvenance::Verified);
+        assert!(!status.blocks_launch);
+        assert!(status.message.contains("本机 TCC 运行副本"));
+        assert!(!status.message.contains("上游源缓存"));
     }
 
     #[test]
@@ -4005,6 +4472,71 @@ mod tests {
         assert_eq!(create_account(&config, "work").unwrap().name, "work");
         let duplicate = create_account(&config, "work").unwrap_err();
         assert!(matches!(duplicate, CloakError::AccountExists(name) if name == "work"));
+    }
+
+    #[test]
+    fn concurrent_account_creation_has_one_winner() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = CloakConfig {
+            repo_root: dir.path().to_path_buf(),
+            account_base: dir.path().join("accounts"),
+            extension_source: dir.path().join("extension"),
+            cloakbrowser_root: dir.path().join("browser"),
+        };
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles = (0..8)
+            .map(|_| {
+                let config = config.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    create_account(&config, "same-name")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(CloakError::AccountExists(_))))
+                .count(),
+            7
+        );
+        assert!(read_account(&config, "same-name").is_ok());
+    }
+
+    #[test]
+    fn concurrent_atomic_secret_writes_do_not_share_a_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let handles = (0..16)
+            .map(|index| {
+                let path = path.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    write_secret_atomic(&path, &format!("value-{index}"))
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+        let value = fs::read_to_string(&path).unwrap();
+        assert!(value.trim().starts_with("value-"));
+        let leftovers = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
+            .count();
+        assert_eq!(leftovers, 0);
     }
 
     #[test]
@@ -4618,6 +5150,11 @@ mod tests {
             .join(current_browser_relative_path());
         fs::create_dir_all(browser.parent().unwrap()).unwrap();
         fs::write(&browser, "").unwrap();
+        fs::write(
+            config.cloakbrowser_root.join("current.sha256"),
+            format!("{}  current browser\n", sha256_file(&browser).unwrap()),
+        )
+        .unwrap();
         let profile = config.profile_dir("work");
         fs::create_dir_all(&profile).unwrap();
         fs::write(profile.join(".cloak-locale"), "").unwrap();
@@ -5010,6 +5547,13 @@ mod tests {
             extra_extension_paths: Vec::new(),
             selftest_extension_paths: Vec::new(),
             browser_binary: dir.path().join("browser/Chromium"),
+            runtime: BrowserRuntimeStatus {
+                kind: BrowserRuntimeKind::CustomBinary,
+                selection: BrowserRuntimeSelection::ExplicitOverride,
+                provenance: BrowserRuntimeProvenance::Unmanaged,
+                blocks_launch: false,
+                message: "test runtime".to_string(),
+            },
             engine_major: "145".to_string(),
             engine_version: "145.0.0.0".to_string(),
             proxy: ProxyPlan {

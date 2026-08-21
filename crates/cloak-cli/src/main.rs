@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use cloak_core::{
     build_launch_plan, create_account, delete_account, launch_account, list_accounts,
-    list_trashed_accounts, permanently_delete_account, read_account, rename_account, self_check,
-    set_account_trashed, set_group, set_mark, set_proxy, set_region, toggle_locale, CloakConfig,
-    LaunchOptions,
+    list_trashed_accounts, permanently_delete_account, read_account, rename_account,
+    self_check_report, set_account_trashed, set_group, set_mark, set_proxy, set_region,
+    toggle_locale, CloakConfig, LaunchOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -128,11 +128,14 @@ fn main() -> Result<()> {
         Command::Account { command } => handle_account(command, &config),
         Command::Launch(args) => handle_launch(args, &config),
         Command::SelfCheck { json } => {
-            let message = self_check(&config)?;
+            let report = self_check_report(&config)?;
             if json {
-                print_json(&serde_json::json!({ "ok": true, "message": message }))?;
+                print_json(&report)?;
             } else {
-                println!("{message}");
+                println!("{}", report.message);
+            }
+            if !report.ok {
+                anyhow::bail!(report.runtime.message);
             }
             Ok(())
         }

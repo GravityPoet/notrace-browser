@@ -8,12 +8,12 @@ use cloak_core::{
     list_accounts as core_list_accounts, list_trashed_accounts as core_list_trashed_accounts,
     permanently_delete_account as core_permanently_delete_account,
     preview_workspace_import_with_cancellation as core_preview_workspace_import,
-    rename_account as core_rename_account, set_account_trashed as core_set_account_trashed,
-    set_group as core_set_group, set_mark as core_set_mark, set_note as core_set_note,
-    set_proxy as core_set_proxy, set_region as core_set_region,
-    toggle_locale as core_toggle_locale, Account, CloakConfig, LaunchOptions, LaunchPlan,
-    LaunchResult, WorkspaceExportSummary, WorkspaceImportMapping, WorkspaceImportPreview,
-    WorkspaceImportSummary, WorkspacePickerState,
+    rename_account as core_rename_account, self_check_report as core_self_check_report,
+    set_account_trashed as core_set_account_trashed, set_group as core_set_group,
+    set_mark as core_set_mark, set_note as core_set_note, set_proxy as core_set_proxy,
+    set_region as core_set_region, toggle_locale as core_toggle_locale, Account, CloakConfig,
+    LaunchOptions, LaunchPlan, LaunchResult, WorkspaceExportSummary, WorkspaceImportMapping,
+    WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
 };
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -25,6 +25,8 @@ use std::sync::{Arc, Mutex};
 use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 use zeroize::Zeroizing;
+
+mod native_e2e;
 
 fn config() -> Result<CloakConfig, String> {
     CloakConfig::from_env().map_err(|err| err.to_string())
@@ -562,6 +564,11 @@ async fn run_challenge_audit() -> Result<serde_json::Value, String> {
     run_blocking(run_challenge_audit_blocking).await
 }
 
+#[tauri::command]
+fn complete_native_e2e(checks: Vec<String>, error: Option<String>) -> Result<(), String> {
+    native_e2e::write_report(checks, error)
+}
+
 fn resolve_node_binary(candidates: &[PathBuf]) -> PathBuf {
     candidates
         .iter()
@@ -580,18 +587,17 @@ fn node_binary() -> PathBuf {
 
 fn run_challenge_audit_blocking() -> Result<serde_json::Value, String> {
     let config = config()?;
+    let self_check = core_self_check_report(&config).map_err(|err| err.to_string())?;
+    if !self_check.ok {
+        return Err(self_check.runtime.message);
+    }
     let script = config
         .repo_root
         .join("selftest/run-live-challenge-audit.mjs");
     if !script.is_file() {
         return Err(format!("挑战审计脚本不存在：{}", script.display()));
     }
-    #[cfg(target_os = "macos")]
-    let browser = config
-        .cloakbrowser_root
-        .join("current/Chromium.app/Contents/MacOS/Chromium");
-    #[cfg(not(target_os = "macos"))]
-    let browser = config.cloakbrowser_root.join("current/chrome");
+    let browser = self_check.browser_binary;
     if !browser.is_file() {
         return Err(format!("当前浏览器二进制不存在：{}", browser.display()));
     }
@@ -747,6 +753,7 @@ pub fn run() {
             window.show()?;
             window.set_focus()?;
             focus_main_window_after_launch(app.handle().clone());
+            native_e2e::schedule(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -775,7 +782,8 @@ pub fn run() {
             launch_web_store,
             cancel_launch,
             account_is_running,
-            run_challenge_audit
+            run_challenge_audit,
+            complete_native_e2e
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cloak picker");

@@ -78,6 +78,7 @@ type LaunchPlan = {
   extra_extension_paths: string[];
   selftest_extension_paths: string[];
   browser_binary: string;
+  runtime: BrowserRuntimeStatus;
   engine_major: string;
   engine_version: string;
   proxy: {
@@ -136,8 +137,17 @@ type LaunchResult = {
     geo_cache_hit: boolean;
     preflight_ms: number;
     launch_ms: number;
+    runtime: BrowserRuntimeStatus;
     capabilities: string[];
   };
+};
+
+type BrowserRuntimeStatus = {
+  kind: "source-cache" | "local-tcc-runtime" | "custom-binary";
+  selection: "current" | "explicit-override" | "fallback";
+  provenance: "verified" | "missing" | "invalid" | "mismatch" | "unmanaged";
+  blocks_launch: boolean;
+  message: string;
 };
 
 type LaunchStatus = {
@@ -719,6 +729,10 @@ export default function App() {
     setAccountView(view);
   }
 
+  function handleAccountViewTabKey(event: KeyboardEvent<HTMLButtonElement>) {
+    moveRovingTabFocus(event, ["active", "trash"], accountView, handleAccountViewChange);
+  }
+
   function handleAccountSelection(name: string) {
     if (accountDragSuppressClickRef.current) return;
     if (bulkSelectionMode) {
@@ -1027,11 +1041,6 @@ export default function App() {
       setPlanLoading(false);
       return;
     }
-    if (selected.trashed) {
-      setPlan(null);
-      return;
-    }
-
     let cancelled = false;
     // Clear first: the panel is already titled with the new account, so keeping
     // the previous plan would show one identity's seed, exit IP and profile path
@@ -2108,6 +2117,10 @@ export default function App() {
     // A row launches on double click, which bypasses the button's disabled
     // state. Without this guard the second call cancels the first, so the user
     // is told "启动已取消" while a third launch quietly opens the browser.
+    if (plan?.account === account.name && plan.runtime.blocks_launch) {
+      setError(plan.runtime.message);
+      return;
+    }
     if (launchInFlightRef.current.has(account.name)) return;
     launchInFlightRef.current.add(account.name);
     setError("");
@@ -2136,6 +2149,10 @@ export default function App() {
 
   async function launchWebStore(account: Account) {
     if (account.trashed) return;
+    if (plan?.account === account.name && plan.runtime.blocks_launch) {
+      setError(plan.runtime.message);
+      return;
+    }
     if (launchInFlightRef.current.has(account.name)) return;
     launchInFlightRef.current.add(account.name);
     setError("");
@@ -2208,6 +2225,7 @@ export default function App() {
           observations: current.geo.observations,
         },
         identity: result.diagnostics.identity,
+        runtime: result.diagnostics.runtime,
       };
     });
   }
@@ -2518,6 +2536,9 @@ export default function App() {
         : `已打开商店：${middleTruncate(webStoreStatus.accountName, 34)} · PID ${webStoreStatus.result.pid} · ${formatLaunchClock(webStoreStatus.result.launched_at)}`
     : "";
   const launchStatusIsCurrent = Boolean(selected && launchStatus?.accountName === selected.name);
+  const runtimeLaunchBlocked = Boolean(
+    selected && plan?.account === selected.name && plan.runtime.blocks_launch,
+  );
   const launchStatusIsPending = Boolean(
     launchStatusIsCurrent
     && launchStatus
@@ -2735,25 +2756,41 @@ export default function App() {
           </div>
           <div className="viewSwitch" role="tablist" aria-label="账号视图">
             <button
+              aria-controls="cloak-account-active-panel"
               className={accountView === "active" ? "active" : ""}
+              data-tab-value="active"
+              id="cloak-account-active-tab"
               type="button"
               role="tab"
               aria-selected={accountView === "active"}
+              tabIndex={accountView === "active" ? 0 : -1}
               onClick={() => handleAccountViewChange("active")}
+              onKeyDown={handleAccountViewTabKey}
             >
               活跃
             </button>
             <button
+              aria-controls="cloak-account-trash-panel"
               className={accountView === "trash" ? "active" : ""}
+              data-tab-value="trash"
+              id="cloak-account-trash-tab"
               type="button"
               role="tab"
               aria-selected={accountView === "trash"}
+              tabIndex={accountView === "trash" ? 0 : -1}
               onClick={() => handleAccountViewChange("trash")}
+              onKeyDown={handleAccountViewTabKey}
             >
               回收站
             </button>
           </div>
 
+          <div
+            aria-labelledby={accountView === "active" ? "cloak-account-trash-tab" : "cloak-account-active-tab"}
+            hidden
+            id={accountView === "active" ? "cloak-account-trash-panel" : "cloak-account-active-panel"}
+            role="tabpanel"
+          />
           <div
             className="groupFilter"
             aria-label="分组筛选"
@@ -2818,7 +2855,14 @@ export default function App() {
             })}
           </div>
 
-          <div className="accountList" ref={accountListRef}>
+          <div
+            aria-labelledby={accountView === "active" ? "cloak-account-active-tab" : "cloak-account-trash-tab"}
+            className="accountList"
+            id={accountView === "active" ? "cloak-account-active-panel" : "cloak-account-trash-panel"}
+            ref={accountListRef}
+            role="tabpanel"
+            tabIndex={0}
+          >
             {bulkSelectionMode ? (
               <div aria-label="批量操作" className="bulkActionBar">
                 <button
@@ -3200,8 +3244,8 @@ export default function App() {
                       </button>
                       <button
                         className="launchButton"
-                        disabled={busy || (launchStatusIsPending && launchStatus?.target !== "chatgpt")}
-                        title="启动账号但保持回收站状态"
+                        disabled={busy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "chatgpt")}
+                        title={runtimeLaunchBlocked ? plan?.runtime.message : "启动账号但保持回收站状态"}
                         onClick={() => void (
                           launchStatusIsPending && launchStatus?.target === "chatgpt"
                             ? cancelLaunch(selected)
@@ -3218,8 +3262,8 @@ export default function App() {
                     <div className="detailHeaderActions">
                       <button
                         className="secondaryButton"
-                        disabled={busy || planLoading || (launchStatusIsPending && launchStatus?.target !== "web-store")}
-                        title={`用 ${selected.name} 打开 Chrome Web Store`}
+                        disabled={busy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "web-store")}
+                        title={runtimeLaunchBlocked ? plan?.runtime.message : `用 ${selected.name} 打开 Chrome Web Store`}
                         onClick={() => void (
                           launchStatusIsPending && launchStatus?.target === "web-store"
                             ? cancelLaunch(selected)
@@ -3231,7 +3275,8 @@ export default function App() {
                       </button>
                       <button
                         className="launchButton"
-                        disabled={busy || planLoading || (launchStatusIsPending && launchStatus?.target !== "chatgpt")}
+                        disabled={busy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "chatgpt")}
+                        title={runtimeLaunchBlocked ? plan?.runtime.message : "启动账号"}
                         onClick={() => void (
                           launchStatusIsPending && launchStatus?.target === "chatgpt"
                             ? cancelLaunch(selected)
@@ -3268,7 +3313,7 @@ export default function App() {
                       <InfoRow icon={<Trash2 size={15} />} label="删除时间" value={formatCreatedAt(selected.deleted_at ?? 0)} />
                     ) : null}
                     <InfoRow icon={selected.trashed ? <Trash2 size={15} /> : <ShieldCheck size={15} />} label="状态" value={statusLabel} />
-                    <InfoRow label="账号目录" value={selected.profile_path} mono />
+                    <InfoRow copyable label="账号目录" value={selected.profile_path} mono />
                   </InspectorGroup>
 
                   <InspectorGroup title="网络">
@@ -3285,8 +3330,9 @@ export default function App() {
                     <InfoRow label="真实插件" value={plan ? extensionSummary(plan.extra_extension_paths) : "未解析"} />
                     <InfoRow label="自测插件" value={plan ? extensionSummary(plan.selftest_extension_paths) : "未解析"} />
                     <InfoRow label="引擎版本" value={plan?.engine_version ? `Chromium ${plan.engine_version}` : "未解析"} mono />
+                    <InfoRow label="运行时来源" value={plan?.runtime.message ?? "未解析"} />
                     <InfoRow label="出口缓存" value={plan?.geo_cache_hit ? "代理缓存命中（5 分钟内）" : "未使用缓存"} />
-                    <InfoRow label="浏览器" value={plan?.browser_binary ?? "未解析"} mono />
+                    <InfoRow copyable={Boolean(plan)} label="浏览器" value={plan?.browser_binary ?? "未解析"} mono />
                   </InspectorGroup>
                 </section>
 
@@ -3302,7 +3348,9 @@ export default function App() {
                       <span>缓存</span><strong>{launchStatus.result.diagnostics.geo_cache_hit ? "命中（5 分钟内）" : "未命中"}</strong>
                     </div>
                     <div className="capabilityList" title="当前实际可用的编排能力，不代表引擎已升级到 Pro 版本">
-                      {launchStatus.result.diagnostics.capabilities.map((capability) => <span key={capability}>{capability}</span>)}
+                      {launchStatus.result.diagnostics.capabilities.map((capability) => (
+                        <span key={capability}>{capabilityLabel(capability)}</span>
+                      ))}
                     </div>
                   </div>
                 ) : null}
@@ -4412,7 +4460,8 @@ function WorkspaceMigrationDialog({
   const [imported, setImported] = useState<WorkspaceImportSummary | null>(null);
   const [targetNames, setTargetNames] = useState<Record<string, string>>({});
 
-  const passphraseValid = passphrase.length >= 12 && passphrase.length <= 1024;
+  const passphraseLength = unicodeScalarCount(passphrase);
+  const passphraseValid = passphraseLength >= 12 && passphraseLength <= 1024;
   const exportReady = passphraseValid && passphrase === confirmation;
   const hasIdentityConflict = preview?.accounts.some((account) => account.profile_id_conflict) ?? false;
   const targetValues = preview?.accounts.map((account) => targetNames[account.source_name]?.trim() ?? "") ?? [];
@@ -4433,6 +4482,10 @@ function WorkspaceMigrationDialog({
     setPreview(null);
     setImported(null);
     setTargetNames({});
+  }
+
+  function handleModeTabKey(event: KeyboardEvent<HTMLButtonElement>) {
+    moveRovingTabFocus(event, ["export", "import"], mode, changeMode);
   }
 
   async function runExport() {
@@ -4565,23 +4618,32 @@ function WorkspaceMigrationDialog({
         </div>
         <div className="manageTabs workspaceMigrationTabs" role="tablist" aria-label="工作区迁移方式">
           <button
+            aria-controls="cloak-workspace-export-panel"
             aria-selected={mode === "export"}
             autoFocus={mode === "export"}
             className={mode === "export" ? "active" : ""}
+            data-tab-value="export"
+            id="cloak-workspace-export-tab"
             role="tab"
+            tabIndex={mode === "export" ? 0 : -1}
             type="button"
             onClick={() => changeMode("export")}
+            onKeyDown={handleModeTabKey}
           >
             <ShieldCheck aria-hidden="true" size={14} />
             导出备份
           </button>
           <button
+            aria-controls="cloak-workspace-import-panel"
             aria-selected={mode === "import"}
-            autoFocus={mode === "import"}
             className={mode === "import" ? "active" : ""}
+            data-tab-value="import"
+            id="cloak-workspace-import-tab"
             role="tab"
+            tabIndex={mode === "import" ? 0 : -1}
             type="button"
             onClick={() => changeMode("import")}
+            onKeyDown={handleModeTabKey}
           >
             <ArchiveRestore aria-hidden="true" size={14} />
             导入恢复
@@ -4592,8 +4654,16 @@ function WorkspaceMigrationDialog({
           <span><strong>AES-256-GCM</strong> 分帧认证 · scrypt N=32768 · 路径、文件数、容量与摘要校验</span>
         </div>
 
-        {mode === "export" ? (
-          <>
+        <div
+          aria-labelledby="cloak-workspace-export-tab"
+          className="workspaceMigrationPanel"
+          hidden={mode !== "export"}
+          id="cloak-workspace-export-panel"
+          role="tabpanel"
+          tabIndex={0}
+        >
+          {mode === "export" ? (
+            <>
             <label className="field">
               <span>备份口令</span>
               <input
@@ -4627,14 +4697,27 @@ function WorkspaceMigrationDialog({
                 <div>
                   <strong>备份已完成</strong>
                   <span>{exported.account_count} 个账号 · {exported.file_count} 个文件 · {formatByteCount(exported.total_bytes)}</span>
-                  <code title={exported.path}>{middleTruncate(exported.path, 62)}</code>
+                  <span className="workspacePathValue">
+                    <code title={exported.path}>{exported.path}</code>
+                    <CopyValueButton label="备份路径" value={exported.path} />
+                  </span>
                   <small>SHA256 {exported.archive_sha256.slice(0, 16)}…</small>
                 </div>
               </div>
             ) : null}
-          </>
-        ) : (
-          <>
+            </>
+          ) : null}
+        </div>
+        <div
+          aria-labelledby="cloak-workspace-import-tab"
+          className="workspaceMigrationPanel"
+          hidden={mode !== "import"}
+          id="cloak-workspace-import-panel"
+          role="tabpanel"
+          tabIndex={0}
+        >
+          {mode === "import" ? (
+            <>
             {!preview && !imported ? (
               <label className="field">
                 <span>备份口令</span>
@@ -4698,8 +4781,9 @@ function WorkspaceMigrationDialog({
                 </div>
               </div>
             ) : null}
-          </>
-        )}
+            </>
+          ) : null}
+        </div>
 
         {busy ? (
           <div className="workspaceProgressBlock" role="status" aria-live="polite">
@@ -5637,12 +5721,14 @@ function InfoRow({
   value,
   mono,
   multiline,
+  copyable,
 }: {
   icon?: ReactNode;
   label: string;
   value: string;
   mono?: boolean;
   multiline?: boolean;
+  copyable?: boolean;
 }) {
   return (
     <div className="infoRow">
@@ -5650,10 +5736,48 @@ function InfoRow({
         {icon}
         {label}
       </span>
-      <span className={`infoValue ${mono ? "mono" : ""} ${multiline ? "multiline" : ""}`} title={value}>
-        {value}
-      </span>
+      {copyable ? (
+        <span className="infoValueControl">
+          <span className={`infoValue ${mono ? "mono" : ""} ${multiline ? "multiline" : ""}`} title={value}>
+            {value}
+          </span>
+          <CopyValueButton label={label} value={value} />
+        </span>
+      ) : (
+        <span className={`infoValue ${mono ? "mono" : ""} ${multiline ? "multiline" : ""}`} title={value}>
+          {value}
+        </span>
+      )}
     </div>
+  );
+}
+
+function CopyValueButton({ label, value }: { label: string; value: string }) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+
+  async function copyValue() {
+    try {
+      await copyTextToClipboard(value);
+      setState("copied");
+    } catch {
+      setState("failed");
+    }
+  }
+
+  const status = state === "copied" ? `已复制${label}` : state === "failed" ? `${label}复制失败` : "";
+  return (
+    <>
+      <button
+        aria-label={state === "copied" ? `已复制${label}` : `复制${label}`}
+        className={`valueCopyButton ${state}`}
+        title={state === "copied" ? "已复制" : state === "failed" ? "复制失败，请重试" : `复制${label}`}
+        type="button"
+        onClick={() => void copyValue()}
+      >
+        {state === "copied" ? <Check aria-hidden="true" size={13} /> : <Copy aria-hidden="true" size={13} />}
+      </button>
+      {status ? <span aria-live="polite" className="visuallyHidden" role="status">{status}</span> : null}
+    </>
   );
 }
 
@@ -6239,6 +6363,7 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
         geo_cache_hit: plan.geo_cache_hit,
         preflight_ms: 420,
         launch_ms: 180,
+        runtime: plan.runtime,
         capabilities: ["isolated-profile-storage", "stable-seed-fingerprint", "challenge-signal-reporting"],
       },
     } as T;
@@ -6456,6 +6581,13 @@ function mockLaunchPlan(account: Account, full: boolean): LaunchPlan {
       `${account.profile_path}/.cloak-extra-extensions/Cookies.crx`,
     ],
     browser_binary: "/Users/example/.cloakbrowser/current/Chromium.app/Contents/MacOS/Chromium",
+    runtime: {
+      kind: "source-cache",
+      selection: "current",
+      provenance: "verified",
+      blocks_launch: false,
+      message: "上游源缓存（SHA-256 已验证；不含本机 TCC 声明）",
+    },
     engine_major: "145",
     engine_version: "145.0.7632.109",
     proxy: {
@@ -6512,6 +6644,31 @@ function middleTruncate(value: string, max: number) {
   return `${value.slice(0, keep)}…${value.slice(-keep)}`;
 }
 
+function moveRovingTabFocus<T extends string>(
+  event: KeyboardEvent<HTMLButtonElement>,
+  values: readonly T[],
+  current: T,
+  onSelect: (value: T) => void,
+) {
+  const currentIndex = values.indexOf(current);
+  let nextIndex: number | null = null;
+  if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % values.length;
+  if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + values.length) % values.length;
+  if (event.key === "Home") nextIndex = 0;
+  if (event.key === "End") nextIndex = values.length - 1;
+  if (nextIndex === null) return;
+
+  event.preventDefault();
+  const next = values[nextIndex];
+  const tabs = event.currentTarget.closest('[role="tablist"]')?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+  tabs?.[nextIndex]?.focus();
+  onSelect(next);
+}
+
+function unicodeScalarCount(value: string) {
+  return Array.from(value).length;
+}
+
 async function copyTextToClipboard(value: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(value);
@@ -6563,6 +6720,24 @@ function geoConsensusLabel(consensus: LaunchPlan["geo"]["consensus"]) {
 
 function identityTemplateLabel(identity: LaunchPlan["identity"]) {
   return identity.template === "host-native" ? "本机原生" : "稳定多账号";
+}
+
+function capabilityLabel(capability: string) {
+  const labels: Record<string, string> = {
+    "isolated-profile-storage": "独立账号数据",
+    "stable-seed-fingerprint": "稳定账号指纹",
+    "ua-client-hints-consistency": "浏览器版本一致",
+    "webrtc-exit-ip-binding": "WebRTC 跟随出口",
+    "authenticated-proxy-relay-tcp": "认证代理中继",
+    "window-geometry-restore": "窗口位置恢复",
+    "https-only-profile": "HTTPS 优先",
+    "challenge-signal-reporting": "挑战兼容诊断",
+    "engine-pin-rollback": "引擎固定与回滚",
+    "native-coherent-engine-identity": "原生一致身份",
+    "legacy-engine-identity-overrides": "旧版兼容身份",
+    "local-tcc-runtime": "本机权限运行副本",
+  };
+  return labels[capability] ?? "运行能力";
 }
 
 function formatLaunchClock(launchedAtMicros: number) {

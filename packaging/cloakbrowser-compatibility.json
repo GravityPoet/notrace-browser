@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-08-21",
+  "platform": "macos",
+  "wrapper": {
+    "package": "cloakbrowser",
+    "approved_versions": ["0.5.8"],
+    "node": ">=20.0.0",
+    "license": "MIT",
+    "integrity": "sha512-k69iAhtzki3ajccUZlVNJvPxrrZXas8LRQYR5Vdv8lpsoAW+V8mV2lBzg6KfuQpKPGdZ/1fbF/17ydPPHs9Y5Q==",
+    "upstream_git_head": "2e5d4934163e7bdd37731ae882e54439f953dc38",
+    "dependencies": {
+      "tar": "^7.0.0"
+    },
+    "macos_stable_engine": "150.0.7871.114.3",
+    "upstream_changelog": "https://raw.githubusercontent.com/CloakHQ/CloakBrowser/main/CHANGELOG.md"
+  },
+  "required_release_gates": [
+    "wrapper-integrity",
+    "tcc-local-copy",
+    "persistent-signature",
+    "current-sha256",
+    "rollback-retention",
+    "local-contract",
+    "live-challenge",
+    "native-picker-e2e"
+  ],
+  "engines": [
+    {
+      "version": "145.0.7632.109.2",
+      "status": "approved",
+      "identity_mode": "legacy-overrides",
+      "runtime_modes": ["source-cache", "local-tcc-runtime"],
+      "notes": "Current macOS compatibility baseline. A promoted runtime still requires every promotion gate."
+    },
+    {
+      "version": "148.0.7778.215.3",
+      "status": "review-required",
+      "identity_mode": "native-engine",
+      "runtime_modes": ["source-cache", "local-tcc-runtime"],
+      "notes": "Native identity threshold is implemented, but this exact build is not pre-approved without a fresh local and live gate run."
+    },
+    {
+      "version": "150.0.7871.114.3",
+      "status": "blocked",
+      "identity_mode": "native-engine",
+      "runtime_modes": ["source-cache"],
+      "notes": "Blocked on macOS because of the confirmed browserTampering regression; wrapper 0.5.8 still resolves this Stable build on macOS."
+    }
+  ]
+}

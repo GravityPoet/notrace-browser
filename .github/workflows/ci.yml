@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
   workflow_dispatch:
+  schedule:
+    - cron: "17 8 * * 1"
 
 permissions:
   contents: read
@@ -14,9 +16,9 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify macOS project
+    name: macOS release gate
     runs-on: macos-14
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - name: Check out repository
@@ -38,6 +40,13 @@ jobs:
       - name: Audit official wrapper dependency chain
         run: npm audit --omit=optional --audit-level=high
         working-directory: packaging/cloakbrowser-wrapper
+
+      - name: Enforce wrapper and engine compatibility matrix
+        run: node packaging/audit-cloakbrowser-compatibility.mjs
+
+      - name: Audit upstream wrapper drift
+        if: github.event_name == 'schedule'
+        run: node packaging/audit-cloakbrowser-compatibility.mjs --check-upstream
 
       - name: Install frontend dependencies
         run: npm ci
@@ -93,3 +102,7 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$CLOAK_PICKER_INSTALL_APP/Contents/Info.plist")" = "local.cloak.picker"
           test ! -e "target/release/bundle/macos/Cloak Picker.app"
           test ! -d "target/release/bundle/dmg"
+
+      - name: Run native Picker release E2E
+        shell: bash
+        run: CLOAK_PICKER_INSTALL_APP="$RUNNER_TEMP/Cloak Picker.app" ./packaging/test-picker-native-e2e.sh

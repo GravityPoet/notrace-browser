@@ -112,12 +112,53 @@ test "$(readlink "$tmp/cache/current")" = "$before"
 test "$(sed -n '1p' "$calls")" = "info"
 test "$(wc -l < "$calls" | tr -d ' ')" = "1"
 
+# An unknown candidate reported by `info` must be rejected before the wrapper
+# receives an install command or creates any staging copy.
+: > "$calls"
+if FAKE_WRAPPER_CALLS="$calls" \
+  FAKE_EXPECTED_CACHE="$expected_cache" \
+  FAKE_CURRENT_VERSION="$version" \
+  FAKE_LATEST_JSON='"151.0.0.0"' \
+  FAKE_CURRENT_BIN="$bin" \
+  CLOAKBROWSER_DIR="$tmp/cache" \
+  CLOAK_WRAPPER_BIN="$wrapper" \
+  CLOAK_PICKER_AUTO_REBUILD="" \
+  CLOAK_CODESIGN_IDENTITY=- \
+    "$ROOT/packaging/update-chromium.sh" >/dev/null 2>&1; then
+  printf '%s\n' 'error: unknown candidate bypassed the pre-install compatibility matrix' >&2
+  exit 1
+fi
+test "$(sed -n '1p' "$calls")" = "info"
+test "$(wc -l < "$calls" | tr -d ' ')" = "1"
+
 # A pristine bundle is copied, TCC-patched, locally signed, gated, and promoted
 # without changing the pristine source hash.
 rm -rf "$runtime_dir"
 rm -f "$tmp/cache/current"
 ln -s "$pristine_dir" "$tmp/cache/current"
 printf '%s  %s\n' "$runtime_sha" "$runtime_bin" >"$gate_dir/live-challenge.sha256"
+
+# Staging must fail before copying when the real filesystem has less than one
+# bundle plus the safety reserve. The test cap can only lower the measured free
+# space, so production callers cannot use it to bypass the guard.
+: > "$calls"
+if FAKE_WRAPPER_CALLS="$calls" \
+  FAKE_EXPECTED_CACHE="$expected_cache" \
+  FAKE_CURRENT_VERSION="$version" \
+  FAKE_CURRENT_BIN="$bin" \
+  CLOAKBROWSER_DIR="$tmp/cache" \
+  CLOAK_WRAPPER_BIN="$wrapper" \
+  CLOAK_PICKER_AUTO_REBUILD="" \
+  CLOAK_CODESIGN_IDENTITY=- \
+  CLOAK_UPDATE_TEST_AVAILABLE_BYTES=1 \
+    "$ROOT/packaging/update-chromium.sh" >/dev/null 2>&1; then
+  printf '%s\n' 'error: low-space runtime staging unexpectedly succeeded' >&2
+  exit 1
+fi
+test "$(readlink "$tmp/cache/current")" = "$pristine_dir"
+grep -q 'insufficient free space for runtime staging' "$tmp/cache/update.log"
+test -z "$(find "$tmp/cache/update-staging" -maxdepth 1 -name '.stage.*' -print -quit)"
+
 : > "$calls"
 FAKE_WRAPPER_CALLS="$calls" \
 FAKE_EXPECTED_CACHE="$expected_cache" \

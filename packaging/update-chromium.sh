@@ -38,7 +38,8 @@ WRAPPER_DIR="$ROOT/packaging/cloakbrowser-wrapper"
 WRAPPER_BIN="${CLOAK_WRAPPER_BIN:-$WRAPPER_DIR/node_modules/.bin/cloakbrowser}"
 WRAPPER_LOCK="$WRAPPER_DIR/package-lock.json"
 WRAPPER_MARKER="$WRAPPER_DIR/node_modules/.notrace-package-lock.sha256"
-WRAPPER_VERSION="0.5.7"
+WRAPPER_VERSION="0.5.8"
+COMPATIBILITY_AUDIT="$ROOT/packaging/audit-cloakbrowser-compatibility.mjs"
 CHANNEL="${CLOAK_BROWSER_CHANNEL:-stable}"
 LSREG="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
 
@@ -78,6 +79,40 @@ write_hash_file() {
   printf '%s  %s\n' "$hash" "$path" > "$tmp_file"
   chmod 600 "$tmp_file"
   mv -f "$tmp_file" "$file"
+}
+
+path_size_bytes() {
+  local kib
+  kib="$(/usr/bin/du -sk "$1" | awk 'NR == 1 { print $1 }')"
+  [[ "$kib" =~ ^[0-9]+$ ]] || die "could not measure staging source: $1"
+  printf '%s\n' "$((kib * 1024))"
+}
+
+available_space_bytes() {
+  local path="$1" available test_cap
+  available="$(/bin/df -Pk "$path" | awk 'NR == 2 { printf "%.0f", $4 * 1024 }')"
+  [[ "$available" =~ ^[0-9]+$ ]] || die "could not measure free space for: $path"
+  # Tests may only reduce the observed value; this cannot be used to bypass the
+  # production guard by claiming more space than the filesystem reports.
+  test_cap="${CLOAK_UPDATE_TEST_AVAILABLE_BYTES:-}"
+  if [[ "$test_cap" =~ ^[0-9]+$ ]] && (( test_cap < available )); then
+    available="$test_cap"
+  fi
+  printf '%s\n' "$available"
+}
+
+ensure_staging_capacity() {
+  local source="$1" destination="$2" payload reserve required available
+  payload="$(path_size_bytes "$source")"
+  reserve="$((payload / 20))"
+  if (( reserve < 268435456 )); then
+    reserve=268435456
+  fi
+  required="$((payload + reserve))"
+  available="$(available_space_bytes "$destination")"
+  log "staging capacity required=$required available=$available payload=$payload reserve=$reserve"
+  (( available >= required )) \
+    || die "insufficient free space for runtime staging: need=$required available=$available; current unchanged"
 }
 
 resolve_dir() {
@@ -232,6 +267,8 @@ ensure_wrapper() {
 }
 
 ensure_wrapper
+node "$COMPATIBILITY_AUDIT" >>"$LOG" 2>&1 \
+  || die "wrapper compatibility audit failed; current unchanged"
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/notrace-cloak-update.XXXXXX")"
 stage_work=""
@@ -247,6 +284,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+if [[ -n "$pin" ]]; then
+  node "$COMPATIBILITY_AUDIT" --candidate "$pin" >>"$LOG" 2>&1 \
+    || die "pinned candidate $pin is not approved; wrapper install was not started"
+fi
+
 if [[ -z "$pin" ]] && CLOAKBROWSER_RELEASE_CHANNEL="$CHANNEL" \
   "$WRAPPER_BIN" info --json >"$tmp/wrapper-info.json" 2>"$tmp/wrapper-info.err"; then
   candidate_hint="$(node -e '
@@ -257,6 +299,10 @@ if [[ -z "$pin" ]] && CLOAKBROWSER_RELEASE_CHANNEL="$CHANNEL" \
   if [[ "$candidate_hint" == "150.0.7871.114.3" ]]; then
     log "latest macOS candidate $candidate_hint is blocked (confirmed browserTampering regression); current unchanged"
     exit 0
+  fi
+  if [[ -n "$candidate_hint" ]]; then
+    node "$COMPATIBILITY_AUDIT" --candidate "$candidate_hint" >>"$LOG" 2>&1 \
+      || die "latest candidate $candidate_hint is not approved; wrapper install was not started"
   fi
 fi
 
@@ -317,6 +363,9 @@ case "$candidate_version" in
     exit 0
     ;;
 esac
+
+node "$COMPATIBILITY_AUDIT" --candidate "$candidate_version" >>"$LOG" 2>&1 \
+  || die "candidate $candidate_version is not approved by the macOS compatibility matrix; current unchanged"
 
 candidate_app="$candidate_dir/Chromium.app"
 [[ -d "$candidate_app" ]] || die "candidate Chromium.app missing: $candidate_app"
@@ -385,6 +434,7 @@ else
   stage_container="$runtime_stage_root/.stage.$$"
   stage_work="$stage_container/$runtime_name"
   [[ ! -e "$stage_container" ]] || die "staging path already exists: $stage_container"
+  ensure_staging_capacity "$candidate_app" "$runtime_stage_root"
   mkdir -p "$stage_work"
   log "copying wrapper cache source to local-only runtime staging"
   /usr/bin/ditto "$candidate_app" "$stage_work/Chromium.app" \

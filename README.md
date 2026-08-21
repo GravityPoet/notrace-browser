@@ -5,7 +5,7 @@
 NoTrace Browser is a source-available, macOS-focused orchestration and multi-account management client for a separately installed **CloakBrowser C++-patched Chromium engine**. This repository provides the native picker, CLI, profile isolation, proxy relay, companion extension, and packaging scripts; it does not contain or redistribute the CloakBrowser binary.
 
 > [!IMPORTANT]
-> **The client, wrapper, and browser engine have separate distribution terms.** Obtain CloakBrowser through its [official repository](https://github.com/CloakHQ/CloakBrowser), [releases](https://github.com/CloakHQ/CloakBrowser/releases), or [website](https://cloakbrowser.dev/). Upstream currently publishes MIT-licensed wrappers; a validated free GitHub key can resolve the latest keyed binary with a one-session limit, while the keyless route remains on an older build. That does not make the binary open source. Check the current binary terms before use, modification, or redistribution. This NoTrace repository does not currently include a project license, so source availability alone does not grant reuse or redistribution rights.
+> **The client, wrapper, and browser engine have separate distribution terms.** Obtain CloakBrowser through its [official repository](https://github.com/CloakHQ/CloakBrowser), [releases](https://github.com/CloakHQ/CloakBrowser/releases), or [website](https://cloakbrowser.dev/). Upstream currently publishes MIT-licensed wrappers; a validated free GitHub key can resolve the latest keyed binary with a one-session limit, while the keyless route remains on an older build. That does not make the binary open source. NoTrace is source-available and [all rights reserved](LICENSE); the exact separation and release gates are defined in the [license and release contract](docs/RELEASE-CONTRACT.md).
 
 ---
 
@@ -166,7 +166,7 @@ The updater performs this automatically on its `-notrace` copy. The command can 
 *Note: CloakHQ's current binary license text prohibits modifying every official binary version and contains no personal-use exception. The patcher therefore refuses unsuffixed wrapper-cache `chromium-<version>[-pro]` directories. The local `-notrace` derivative is an explicit machine-local choice and is never included in this repository or redistributed; users remain responsible for the upstream binary terms.*
 
 ### Step 3: Install the Signed Update Staging Chain
-The updater pins the official JavaScript wrapper at `0.5.7`. That wrapper performs license routing and verifies newly downloaded official archives with SHA256 plus an Ed25519-signed manifest. NoTrace leaves the wrapper source cache unchanged, creates and locally signs the `-notrace` copy, then runs its local/live gates and atomically switches `current` only after approval.
+The updater pins the official JavaScript wrapper at `0.5.8`. That wrapper performs license routing and verifies newly downloaded official archives with SHA256 plus an Ed25519-signed manifest. NoTrace leaves the wrapper source cache unchanged, creates and locally signs the `-notrace` copy, then runs its local/live gates and atomically switches `current` only after approval. The wrapper/engine/TCC/signing/rollback matrix lives in [`packaging/cloakbrowser-compatibility.json`](packaging/cloakbrowser-compatibility.json); an unknown or unapproved macOS engine stops before staging.
 
 ```bash
 # Read-only decision
@@ -217,7 +217,9 @@ GeoIP now requires a 2-of-3 agreement across `ipwho.is`, `ipinfo.io`, and `geojs
 ### Verification Pipeline
 Validate CLI arguments, contract hooks, and headless privacy engines:
 ```bash
+node packaging/audit-cloakbrowser-compatibility.mjs
 ./packaging/verify-challenge-contract.sh
+./packaging/test-picker-native-e2e.sh
 ```
 
 ### Verification Targets

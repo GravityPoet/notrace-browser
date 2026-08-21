@@ -1,7 +1,7 @@
 use super::{
     account_created_at, current_epoch_secs, gpu_bucket_for_seed, legacy_seed, pinned_seed,
-    secure_dir, secure_file, validate_account_name, write_secret_atomic, CloakConfig, CloakError,
-    Result,
+    secure_dir, secure_file, sync_directory, validate_account_name, write_secret_atomic,
+    CloakConfig, CloakError, Result,
 };
 use fs4::FileExt;
 use rand::RngCore;
@@ -278,6 +278,7 @@ fn quarantine_corrupt_metadata(current: &Path) -> Result<()> {
         current_epoch_secs()
     ));
     fs::rename(current, quarantine)?;
+    sync_directory(parent)?;
     Ok(())
 }
 
