@@ -661,7 +661,7 @@ proxy_curl_scheme=""
 if [[ -n "$proxy_url" ]]; then
   case "$proxy_url" in
     socks5://*|http://*|https://*) ;;
-    *) printf 'error: .cloak-proxy must start socks5://, http:// or https:// (got %q)\n' "$proxy_url" >&2; exit 1;;
+    *) printf 'error: .cloak-proxy must start socks5://, http:// or https:// (scheme rejected)\n' >&2; exit 1;;
   esac
   proxy_scheme="${proxy_url%%://*}"
   proxy_rest="${proxy_url#*://}"
@@ -944,7 +944,10 @@ start_relay() {
   local lport
   lport="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()' 2>/dev/null || true)"
   [[ "$lport" =~ ^[0-9]+$ ]] || { printf 'error: could not allocate a local relay port\n' >&2; exit 1; }
-  python3 "$relay" --listen "127.0.0.1:$lport" --upstream "$proxy_url" &
+  # Never put proxy credentials in argv: another same-user process can read
+  # them through ps while the relay is starting.  The relay consumes one line
+  # from stdin before it begins accepting browser connections.
+  python3 "$relay" --listen "127.0.0.1:$lport" --upstream-stdin <<<"$proxy_url" &
   relay_pid=$!
   trap cleanup_relay EXIT INT TERM
 

@@ -5,7 +5,7 @@
 NoTrace Browser 是一个源码可见、专注 macOS 的编排与多账号管理客户端，用于启动用户单独安装的 **CloakBrowser C++ 补丁 Chromium 内核**。本仓库包含原生选择器、CLI、账号目录隔离、代理中继、伴侣扩展和打包脚本；不包含、也不重新分发 CloakBrowser 二进制内核。
 
 > [!IMPORTANT]
-> **NoTrace 客户端、官方 wrapper 与浏览器内核的分发条款彼此独立。** 请通过 CloakBrowser [官方仓库](https://github.com/CloakHQ/CloakBrowser)、[官方 Releases](https://github.com/CloakHQ/CloakBrowser/releases) 或 [官网](https://cloakbrowser.dev/) 获取。上游目前以 MIT 许可发布 wrapper；经验证的免费 GitHub key 可获取最新 keyed 二进制，但限制为单会话，无 key 路径仍使用较旧版本。这不等于二进制已经开源。使用、修改或再分发前请核对当前二进制条款。本 NoTrace 仓库目前未包含项目许可证，“源码可见”本身不等于授予复用或再分发权。
+> **NoTrace 客户端、官方 wrapper 与浏览器内核的分发条款彼此独立。** 请通过 CloakBrowser [官方仓库](https://github.com/CloakHQ/CloakBrowser)、[官方 Releases](https://github.com/CloakHQ/CloakBrowser/releases) 或 [官网](https://cloakbrowser.dev/) 获取。上游目前以 MIT 许可发布 wrapper；经验证的免费 GitHub key 可获取最新 keyed 二进制，但限制为单会话，无 key 路径仍使用较旧版本。这不等于二进制已经开源。NoTrace 本身采用[源码可见、保留所有权利](LICENSE)的许可；三者的准确边界和发布门禁见[许可证与发布契约](docs/RELEASE-CONTRACT.md)。
 
 ---
 
@@ -131,7 +131,7 @@ NoTrace Browser 的每个账号工作区都可以通过编译生成的 `cloak` �
 - **挑战信号**：实机审计同时检查挑战页 DOM/iframe 与 [Cloudflare 官方响应信号](https://developers.cloudflare.com/cloudflare-challenges/challenge-types/challenge-pages/detect-response/) `cf-mitigated: challenge`；嵌入式 Turnstile widget 与阻断式 Challenge Page 分开报告，不把正常控件误判成整页阻断。
 - **官方测试密钥回归**：`--site cloudflare-turnstile-test` 只在本地合成页面使用 [Cloudflare 官方 dummy sitekey/secret](https://developers.cloudflare.com/turnstile/troubleshooting/testing/)，验证 widget、dummy token 与 Siteverify；测试凭据不会进入生产账号配置。
 - **界面可见**：账号页的“挑战兼容”按钮在后台启动临时 profile，并显示版本一致性、widget、Siteverify 与阻断页四个结果；失败后可直接重试，临时目录自动清理。
-- **签名更新与回滚**：更新器把官方 JavaScript wrapper 精确锁定为 `0.5.7`，由它完成许可证路由、SHA256 与 Ed25519 清单验签；NoTrace 只负责候选隔离、本地/实时门禁和 `current` 原子切换。`CLOAK_BROWSER_PIN=完整版本号` 表示请求该精确版本；已安装版本之间可执行：
+- **签名更新与回滚**：更新器把官方 JavaScript wrapper 精确锁定为 `0.5.8`，由它完成许可证路由、SHA256 与 Ed25519 清单验签；NoTrace 只负责候选隔离、本地/实时门禁和 `current` 原子切换。wrapper、引擎、TCC、签名、回滚、实时挑战与原生 Picker E2E 的准入状态统一记录在 [`packaging/cloakbrowser-compatibility.json`](packaging/cloakbrowser-compatibility.json)，未知或未批准的 macOS 引擎会在 staging 前停止。`CLOAK_BROWSER_PIN=完整版本号` 表示请求该精确版本；已安装版本之间可执行：
 
   ```bash
   # 仅查看已安装版本
@@ -202,7 +202,7 @@ CLOAK_UPDATE_LIVE_GATE=1 ./packaging/update-chromium.sh
 ./packaging/rollback-chromium.sh --list
 ```
 
-更新器不会静默提升候选：官方 wrapper 对新下载的官方压缩包执行 SHA256 与 Ed25519 签名 manifest 校验，NoTrace 不改写 wrapper 来源缓存，只生成带长期本地签名的 `-notrace` 副本；只有该副本通过本地契约和有头挑战审计，才会原子切换 `current`。macOS `150.0.7871.114.3` 已因可复现的 `browserTampering` 回归被精确禁用。
+更新器不会静默提升候选：官方 wrapper 对新下载的官方压缩包执行 SHA256 与 Ed25519 签名 manifest 校验，NoTrace 不改写 wrapper 来源缓存，只生成带长期本地签名的 `-notrace` 副本；只有该副本通过兼容矩阵、本地契约和有头挑战审计，才会原子切换 `current`。每次切换还会写入 `current.sha256`；该文件缺失、无效或与当前二进制不一致时，Picker 与 `cloak self-check` 都会明确显示来源状态并停止托管启动。NoTrace 应用自身的每次发布另由真实 macOS 窗口与 WKWebView E2E 门禁拦截。macOS `150.0.7871.114.3` 已因可复现的 `browserTampering` 回归被精确禁用。
 
 ### 第四步：应用原生绿色 Dock 图标
 默认的 PWA 图标会在白底中内嵌一个绿色的缩略图。通过以下脚本将其替换为精美、全画幅的 macOS 绿底图标：
@@ -234,9 +234,11 @@ node selftest/run-live-challenge-audit.mjs --headed --proxy-server http://127.0.
 ```
 
 ### 运行自动化一致性验证
-验证 CLI 参数、扩展绑定和无头隐私环境：
+验证 wrapper/引擎兼容矩阵、CLI 参数、扩展绑定、无头隐私环境和真实 macOS Picker 发布形态：
 ```bash
+node packaging/audit-cloakbrowser-compatibility.mjs
 ./packaging/verify-challenge-contract.sh
+./packaging/test-picker-native-e2e.sh
 ```
 
 实时审计还会记录 Cloudflare/Turnstile 的挑战页信号（例如 `cf-chl-*`、Turnstile iframe、`Just a moment`），把“页面加载成功但实际被挑战拦截”单独标出来；这不是绕过挑战，而是让升级或代理故障可定位、可恢复。

@@ -1,6 +1,6 @@
 use super::{
     command_line_mentions_user_data_dir, current_epoch_secs, hex_digest, profile_metadata,
-    running_process_command_lines, secure_dir, secure_file, user_data_dir_needle,
+    running_process_command_lines, secure_dir, secure_file, sync_directory, user_data_dir_needle,
     validate_account_name, CloakConfig, CloakError, Result,
 };
 use aes_gcm::aead::{array::Array, Aead, KeyInit, Payload};
@@ -195,6 +195,7 @@ pub fn export_workspace_with_picker_state_and_cancellation(
     let archive_sha256 = hash_file_with_cancellation(&temporary, cancellation)?;
     ensure_not_cancelled(cancellation)?;
     fs::rename(&temporary, destination)?;
+    sync_directory(parent)?;
     cleanup.disarm();
     secure_file(destination)?;
 
@@ -353,13 +354,25 @@ pub fn import_workspace_with_cancellation(
     ensure_not_cancelled(cancellation)?;
     let mut moved = Vec::<(PathBuf, PathBuf)>::new();
     for (_, _, staged_profile, destination, _) in &targets {
-        if let Err(err) = fs::rename(staged_profile, destination) {
+        let commit_result = (|| -> Result<()> {
+            fs::rename(staged_profile, destination)?;
+            // Record the move before syncing either parent: if persistence
+            // fails, this account must participate in the same rollback as a
+            // later rename failure instead of being left partially committed.
+            moved.push((destination.clone(), staged_profile.clone()));
+            sync_directory(&config.account_base)?;
+            sync_directory(&staging)?;
+            Ok(())
+        })();
+        if let Err(err) = commit_result {
             let mut rollback_error = None;
             for (committed, original) in moved.iter().rev() {
                 if let Err(rollback) = fs::rename(committed, original) {
                     rollback_error = Some(rollback);
                 }
             }
+            let _ = sync_directory(&config.account_base);
+            let _ = sync_directory(&staging);
             if rollback_error.is_some() {
                 cleanup.disarm();
             }
@@ -370,7 +383,6 @@ pub fn import_workspace_with_cancellation(
                 None => format!("workspace commit failed and was rolled back: {err}"),
             })));
         }
-        moved.push((destination.clone(), staged_profile.clone()));
     }
     if fs::remove_dir_all(&staging).is_ok() {
         cleanup.disarm();

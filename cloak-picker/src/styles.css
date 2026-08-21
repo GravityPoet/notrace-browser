@@ -359,6 +359,19 @@ summary:focus-visible {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
+.viewSwitch button:focus-visible,
+.manageTabs button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
+}
+
+.accountList:focus-visible,
+[role="tabpanel"].workspaceMigrationPanel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .accountSearch {
   display: flex;
   align-items: center;
@@ -1560,6 +1573,44 @@ h2 {
   font-size: 12px;
 }
 
+.infoValueControl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  min-width: 0;
+  padding-right: 6px;
+}
+
+.infoValueControl .infoValue {
+  padding-right: 6px;
+}
+
+.valueCopyButton {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0.72;
+  transition: background 120ms ease, color 120ms ease, opacity 120ms ease;
+}
+
+.valueCopyButton:hover,
+.valueCopyButton:focus-visible,
+.valueCopyButton.copied {
+  background: var(--accent-soft);
+  color: var(--accent);
+  opacity: 1;
+}
+
+.valueCopyButton.failed {
+  color: #b42318;
+}
+
 .infoLabel {
   display: inline-flex;
   align-items: center;
@@ -2210,6 +2261,22 @@ button:disabled {
   overflow: hidden;
   color: var(--text);
   font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspacePathValue {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.workspacePathValue code {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

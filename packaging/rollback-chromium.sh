@@ -80,13 +80,39 @@ actual_version="$(printf '%s\n' "$version_output" | sed -E -n 's/^Chromium ([0-9
 [[ -n "$actual_version" ]] || die "无法读取目标二进制版本：$version_output"
 [[ "$target_version" == "$actual_version" || "$target_version" == "$actual_version".* ]] \
   || die "目标目录版本 $target_version 与二进制版本 $actual_version 不一致"
+sha="$(shasum -a 256 "$bin" | awk '{print $1}')"
+[[ "$sha" =~ ^[0-9a-fA-F]{64}$ ]] || die "无法计算目标 SHA256"
+
+write_hash_marker() {
+  local tmp_hash="$CB/current.sha256.tmp.$$"
+  umask 077
+  printf '%s  %s\n' "$sha" "$current/Chromium.app/Contents/MacOS/Chromium" > "$tmp_hash"
+  chmod 600 "$tmp_hash"
+  if ! mv -f "$tmp_hash" "$CB/current.sha256"; then
+    rm -f "$tmp_hash"
+    die "写入 current.sha256 失败"
+  fi
+}
 
 current="$CB/current"
 if [[ -L "$current" ]]; then
   current_target="$(readlink "$current")"
   log "current=$current_target target=$dest"
   if [[ "$current_target" == "$dest" || "$current_target" == "chromium-$target" ]]; then
-    log "already active; no-op"
+    marker_sha=""
+    if [[ -f "$CB/current.sha256" && ! -L "$CB/current.sha256" ]]; then
+      marker_sha="$(awk 'NR == 1 { print $1; exit }' "$CB/current.sha256")"
+    fi
+    if [[ "$marker_sha" == "$sha" ]]; then
+      log "already active; current.sha256 verified; no-op"
+      exit 0
+    fi
+    if [[ -n "$DRY_RUN" ]]; then
+      log "DRY-RUN: would repair current.sha256 for already-active $dest (sha256=$sha)"
+      exit 0
+    fi
+    write_hash_marker
+    log "already active; repaired current.sha256 after signature, version, and binary hash validation"
     exit 0
   fi
 elif [[ -e "$current" ]]; then
@@ -117,9 +143,6 @@ if browser_running; then
   die "Cloak Chromium 正在运行；关闭浏览器后重试"
 fi
 
-sha="$(shasum -a 256 "$bin" | awk '{print $1}')"
-[[ "$sha" =~ ^[0-9a-fA-F]{64}$ ]] || die "无法计算目标 SHA256"
-
 if [[ -n "$DRY_RUN" ]]; then
   log "DRY-RUN: would switch current -> $dest (sha256=$sha)"
   exit 0
@@ -133,9 +156,5 @@ if ! /bin/mv -f -h "$tmp_link" "$current"; then
   die "原子切换 current 失败；原版本未改动"
 fi
 
-tmp_hash="$CB/current.sha256.tmp.$$"
-umask 077
-printf '%s  %s\n' "$sha" "$current/Chromium.app/Contents/MacOS/Chromium" > "$tmp_hash"
-chmod 600 "$tmp_hash"
-mv -f "$tmp_hash" "$CB/current.sha256"
+write_hash_marker
 log "rollback complete: current -> $dest (sha256=$sha); previous build retained"

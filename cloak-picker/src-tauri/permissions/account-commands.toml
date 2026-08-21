@@ -28,4 +28,5 @@ commands.allow = [
   "cancel_launch",
   "account_is_running",
   "run_challenge_audit",
+  "complete_native_e2e",
 ]

@@ -15,6 +15,7 @@ traffic -- the same guarantee as Firefox's `network.proxy.socks_remote_dns=true`
 
 Usage:
     proxy-relay.py --listen 127.0.0.1:PORT --upstream URL
+    proxy-relay.py --listen 127.0.0.1:PORT --upstream-stdin < secret-file
     URL = socks5://[credentials@]host:port | http://[credentials@]host:port | direct
 
 Bind host is forced to 127.0.0.1 regardless of --listen: this relay is no-auth and
@@ -233,7 +234,13 @@ def handle(client: socket.socket, up: Upstream) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Local no-auth SOCKS5 -> upstream relay")
     ap.add_argument("--listen", required=True, help="127.0.0.1:PORT (host forced to loopback)")
-    ap.add_argument("--upstream", required=True, help="socks5://.. | http://.. | direct")
+    upstream_group = ap.add_mutually_exclusive_group(required=True)
+    upstream_group.add_argument("--upstream", help="socks5://.. | http://.. | direct")
+    upstream_group.add_argument(
+        "--upstream-stdin",
+        action="store_true",
+        help="read the upstream URL once from stdin (keeps credentials out of argv)",
+    )
     a = ap.parse_args()
 
     _, _, port_s = a.listen.rpartition(":")
@@ -246,8 +253,18 @@ def main() -> int:
         log(f"port out of range: {port}")
         return 2
 
+    upstream_url = a.upstream
+    if a.upstream_stdin:
+        upstream_url = sys.stdin.readline().rstrip("\r\n")
+        if not upstream_url:
+            log("empty upstream URL on stdin")
+            return 2
+    if upstream_url is None:
+        log("missing upstream URL")
+        return 2
+
     try:
-        up = parse_upstream(a.upstream)
+        up = parse_upstream(upstream_url)
     except ValueError as e:
         log(str(e))
         return 2

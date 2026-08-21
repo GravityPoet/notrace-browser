@@ -353,6 +353,8 @@ describe("Cloak Picker dialog regressions", () => {
     dialog = document.querySelector<HTMLElement>('[role="dialog"]');
     expect(dialog?.textContent).toContain("备份已完成");
     expect(dialog?.textContent).toContain("2 个账号");
+    expect(dialog?.querySelector('button[aria-label="复制备份路径"]')).not.toBeNull();
+    expect(dialog?.querySelector(".workspacePathValue code")?.textContent).toContain("/Users/example/Desktop/");
 
     await click(buttonWithText("导入恢复", dialog ?? document));
     dialog = document.querySelector<HTMLElement>('[role="dialog"]');
@@ -377,6 +379,56 @@ describe("Cloak Picker dialog regressions", () => {
     expect(window.localStorage.getItem("cloak-picker.groupOrder.v1")).toContain("restored-group");
     expect(window.localStorage.getItem("cloak-picker.accountOrder.v1")).toContain("alpha-imported");
     expect(window.localStorage.getItem("cloak-picker.markPresets.v3")).toContain("迁移标签");
+  });
+
+  it("gives account and migration tabs roving keyboard focus with linked panels", async () => {
+    const activeTab = document.querySelector<HTMLButtonElement>("#cloak-account-active-tab");
+    const trashTab = document.querySelector<HTMLButtonElement>("#cloak-account-trash-tab");
+    expect(activeTab?.getAttribute("aria-controls")).toBe("cloak-account-active-panel");
+    expect(trashTab?.getAttribute("aria-controls")).toBe("cloak-account-trash-panel");
+    expect(document.querySelector("#cloak-account-active-panel[role=\"tabpanel\"]")).not.toBeNull();
+    expect(activeTab?.tabIndex).toBe(0);
+    expect(trashTab?.tabIndex).toBe(-1);
+
+    activeTab?.focus();
+    await pressKeyOn(activeTab as HTMLButtonElement, "ArrowRight");
+    expect(document.activeElement).toBe(trashTab);
+    expect(trashTab?.getAttribute("aria-selected")).toBe("true");
+    expect(trashTab?.tabIndex).toBe(0);
+    expect(document.querySelector("#cloak-account-trash-panel[role=\"tabpanel\"]")).not.toBeNull();
+
+    await click(buttonWithText("管理"));
+    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="管理选项"]');
+    await click(buttonWithText("工作区备份", menu ?? document));
+    const exportTab = document.querySelector<HTMLButtonElement>("#cloak-workspace-export-tab");
+    const importTab = document.querySelector<HTMLButtonElement>("#cloak-workspace-import-tab");
+    expect(exportTab?.getAttribute("aria-controls")).toBe("cloak-workspace-export-panel");
+    expect(importTab?.getAttribute("aria-controls")).toBe("cloak-workspace-import-panel");
+
+    exportTab?.focus();
+    await pressKeyOn(exportTab as HTMLButtonElement, "End");
+    expect(document.activeElement).toBe(importTab);
+    expect(importTab?.getAttribute("aria-selected")).toBe("true");
+    expect(document.querySelector("#cloak-workspace-import-panel:not([hidden])")).not.toBeNull();
+    await pressKeyOn(importTab as HTMLButtonElement, "Home");
+    expect(document.activeElement).toBe(exportTab);
+    expect(exportTab?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("counts workspace passphrases like Rust Unicode scalar values", async () => {
+    await click(buttonWithText("管理"));
+    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="管理选项"]');
+    await click(buttonWithText("工作区备份", menu ?? document));
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    const passwords = dialog?.querySelectorAll<HTMLInputElement>('input[type="password"]');
+
+    await inputText(passwords?.[0] as HTMLInputElement, "😀".repeat(6));
+    await inputText(passwords?.[1] as HTMLInputElement, "😀".repeat(6));
+    expect(buttonWithText("选择位置并导出", dialog ?? document).disabled).toBe(true);
+
+    await inputText(passwords?.[0] as HTMLInputElement, "😀".repeat(12));
+    await inputText(passwords?.[1] as HTMLInputElement, "😀".repeat(12));
+    expect(buttonWithText("选择位置并导出", dialog ?? document).disabled).toBe(false);
   });
 
   it("cancels a workspace export without reporting a partial backup", async () => {
@@ -557,6 +609,28 @@ describe("Cloak Picker dialog regressions", () => {
     expect(document.querySelector(".accountCopyStatus")?.textContent).toBe(
       "已复制账号 demo-alpha@example.test",
     );
+  });
+
+  it("ellipsizes path rows without truncating the copied path", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const pathValue = Array.from(document.querySelectorAll<HTMLElement>(".infoValue")).find(
+      (value) => value.textContent?.includes("/NoTrace Browser/Accounts/demo-alpha@example.test"),
+    );
+    const copyButton = document.querySelector<HTMLButtonElement>('button[aria-label="复制账号目录"]');
+    expect(pathValue?.classList.contains("mono")).toBe(true);
+    expect(pathValue?.title).toContain("/Users/example/Library/Application Support/NoTrace Browser/Accounts/");
+    expect(copyButton).not.toBeNull();
+
+    await click(copyButton as HTMLButtonElement);
+    expect(writeText).toHaveBeenCalledWith(
+      "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-alpha@example.test",
+    );
+    expect(copyButton?.title).toBe("已复制");
   });
 
   it("writes, finds, edits, and clears a multiline note from an account context menu", async () => {
@@ -1137,6 +1211,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(buttonWithText("恢复账号")).toBeTruthy();
     expect(buttonWithText("彻底删除")).toBeTruthy();
 
+    await settle(120);
     await click(buttonWithText("临时启动"));
     await settle(260);
 
@@ -1326,8 +1401,10 @@ describe("Cloak Picker dialog regressions", () => {
     expect(diagnostics?.textContent ?? "").toContain("启动诊断");
     expect(diagnostics?.textContent ?? "").toContain("420 ms");
     expect(diagnostics?.textContent ?? "").toContain("180 ms");
-    expect(diagnostics?.textContent ?? "").toContain("isolated-profile-storage");
+    expect(diagnostics?.textContent ?? "").toContain("独立账号数据");
+    expect(diagnostics?.textContent ?? "").not.toContain("isolated-profile-storage");
     expect(document.querySelector(".detail")?.textContent).toContain("Chromium 145.0.7632.109");
+    expect(document.querySelector(".detail")?.textContent).toContain("上游源缓存（SHA-256 已验证");
     expect(document.querySelector(".launchStatus")?.textContent).toContain("已启动");
     expect(mockCommandCountForTest("launch_account")).toBe(1);
     expect(mockCommandCountForTest("launch_preflight")).toBe(0);
