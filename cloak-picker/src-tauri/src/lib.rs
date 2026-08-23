@@ -197,7 +197,7 @@ where
                     .ok()
                     .and_then(|value| value.trim().parse::<u32>().ok());
                 if let Some(pid) = pid {
-                    if process_is_alive(pid) {
+                    if process_is_current_picker(pid) {
                         focus_existing();
                         return Ok(None);
                     }
@@ -210,25 +210,45 @@ where
     Err("无法取得单实例锁".to_string())
 }
 
-fn process_is_alive(pid: u32) -> bool {
+fn process_is_current_picker(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
     #[cfg(unix)]
     {
-        Command::new("/bin/kill")
-            .args(["-0", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
+        let Ok(current_executable) = std::env::current_exe() else {
+            return false;
+        };
+        let Ok(output) = Command::new("/bin/ps")
+            .args(["-ww", "-p", &pid.to_string(), "-o", "command="])
+            .output()
+        else {
+            return false;
+        };
+        output.status.success()
+            && process_command_matches_executable(
+                String::from_utf8_lossy(&output.stdout).trim(),
+                &current_executable,
+            )
     }
     #[cfg(not(unix))]
     {
         let _ = pid;
         false
     }
+}
+
+fn process_command_matches_executable(command: &str, executable: &Path) -> bool {
+    let executable = executable.to_string_lossy();
+    let Some(rest) = command.strip_prefix(executable.as_ref()) else {
+        return false;
+    };
+    rest.is_empty()
+        || rest
+            .chars()
+            .next()
+            .map(char::is_whitespace)
+            .unwrap_or(false)
 }
 
 fn set_private_file(path: &Path) {
@@ -861,6 +881,55 @@ mod tests {
         );
         drop(guard);
         assert!(!lock_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_unrelated_pid_in_single_instance_lock_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("picker.lock");
+        let mut unrelated = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        fs::write(&lock_path, unrelated.id().to_string()).unwrap();
+
+        let focused = Arc::new(AtomicBool::new(false));
+        let focused_for_callback = Arc::clone(&focused);
+        let result = acquire_picker_instance_at(lock_path.clone(), move || {
+            focused_for_callback.store(true, Ordering::Release);
+        });
+        let _ = unrelated.kill();
+        let _ = unrelated.wait();
+
+        let guard = result
+            .unwrap()
+            .expect("a reused PID owned by another executable must not block startup");
+        assert!(!focused.load(Ordering::Acquire));
+        assert_eq!(
+            fs::read_to_string(&lock_path).unwrap(),
+            std::process::id().to_string()
+        );
+        drop(guard);
+        assert!(!lock_path.exists());
+    }
+
+    #[test]
+    fn process_command_match_requires_an_executable_boundary() {
+        let executable = Path::new("/Applications/Cloak Picker.app/Contents/MacOS/cloak-picker");
+        assert!(process_command_matches_executable(
+            "/Applications/Cloak Picker.app/Contents/MacOS/cloak-picker",
+            executable
+        ));
+        assert!(process_command_matches_executable(
+            "/Applications/Cloak Picker.app/Contents/MacOS/cloak-picker --test",
+            executable
+        ));
+        assert!(!process_command_matches_executable(
+            "/Applications/Cloak Picker.app/Contents/MacOS/cloak-picker-helper",
+            executable
+        ));
+        assert!(!process_command_matches_executable(
+            "/usr/sbin/usernoted",
+            executable
+        ));
     }
 
     #[test]
