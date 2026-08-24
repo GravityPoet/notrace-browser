@@ -204,6 +204,25 @@ const NATIVE_E2E_DRIVER: &str = r#"
       throw new Error('长账号目录没有在真实 WebView 中以省略号收纳');
     }
     checks.push('path-ellipsis-copy-source');
+    // Reproduce the hosted macOS WebView behavior where Clipboard API exposes
+    // writeText but leaves its promise pending. This forces the native pbcopy
+    // bridge instead of allowing a local runner's Clipboard implementation to
+    // make the gate pass without exercising the recovery path.
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try {
+        Object.defineProperty(navigator.clipboard, 'writeText', {
+          configurable: true,
+          value: () => new Promise(() => {}),
+        });
+      } catch (_) {
+        try {
+          Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: { ...navigator.clipboard, writeText: () => new Promise(() => {}) },
+          });
+        } catch (_) {}
+      }
+    }
     pathButton.click();
     await waitFor(
       () => pathButton.getAttribute('aria-label') === '已复制账号目录',

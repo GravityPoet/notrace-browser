@@ -6688,6 +6688,23 @@ async function copyTextToClipboard(value: string): Promise<void> {
     }
   }
 
+  if ("__TAURI_INTERNALS__" in window) {
+    let nativeTimeout: number | undefined;
+    try {
+      await Promise.race([
+        invoke("copy_to_clipboard", { value }),
+        new Promise<never>((_, reject) => {
+          nativeTimeout = window.setTimeout(() => reject(new Error("原生剪贴板响应超时")), 1500);
+        }),
+      ]);
+      return;
+    } catch {
+      // Keep the DOM fallback for older builds or unusual host permissions.
+    } finally {
+      if (nativeTimeout !== undefined) window.clearTimeout(nativeTimeout);
+    }
+  }
+
   const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const textarea = document.createElement("textarea");
   textarea.value = value;

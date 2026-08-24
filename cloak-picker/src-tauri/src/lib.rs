@@ -579,6 +579,43 @@ async fn account_is_running(name: String) -> Result<bool, String> {
         .await
 }
 
+/// WebKit can expose `navigator.clipboard` without ever settling its promise
+/// in a signed native window. Keep the clipboard boundary native and pass the
+/// value through stdin so paths never enter a shell command line.
+#[tauri::command]
+fn copy_to_clipboard(value: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut process = Command::new("/usr/bin/pbcopy")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|err| format!("启动系统剪贴板失败：{err}"))?;
+        let mut input = process
+            .stdin
+            .take()
+            .ok_or_else(|| "系统剪贴板输入通道不可用".to_string())?;
+        input
+            .write_all(value.as_bytes())
+            .map_err(|err| format!("写入系统剪贴板失败：{err}"))?;
+        drop(input);
+        let status = process
+            .wait()
+            .map_err(|err| format!("等待系统剪贴板完成失败：{err}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("系统剪贴板未接受内容".to_string())
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = value;
+        Err("当前平台没有可用的原生剪贴板通道".to_string())
+    }
+}
+
 #[tauri::command]
 async fn run_challenge_audit() -> Result<serde_json::Value, String> {
     run_blocking(run_challenge_audit_blocking).await
@@ -802,6 +839,7 @@ pub fn run() {
             launch_web_store,
             cancel_launch,
             account_is_running,
+            copy_to_clipboard,
             run_challenge_audit,
             complete_native_e2e
         ])
