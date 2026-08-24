@@ -11,9 +11,9 @@
 
 ## Versioning
 
-- Version source: `Cargo.toml` `[workspace.package].version`, mirrored by `cloak-picker/package.json` and `cloak-picker/package-lock.json`.
-- Current release version: `0.1.0`.
-- Tag format: annotated `v<version>`; this repository has no prior release tags, so the current target is `v0.1.0`.
+- Version source: `Cargo.toml` `[workspace.package].version`, mirrored by `cloak-picker/package.json`, `cloak-picker/package-lock.json`, and `cloak-picker/src-tauri/tauri.conf.json`.
+- Current release version: `0.1.1`.
+- Tag format: annotated `v<version>`; `v0.1.0` is immutable, so the current patch target is `v0.1.1`.
 - Changelog source: shipped customer value from commits since the previous tag (there is no tracked CHANGELOG yet), plus the bilingual release notes supplied to GitHub.
 - Release type: stable source release unless the user explicitly requests draft or prerelease.
 
@@ -74,19 +74,19 @@ release, create an archive from the exact tag and a detached checksum:
 ```bash
 cd /Users/moonlitpoet/Tools/AI-tools/notrace-browser
 mkdir -p dist
-git archive --format=tar.gz --prefix=notrace-browser-v0.1.0/ v0.1.0 > dist/notrace-browser-v0.1.0.tar.gz
-shasum -a 256 dist/notrace-browser-v0.1.0.tar.gz > dist/notrace-browser-v0.1.0.tar.gz.sha256
+git archive --format=tar.gz --prefix=notrace-browser-v0.1.1/ v0.1.1 > dist/notrace-browser-v0.1.1.tar.gz
+shasum -a 256 dist/notrace-browser-v0.1.1.tar.gz > dist/notrace-browser-v0.1.1.tar.gz.sha256
 ```
 
 ### GitHub distribution
 
 ```bash
 cd /Users/moonlitpoet/Tools/AI-tools/notrace-browser
-git tag -a v0.1.0 -m "NoTrace Browser v0.1.0"
+git tag -a v0.1.1 -m "NoTrace Browser v0.1.1"
 git push origin main
-git push origin v0.1.0
-gh release create v0.1.0 dist/notrace-browser-v0.1.0.tar.gz dist/notrace-browser-v0.1.0.tar.gz.sha256 \
-  --title "NoTrace Browser v0.1.0" --notes-file /tmp/notrace-browser-v0.1.0-notes.md
+git push origin v0.1.1
+gh release create v0.1.1 dist/notrace-browser-v0.1.1.tar.gz dist/notrace-browser-v0.1.1.tar.gz.sha256 \
+  --title "NoTrace Browser v0.1.1" --notes-file /tmp/notrace-browser-v0.1.1-notes.md
 ```
 
 The release notes must contain complete `English` and `中文` sections with the
@@ -96,12 +96,12 @@ or redistributed by this repository.
 ## Verification
 
 - Local: all commands in `Verify` pass; the archive checksum matches after a temporary download; `git show --check` and `git status --short --branch` are clean.
-- GitHub: `git ls-remote origin refs/heads/main refs/tags/v0.1.0` points to the intended commit/tag, and `gh release view v0.1.0 --json name,tagName,isDraft,isPrerelease,url,assets` shows the two expected assets.
+- GitHub: `git ls-remote origin refs/heads/main refs/tags/v0.1.1` points to the intended commit/tag, and `gh release view v0.1.1 --json name,tagName,isDraft,isPrerelease,url,assets` shows the two expected assets.
 - Package install/download: download the public source archive to a temporary directory, verify its SHA-256, extract it, and confirm the top-level directory and `LICENSE`/`docs/RELEASE-CONTRACT.md` are present.
 
 ## Rollback
 
-- Before branch/tag push: remove only the local unpushed tag with `git tag -d v0.1.0`; restore code with a new corrective commit, never rewrite public history.
+- Before branch/tag push: remove only the local unpushed tag with `git tag -d v0.1.1`; restore code with a new corrective commit, never rewrite public history.
 - After branch push: publish a corrective commit to `main`; do not force-push.
 - After tag push: keep the immutable tag; if the release is not acceptable, mark the GitHub Release draft or prerelease and publish a replacement patch version after verification.
 - After GitHub Release creation: edit the release to draft/prerelease or publish a corrective release; do not delete or overwrite a public tag without explicit P0 approval.
@@ -132,3 +132,4 @@ or redistributed by this repository.
 | 2026-08-25 | v0.1.0 | GitHub Actions run `32752886898`, `node --test selftest/*.test.mjs` | `getImageData cost 40ms against 10ms native`; strict `<4` ratio assertion failed at the timer boundary while 51/52 tests passed | The performance probe used short 20,000-call batches and millisecond `Date.now()`, so hosted-runner timer granularity made a cached path land exactly on the cutoff. | Use `performance.now()` with 100,000-call batches while retaining the `<4` ratio threshold; repeated local runs passed. | Performance release gates must use high-resolution timing and enough work to dominate timer quantization; keep the behavioral threshold unchanged when stabilizing measurement noise. |
 | 2026-08-25 | v0.1.0 | final `git push` cleanliness preflight | exit 1 because `packaging/__pycache__/` was untracked | Local `py_compile` generated a temporary bytecode directory after the prior syntax gate. | Remove the generated cache before the push preflight; no tracked source changed. | Keep syntax-gate bytecode output on an explicit cleanup trap locally, and require a clean tree before every external write. |
 | 2026-08-25 | v0.1.0 | GitHub Actions run `32753586682`, `./packaging/test-picker-native-e2e.sh` | Clipboard timeout persisted after the JavaScript timeout/DOM fallback; report again stopped at `path-ellipsis-copy-source` | Hosted WebKit exposed a pending Clipboard API and did not permit the hidden `execCommand` fallback, so the UI had no reliable system pasteboard path. | Add a Tauri `copy_to_clipboard` command that writes through `/usr/bin/pbcopy` via stdin, invoke it before the DOM fallback, and force the pending-promise path in native E2E; the signed-app E2E then passed. | macOS release gates must exercise the native pasteboard bridge explicitly; a browser-only fallback is not sufficient evidence for a signed WebView. |
+| 2026-08-25 | v0.1.1 | `node packaging/audit-cloakbrowser-compatibility.mjs` from `packaging/cloakbrowser-wrapper/` | `Cannot find module .../packaging/cloakbrowser-wrapper/packaging/audit-cloakbrowser-compatibility.mjs` | The repository-root CI command was run from the wrapper subdirectory, so its root-relative path resolved incorrectly. | Re-run the unchanged command from the repository root; compatibility audit passed with `wrapper=0.5.8`. | Keep commands with repository-root paths in the documented working directory, and use the exact CI working-directory boundary when reproducing release gates. |
