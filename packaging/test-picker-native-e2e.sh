@@ -30,7 +30,7 @@ trap cleanup EXIT INT TERM
 browser_root="$tmp/browser"
 version_dir="$browser_root/chromium-145.0.7632.109.2"
 browser="$version_dir/Chromium.app/Contents/MacOS/Chromium"
-account_base="$tmp/accounts"
+account_base="$tmp/accounts/native-e2e-profile-root-with-a-deliberately-long-path-for-layout-verification/segment-one-for-real-webview-overflow/segment-two-for-real-webview-overflow/segment-three-for-real-webview-overflow"
 account_dir="$account_base/native-e2e-account"
 report="$tmp/cloak-picker-native-e2e-report.json"
 log="$tmp/picker.log"
