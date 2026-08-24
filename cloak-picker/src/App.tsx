@@ -6671,8 +6671,21 @@ function unicodeScalarCount(value: string) {
 
 async function copyTextToClipboard(value: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-    return;
+    let timeout: number | undefined;
+    try {
+      await Promise.race([
+        navigator.clipboard.writeText(value),
+        new Promise<never>((_, reject) => {
+          timeout = window.setTimeout(() => reject(new Error("系统剪贴板响应超时")), 750);
+        }),
+      ]);
+      return;
+    } catch {
+      // Some native WebViews expose Clipboard API but never settle its promise.
+      // Fall through to the synchronous DOM path so copying remains recoverable.
+    } finally {
+      if (timeout !== undefined) window.clearTimeout(timeout);
+    }
   }
 
   const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
