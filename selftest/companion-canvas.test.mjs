@@ -104,7 +104,7 @@ const CANVAS_STUB = `
 `;
 
 function canvasWindow(seed) {
-  const context = vm.createContext({ Intl, Date, Math, Object, String, Array, JSON, Promise });
+  const context = vm.createContext({ Intl, Date, Math, Object, String, Array, JSON, Promise, performance });
   vm.runInContext("var window = this;", context);
   context.navigator = { userAgent: "Mozilla/5.0 (Macintosh) Chrome/145.0.0.0 Safari/537.36" };
   vm.runInContext(CANVAS_STUB, context);
@@ -235,9 +235,9 @@ test("the getImageData hot path stays close to the unwrapped native", () => {
     `(function () {
        var ctx = makeCanvas(300, 150).getContext("2d");
        for (var w = 0; w < 500; w++) { ctx.getImageData(10, 10, 1, 1); }
-       var start = Date.now();
-       for (var i = 0; i < 20000; i++) { ctx.getImageData(10, 10, 1, 1); }
-       return Math.max(1, Date.now() - start);
+       var start = performance.now();
+       for (var i = 0; i < 100000; i++) { ctx.getImageData(10, 10, 1, 1); }
+       return Math.max(0.01, performance.now() - start);
      })()`,
     context,
   );
