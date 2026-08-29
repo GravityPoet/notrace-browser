@@ -166,7 +166,7 @@ The updater performs this automatically on its `-notrace` copy. The command can 
 *Note: CloakHQ's current binary license text prohibits modifying every official binary version and contains no personal-use exception. The patcher therefore refuses unsuffixed wrapper-cache `chromium-<version>[-pro]` directories. The local `-notrace` derivative is an explicit machine-local choice and is never included in this repository or redistributed; users remain responsible for the upstream binary terms.*
 
 ### Step 3: Install the Signed Update Staging Chain
-The updater pins the official JavaScript wrapper at `0.5.8`. That wrapper performs license routing and verifies newly downloaded official archives with SHA256 plus an Ed25519-signed manifest. NoTrace leaves the wrapper source cache unchanged, creates and locally signs the `-notrace` copy, then runs its local/live gates and atomically switches `current` only after approval. The wrapper/engine/TCC/signing/rollback matrix lives in [`packaging/cloakbrowser-compatibility.json`](packaging/cloakbrowser-compatibility.json); an unknown or unapproved macOS engine stops before staging.
+The updater pins the official JavaScript wrapper at `0.5.9`. That wrapper performs license routing and verifies newly downloaded official archives with SHA256 plus an Ed25519-signed manifest. NoTrace leaves the wrapper source cache unchanged, creates and locally signs the `-notrace` copy, then runs its local/live gates and atomically switches `current` only after approval. The wrapper/engine/TCC/signing/rollback matrix lives in [`packaging/cloakbrowser-compatibility.json`](packaging/cloakbrowser-compatibility.json); an unknown or unapproved macOS engine stops before staging.
 
 ```bash
 # Read-only decision

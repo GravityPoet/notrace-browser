@@ -131,7 +131,7 @@ NoTrace Browser 的每个账号工作区都可以通过编译生成的 `cloak` �
 - **挑战信号**：实机审计同时检查挑战页 DOM/iframe 与 [Cloudflare 官方响应信号](https://developers.cloudflare.com/cloudflare-challenges/challenge-types/challenge-pages/detect-response/) `cf-mitigated: challenge`；嵌入式 Turnstile widget 与阻断式 Challenge Page 分开报告，不把正常控件误判成整页阻断。
 - **官方测试密钥回归**：`--site cloudflare-turnstile-test` 只在本地合成页面使用 [Cloudflare 官方 dummy sitekey/secret](https://developers.cloudflare.com/turnstile/troubleshooting/testing/)，验证 widget、dummy token 与 Siteverify；测试凭据不会进入生产账号配置。
 - **界面可见**：账号页的“挑战兼容”按钮在后台启动临时 profile，并显示版本一致性、widget、Siteverify 与阻断页四个结果；失败后可直接重试，临时目录自动清理。
-- **签名更新与回滚**：更新器把官方 JavaScript wrapper 精确锁定为 `0.5.8`，由它完成许可证路由、SHA256 与 Ed25519 清单验签；NoTrace 只负责候选隔离、本地/实时门禁和 `current` 原子切换。wrapper、引擎、TCC、签名、回滚、实时挑战与原生 Picker E2E 的准入状态统一记录在 [`packaging/cloakbrowser-compatibility.json`](packaging/cloakbrowser-compatibility.json)，未知或未批准的 macOS 引擎会在 staging 前停止。`CLOAK_BROWSER_PIN=完整版本号` 表示请求该精确版本；已安装版本之间可执行：
+- **签名更新与回滚**：更新器把官方 JavaScript wrapper 精确锁定为 `0.5.9`，由它完成许可证路由、SHA256 与 Ed25519 清单验签；NoTrace 只负责候选隔离、本地/实时门禁和 `current` 原子切换。wrapper、引擎、TCC、签名、回滚、实时挑战与原生 Picker E2E 的准入状态统一记录在 [`packaging/cloakbrowser-compatibility.json`](packaging/cloakbrowser-compatibility.json)，未知或未批准的 macOS 引擎会在 staging 前停止。`CLOAK_BROWSER_PIN=完整版本号` 表示请求该精确版本；已安装版本之间可执行：
 
   ```bash
   # 仅查看已安装版本

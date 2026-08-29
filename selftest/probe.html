@@ -161,8 +161,10 @@ window.__runProbe = function () {
 
   // The same drawing through <canvas> and through OffscreenCanvas. Both realms
   // read the same surface, so a real browser — and the bare engine, whose own
-  // per-seed noise reaches both — returns the same bytes from each. The
-  // companion wrapping only one of them made the pair a one-expression tell.
+  // per-seed noise reaches both — returns the same pixels from each. Encoders
+  // are allowed to choose different container metadata, so keep both the raw
+  // byte hash and a decoded-pixel hash in the report; the latter is the actual
+  // rendered surface a page can compare.
   out.canvas_realms = await (async () => {
     const fnv = (bytes) => {
       let h = 2166136261 >>> 0;
@@ -174,17 +176,38 @@ window.__runProbe = function () {
       ctx.fillStyle = "#069"; ctx.fillText("Cloak realms 0123!@#", 2, 2);
       ctx.fillStyle = "rgba(102,200,0,0.55)"; ctx.fillRect(10, 12, 120, 22);
     };
+    const decodedPixels = async (blob) => {
+      if (typeof createImageBitmap !== "function") return { error: "createImageBitmap unavailable" };
+      const bitmap = await createImageBitmap(blob);
+      try {
+        const decoded = document.createElement("canvas");
+        decoded.width = bitmap.width; decoded.height = bitmap.height;
+        const decodedCtx = decoded.getContext("2d");
+        if (!decodedCtx) return { error: "decoded canvas context unavailable" };
+        return {
+          width: bitmap.width,
+          height: bitmap.height,
+          hash: fnv(decodedCtx.getImageData(0, 0, bitmap.width, bitmap.height).data),
+        };
+      } finally {
+        try { bitmap.close(); } catch (_) {}
+      }
+    };
     const result = {};
     try {
       const c = document.createElement("canvas"); c.width = 220; c.height = 50;
       const ctx = c.getContext("2d"); paint(ctx);
       result.html_pixels = fnv(ctx.getImageData(0, 0, 220, 50).data);
-      result.html_blob = fnv(new Uint8Array(await new Promise(
-        (res, rej) => c.toBlob((b) => (b ? res(b.arrayBuffer()) : rej(new Error("no blob")))))));
+      const htmlBlob = await new Promise(
+        (res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("no blob")))));
+      result.html_blob = fnv(new Uint8Array(await htmlBlob.arrayBuffer()));
+      result.html_blob_pixels = await decodedPixels(htmlBlob);
       const o = new OffscreenCanvas(220, 50);
       const octx = o.getContext("2d"); paint(octx);
       result.offscreen_pixels = fnv(octx.getImageData(0, 0, 220, 50).data);
-      result.offscreen_blob = fnv(new Uint8Array(await (await o.convertToBlob()).arrayBuffer()));
+      const offscreenBlob = await o.convertToBlob();
+      result.offscreen_blob = fnv(new Uint8Array(await offscreenBlob.arrayBuffer()));
+      result.offscreen_blob_pixels = await decodedPixels(offscreenBlob);
       // An encode that forgets to undo its noise leaves the page's own canvas
       // corrupted, which is a bug for the page and a moving fingerprint for us.
       result.pixels_after_encode = fnv(ctx.getImageData(0, 0, 220, 50).data);

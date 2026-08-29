@@ -53,6 +53,17 @@ EXT_SRC="$ROOT/extension/cloak-companion"
 # Resolve the stealth Chromium: prefer the auto-update symlink, else newest pin.
 CB="${CLOAK_BROWSER_ROOT:-$HOME/.cloakbrowser}"
 BIN="${CLOAK_BROWSER_BIN:-$CB/current/Chromium.app/Contents/MacOS/Chromium}"
+# The latest free/Pro binary validates the key inside the Chromium process, so
+# a GUI-launched account must inherit it explicitly.  This mirrors the official
+# wrapper's ~/.cloakbrowser/license.key lookup and keeps the secret out of argv,
+# dry-run output, and repository files.
+if [[ -z "${CLOAKBROWSER_LICENSE_KEY:-}" ]]; then
+  license_file="$CB/license.key"
+  if [[ -f "$license_file" && ! -L "$license_file" ]]; then
+    IFS= read -r CLOAKBROWSER_LICENSE_KEY < "$license_file" || true
+    export CLOAKBROWSER_LICENSE_KEY
+  fi
+fi
 if [[ ! -x "$BIN" ]]; then
   fallback_bins=()
   for fallback_bin in "$CB"/chromium-*/Chromium.app/Contents/MacOS/Chromium; do

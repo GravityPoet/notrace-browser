@@ -1,18 +1,19 @@
 {
   "schema_version": 1,
-  "reviewed_at": "2026-08-21",
+  "reviewed_at": "2026-08-30",
   "platform": "macos",
   "wrapper": {
     "package": "cloakbrowser",
-    "approved_versions": ["0.5.8"],
+    "approved_versions": ["0.5.9"],
     "node": ">=20.0.0",
     "license": "MIT",
-    "integrity": "sha512-k69iAhtzki3ajccUZlVNJvPxrrZXas8LRQYR5Vdv8lpsoAW+V8mV2lBzg6KfuQpKPGdZ/1fbF/17ydPPHs9Y5Q==",
-    "upstream_git_head": "2e5d4934163e7bdd37731ae882e54439f953dc38",
+    "integrity": "sha512-vMLX6sxLoA9OWutHrT1h7fYKPm/YZdGcPaanOTXMimG4U9jg9wc2hqI/VsFo9Nzel/ab82nWZhfQal18tKw6pQ==",
+    "upstream_git_head": "0811704e7f5a5f67b5cc0b4a1f9b38810c7eb4d5",
     "dependencies": {
       "tar": "^7.0.0"
     },
-    "macos_stable_engine": "150.0.7871.114.3",
+    "macos_stable_engine": "151.0.7922.108.3",
+    "upstream_release_api": "https://api.github.com/repos/CloakHQ/CloakBrowser/releases/latest",
     "upstream_changelog": "https://raw.githubusercontent.com/CloakHQ/CloakBrowser/main/CHANGELOG.md"
   },
   "required_release_gates": [
@@ -45,7 +46,14 @@
       "status": "blocked",
       "identity_mode": "native-engine",
       "runtime_modes": ["source-cache"],
-      "notes": "Blocked on macOS because of the confirmed browserTampering regression; wrapper 0.5.8 still resolves this Stable build on macOS."
+      "notes": "Blocked on macOS because of the confirmed browserTampering regression; older wrapper releases still resolve this Stable build on macOS."
+    },
+    {
+      "version": "151.0.7922.108.3",
+      "status": "approved",
+      "identity_mode": "native-engine",
+      "runtime_modes": ["source-cache", "local-tcc-runtime"],
+      "notes": "Current upstream macOS Stable build. Promotion remains gated by the local contract, headed live challenge, and native Picker E2E checks; keep 145 available for rollback."
     }
   ]
 }
