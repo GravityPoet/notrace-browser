@@ -1373,6 +1373,7 @@ fn launch_plan(
     let launch_started = Instant::now();
     let preflight_duration = launch_started.saturating_duration_since(preflight_started);
     ensure_launch_not_cancelled(options.cancellation.as_deref())?;
+    let license_key = resolve_cloakbrowser_license_key(&config.cloakbrowser_root);
     let pid = launch_browser_process(
         &plan.browser_binary,
         &plan.profile_path,
@@ -1380,6 +1381,7 @@ fn launch_plan(
         (options.skip_geo || plan.geo.is_trusted())
             .then_some(plan.geo.timezone.as_deref())
             .flatten(),
+        license_key.as_deref().map(|key| key.as_str()),
     )?;
     let result = LaunchResult {
         account: plan.account.clone(),
@@ -1423,9 +1425,10 @@ fn launch_browser_process(
     profile_path: &Path,
     argv: &[String],
     timezone: Option<&str>,
+    license_key: Option<&str>,
 ) -> Result<u32> {
     let Some(app_bundle) = macos_app_bundle_for_binary(browser_binary) else {
-        return launch_browser_direct(browser_binary, argv, timezone);
+        return launch_browser_direct(browser_binary, argv, timezone, license_key);
     };
 
     // LaunchServices makes Chromium, rather than whichever Picker/account tile
@@ -1439,6 +1442,12 @@ fn launch_browser_process(
         .args(["--stderr", "/dev/null"]);
     if let Some(tz) = timezone {
         command.arg("--env").arg(format!("TZ={tz}"));
+    }
+    // `open` propagates its own environment to the app it launches on macOS.
+    // The keyed CloakBrowser binary reads this value at startup; keep it out of
+    // Chromium argv and let the process environment carry it instead.
+    if let Some(key) = license_key {
+        command.env("CLOAKBROWSER_LICENSE_KEY", key);
     }
     command.arg(app_bundle).arg("--args").args(argv);
     command.stdin(Stdio::null());
@@ -1476,19 +1485,24 @@ fn launch_browser_process(
     _profile_path: &Path,
     argv: &[String],
     timezone: Option<&str>,
+    license_key: Option<&str>,
 ) -> Result<u32> {
-    launch_browser_direct(browser_binary, argv, timezone)
+    launch_browser_direct(browser_binary, argv, timezone, license_key)
 }
 
 fn launch_browser_direct(
     browser_binary: &Path,
     argv: &[String],
     timezone: Option<&str>,
+    license_key: Option<&str>,
 ) -> Result<u32> {
     let mut command = Command::new(browser_binary);
     command.args(argv);
     if let Some(tz) = timezone {
         command.env("TZ", tz);
+    }
+    if let Some(key) = license_key {
+        command.env("CLOAKBROWSER_LICENSE_KEY", key);
     }
     command.stdin(Stdio::null());
     command.stdout(Stdio::null());
@@ -2781,6 +2795,10 @@ fn run_selftest(
 
     let mut cmd = Command::new("node");
     cmd.args(args);
+    let license_key = resolve_cloakbrowser_license_key(&config.cloakbrowser_root);
+    if let Some(key) = license_key.as_ref() {
+        cmd.env("CLOAKBROWSER_LICENSE_KEY", key.as_str());
+    }
     cmd.stdout(Stdio::null());
     cmd.stderr(if strict {
         Stdio::piped()
@@ -2986,6 +3004,32 @@ fn cloakbrowser_license_configured(config: &CloakConfig) -> bool {
     }
     fs::metadata(config.cloakbrowser_root.join("license.key"))
         .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+}
+
+/// Resolve the key for child processes that execute the official keyed binary.
+/// The JavaScript/Python wrappers know how to read `license.key`, but a direct
+/// Chromium launch (including macOS LaunchServices) only receives environment
+/// variables. Keep the value transient and reject symlinked files so an
+/// unexpected path cannot be used as a secret source.
+fn resolve_cloakbrowser_license_key(root: &Path) -> Option<zeroize::Zeroizing<String>> {
+    let from_env = env::var("CLOAKBROWSER_LICENSE_KEY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if from_env.is_some() {
+        return from_env.map(zeroize::Zeroizing::new);
+    }
+
+    let path = root.join("license.key");
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.file_type().is_file() {
+        return None;
+    }
+    fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(zeroize::Zeroizing::new)
 }
 
 /// Numeric components of a `chromium-<version>` directory, for version ordering.

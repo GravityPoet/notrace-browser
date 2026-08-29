@@ -192,6 +192,56 @@ async function evaluate(send, expression, awaitPromise = true, timeoutMs = 20000
   return r.result?.result?.value;
 }
 
+function childHasExited(child) {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+async function waitForChildExit(child, timeoutMs) {
+  if (childHasExited(child)) return true;
+  return new Promise((resolve) => {
+    let timer;
+    const finish = (exited) => {
+      if (timer) clearTimeout(timer);
+      child.removeListener("exit", onExit);
+      child.removeListener("error", onError);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const onError = () => finish(true);
+    child.once("exit", onExit);
+    child.once("error", onError);
+    timer = setTimeout(() => finish(childHasExited(child)), timeoutMs);
+  });
+}
+
+async function closeChildBrowser(browserClient, pageClient, child) {
+  // Browser.close is a browser-level CDP command; page targets do not reliably
+  // implement it. Use the browser websocket first, then graceful signals, and
+  // reserve SIGKILL for a genuinely wedged process so a free-tier seat can sign
+  // off before the next profile starts.
+  try {
+    if (browserClient) await Promise.race([browserClient.send("Browser.close"), sleep(5000)]);
+  } catch (_) {}
+  if (!childHasExited(child)) {
+    try {
+      if (pageClient) await Promise.race([pageClient.send("Page.close"), sleep(2000)]);
+    } catch (_) {}
+  }
+  await waitForChildExit(child, 5000);
+  if (!childHasExited(child)) {
+    try { child.kill("SIGINT"); } catch (_) {}
+    await waitForChildExit(child, 5000);
+  }
+  if (!childHasExited(child)) {
+    try { child.kill("SIGTERM"); } catch (_) {}
+    await waitForChildExit(child, 5000);
+  }
+  if (!childHasExited(child)) {
+    try { child.kill("SIGKILL"); } catch (_) {}
+    await waitForChildExit(child, 1000);
+  }
+}
+
 const storageReadExpression = `new Promise((resolve) => {
   const key = "cloak_pair_marker";
   let done = false;
@@ -304,6 +354,7 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
   });
 
   let client;
+  let browserClient;
   try {
     let port;
     for (let i = 0; i < 300 && !port; i += 1) {
@@ -325,6 +376,10 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
     }
     if (!target || !target.webSocketDebuggerUrl) throw new Error("no page target");
 
+    try {
+      const versionInfo = await (await fetch(`http://localhost:${port}/json/version`)).json();
+      if (versionInfo.webSocketDebuggerUrl) browserClient = await cdp(versionInfo.webSocketDebuggerUrl);
+    } catch (_) {}
     client = await cdp(target.webSocketDebuggerUrl);
     await client.send("Runtime.enable");
     await client.send("Page.enable");
@@ -364,13 +419,15 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
     if (writeStorage) await evaluate(client.send, storageWriteExpression);
     return { seed, probe, storageBefore, dir };
   } finally {
-    try { await client?.close(); } catch (_) {}
     if (!opts.keep) {
-      try { child.kill("SIGKILL"); } catch (_) {}
-      await Promise.race([
-        new Promise((resolve) => child.once("exit", resolve)),
-        sleep(1000),
-      ]);
+      // A free GitHub key has one concurrent seat. Ask Chromium to close through
+      // CDP first so the binary can release that seat; SIGKILL here used to leave
+      // the server-side lease stuck and made every following probe fail silently.
+      await closeChildBrowser(browserClient, client, child);
+    }
+    try { await client?.close(); } catch (_) {}
+    try { await browserClient?.close(); } catch (_) {}
+    if (!opts.keep) {
       try { rmSync(dir, { recursive: true, force: true }); } catch (_) {}
     }
   }
@@ -521,15 +578,19 @@ function addProbeChecks(checks, label, probe, opts) {
   );
 
   // The engine's own canvas noise reaches both realms alike, so wrapping one and
-  // not the other is a self-inflicted tell. The blob pair matters for the
-  // opposite reason: the engine does not noise encoded output at all, so two
-  // accounts share one image unless the companion covers both encoders.
+  // not the other is a self-inflicted tell. Compare decoded pixels rather than
+  // requiring byte-for-byte PNG equality: the two native encoders may legally
+  // choose different container metadata while rendering the same image.
   const realms = probe.canvas_realms || {};
+  const htmlDecoded = realms.html_blob_pixels || {};
+  const offscreenDecoded = realms.offscreen_blob_pixels || {};
   hard(
-    "canvas reads agree across <canvas> and OffscreenCanvas",
+    "canvas reads and encoded pixels agree across <canvas> and OffscreenCanvas",
     !realms.error && !!realms.html_pixels
       && realms.html_pixels === realms.offscreen_pixels
-      && realms.html_blob === realms.offscreen_blob
+      && htmlDecoded.width === 220 && htmlDecoded.height === 50
+      && offscreenDecoded.width === 220 && offscreenDecoded.height === 50
+      && htmlDecoded.hash === offscreenDecoded.hash
       && realms.pixels_after_encode === realms.html_pixels,
     JSON.stringify(realms)
   );

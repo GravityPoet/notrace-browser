@@ -709,6 +709,55 @@ async function cdp(wsUrl) {
   return { send, on, close };
 }
 
+function childHasExited(child) {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+async function waitForChildExit(child, timeoutMs) {
+  if (childHasExited(child)) return true;
+  return new Promise((resolve) => {
+    let timer;
+    const finish = (exited) => {
+      if (timer) clearTimeout(timer);
+      child.removeListener("exit", onExit);
+      child.removeListener("error", onError);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const onError = () => finish(true);
+    child.once("exit", onExit);
+    child.once("error", onError);
+    timer = setTimeout(() => finish(childHasExited(child)), timeoutMs);
+  });
+}
+
+async function closeAuditBrowser(browserClient, pageClient, child) {
+  // Browser.close is only reliable on the browser-level websocket. A hard kill
+  // leaves a one-seat free key leased for ~15 minutes, so use graceful CDP and
+  // signals before the last-resort kill.
+  try {
+    if (browserClient) await Promise.race([browserClient.send("Browser.close"), sleep(5000)]);
+  } catch (_) {}
+  if (!childHasExited(child)) {
+    try {
+      if (pageClient) await Promise.race([pageClient.send("Page.close"), sleep(2000)]);
+    } catch (_) {}
+  }
+  await waitForChildExit(child, 5000);
+  if (!childHasExited(child)) {
+    try { child.kill("SIGINT"); } catch (_) {}
+    await waitForChildExit(child, 5000);
+  }
+  if (!childHasExited(child)) {
+    try { child.kill("SIGTERM"); } catch (_) {}
+    await waitForChildExit(child, 5000);
+  }
+  if (!childHasExited(child)) {
+    try { child.kill("SIGKILL"); } catch (_) {}
+    await waitForChildExit(child, 1000);
+  }
+}
+
 async function evaluate(client, expression, timeoutMs) {
   const request = client.send("Runtime.evaluate", {
     expression,
@@ -894,6 +943,7 @@ async function run() {
   });
 
   let client = null;
+  let browserClient = null;
   let localAuditServer = null;
   const report = {
     ts: new Date().toISOString(),
@@ -920,6 +970,12 @@ async function run() {
         client = null;
       }
       const devtools = await waitForDevTools(plan.profile_path, opts.timeoutMs, child);
+      if (!browserClient) {
+        try {
+          const versionInfo = await (await fetch(`http://127.0.0.1:${devtools.port}/json/version`)).json();
+          if (versionInfo.webSocketDebuggerUrl) browserClient = await cdp(versionInfo.webSocketDebuggerUrl);
+        } catch (_) {}
+      }
       client = await cdp(devtools.wsUrl);
     };
 
@@ -1023,10 +1079,11 @@ async function run() {
       console.log(`MANUAL ${url}: ${item.screenshot || item.error || "loaded"}`);
     }
   } finally {
+    if (!opts.keep) await closeAuditBrowser(browserClient, client, child);
     if (client) await client.close();
+    if (browserClient) await browserClient.close();
     if (localAuditServer) await localAuditServer.close();
     if (!opts.keep) {
-      try { child.kill("SIGKILL"); } catch {}
       rmSync(tempRoot, { recursive: true, force: true });
     } else {
       report.temp_root = tempRoot;

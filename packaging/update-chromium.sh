@@ -38,10 +38,22 @@ WRAPPER_DIR="$ROOT/packaging/cloakbrowser-wrapper"
 WRAPPER_BIN="${CLOAK_WRAPPER_BIN:-$WRAPPER_DIR/node_modules/.bin/cloakbrowser}"
 WRAPPER_LOCK="$WRAPPER_DIR/package-lock.json"
 WRAPPER_MARKER="$WRAPPER_DIR/node_modules/.notrace-package-lock.sha256"
-WRAPPER_VERSION="0.5.8"
+WRAPPER_VERSION="0.5.9"
 COMPATIBILITY_AUDIT="$ROOT/packaging/audit-cloakbrowser-compatibility.mjs"
 CHANNEL="${CLOAK_BROWSER_CHANNEL:-stable}"
 LSREG="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+
+# The official Pro binary consumes the key from its process environment.  Load
+# the local wrapper-managed key once so contract/live gates exercise the same
+# authenticated path as a real launch; the value is never logged or persisted by
+# this script.
+if [[ -z "${CLOAKBROWSER_LICENSE_KEY:-}" ]]; then
+  license_file="$CB/license.key"
+  if [[ -f "$license_file" && ! -L "$license_file" ]]; then
+    IFS= read -r CLOAKBROWSER_LICENSE_KEY < "$license_file" || true
+    export CLOAKBROWSER_LICENSE_KEY
+  fi
+fi
 
 mkdir -p "$CB"
 if [[ -L "$LOG" ]]; then

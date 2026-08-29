@@ -642,6 +642,25 @@ fn node_binary() -> PathBuf {
     ])
 }
 
+fn cloakbrowser_license_key(root: &Path) -> Option<Zeroizing<String>> {
+    if let Ok(value) = std::env::var("CLOAKBROWSER_LICENSE_KEY") {
+        let value = value.trim().to_string();
+        if !value.is_empty() {
+            return Some(Zeroizing::new(value));
+        }
+    }
+    let path = root.join("license.key");
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.file_type().is_file() {
+        return None;
+    }
+    fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(Zeroizing::new)
+}
+
 fn run_challenge_audit_blocking() -> Result<serde_json::Value, String> {
     let config = config()?;
     let self_check = core_self_check_report(&config).map_err(|err| err.to_string())?;
@@ -696,7 +715,8 @@ fn run_challenge_audit_blocking() -> Result<serde_json::Value, String> {
 
     let started = std::time::Instant::now();
     let node = node_binary();
-    let output = Command::new(&node)
+    let mut command = Command::new(&node);
+    command
         .arg(&script)
         .args([
             "--headed",
@@ -714,7 +734,12 @@ fn run_challenge_audit_blocking() -> Result<serde_json::Value, String> {
         .arg(&result_dir)
         .env("CLOAK_BROWSER_BIN", &browser)
         .env("CLOAK_BROWSER_EXPECTED_SHA256", &browser_sha256)
-        .env("CLOAK_EXTRA_EXTENSIONS", "0")
+        .env("CLOAK_EXTRA_EXTENSIONS", "0");
+    let license_key = cloakbrowser_license_key(&config.cloakbrowser_root);
+    if let Some(key) = license_key.as_ref() {
+        command.env("CLOAKBROWSER_LICENSE_KEY", key.as_str());
+    }
+    let output = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

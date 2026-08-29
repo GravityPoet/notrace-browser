@@ -194,8 +194,9 @@ test("<canvas> and OffscreenCanvas read one drawing the same way", () => {
 });
 
 test("every encoder of one canvas agrees, as two encoders of one canvas must", async () => {
-  // A page can call both and compare. The PNG bytes behind them decode to the
-  // same pixels in any real browser, so a label per method was a cheap tell.
+  // A page can call both and compare. This deterministic harness represents the
+  // decoded image surface with the same value for each encoder; the browser gate
+  // separately hashes decoded pixels because container metadata may differ.
   const context = canvasWindow("92934");
   vm.runInContext("var canvas = makeCanvas(60, 40);", context);
 

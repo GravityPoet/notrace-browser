@@ -113,24 +113,59 @@ if (checkUpstream) {
     fail("npm 上游 wrapper 的许可证、Node 要求、完整性或源码提交发生漂移");
   }
 
-  let changelog;
-  try {
-    const response = await fetch(matrix.wrapper.upstream_changelog, {
-      headers: { "User-Agent": "notrace-compatibility-audit" },
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    changelog = await response.text();
-  } catch (error) {
-    fail(`无法读取上游 changelog：${error instanceof Error ? error.message : String(error)}`);
-  }
-  const latestSection = changelog.match(/^## \[[^\n]+\][\s\S]*?(?=^---\s*$|^## \[)/m)?.[0] ?? "";
-  const macStable = latestSection.match(/macOS[^\n]*?Stable\s+`([0-9]+(?:\.[0-9]+){3,4})`/)?.[1];
-  if (!macStable) {
-    fail("无法从最新上游 changelog 解析 macOS Stable 引擎，必须人工复核矩阵");
-  }
-  if (macStable !== matrix.wrapper.macos_stable_engine) {
-    fail(`macOS Stable 引擎漂移：upstream=${macStable} matrix=${matrix.wrapper.macos_stable_engine}`);
+  // The changelog can lag a binary release (or contain an Unreleased section
+  // without a platform line). Prefer the official latest-release API when the
+  // matrix provides it, and require evidence that the release actually ships
+  // the macOS archive before accepting the pinned macOS version.
+  if (matrix.wrapper.upstream_release_api) {
+    let release;
+    try {
+      const response = await fetch(matrix.wrapper.upstream_release_api, {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "User-Agent": "notrace-compatibility-audit",
+        },
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      release = await response.json();
+    } catch (error) {
+      fail(`无法读取上游最新 Release：${error instanceof Error ? error.message : String(error)}`);
+    }
+    const expected = matrix.wrapper.macos_stable_engine;
+    const releaseText = `${release?.name ?? ""}\n${release?.tag_name ?? ""}\n${release?.body ?? ""}`;
+    const releaseVersion = release?.tag_name?.match(/[0-9]+(?:\.[0-9]+){3,4}/)?.[0];
+    if (release?.draft || release?.prerelease) {
+      fail("上游最新 Release 不是正式版本，必须人工复核矩阵");
+    }
+    if (releaseVersion !== expected
+        || !releaseText.includes(expected)
+        || !/macOS/i.test(releaseText)
+        || !/cloakbrowser-darwin-(?:arm64|x64)\.tar\.gz/i.test(releaseText)) {
+      fail(`上游最新 Release 与 macOS Stable 矩阵不一致：release=${releaseVersion ?? "unknown"} matrix=${expected}`);
+    }
+  } else {
+    let changelog;
+    try {
+      const response = await fetch(matrix.wrapper.upstream_changelog, {
+        headers: { "User-Agent": "notrace-compatibility-audit" },
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      changelog = await response.text();
+    } catch (error) {
+      fail(`无法读取上游 changelog：${error instanceof Error ? error.message : String(error)}`);
+    }
+    const sections = changelog.match(/^## \[[^\n]+\][\s\S]*?(?=^---\s*$|^## \[)/gm) ?? [];
+    const macStable = sections
+      .map((section) => section.match(/macOS[^\n]*?Stable\s+`([0-9]+(?:\.[0-9]+){3,4})`/)?.[1])
+      .find(Boolean);
+    if (!macStable) {
+      fail("无法从上游 changelog 解析 macOS Stable 引擎，必须人工复核矩阵");
+    }
+    if (macStable !== matrix.wrapper.macos_stable_engine) {
+      fail(`macOS Stable 引擎漂移：upstream=${macStable} matrix=${matrix.wrapper.macos_stable_engine}`);
+    }
   }
 }
 

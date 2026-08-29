@@ -16,6 +16,16 @@ if [[ -z "$SHA_FILE" ]]; then
 fi
 ACCOUNT_NAME="${CLOAK_VERIFY_ACCOUNT:-challenge-smoke-9i@example.test}"
 
+# The official Pro binary reads its license from the process environment, while
+# the wrapper also supports ~/.cloakbrowser/license.key.  Keep the contract gate
+# aligned with the real launcher without ever printing the secret or writing it
+# into the repository.
+license_file="${CLOAKBROWSER_LICENSE_FILE:-${CLOAKBROWSER_CACHE_DIR:-$HOME/.cloakbrowser}/license.key}"
+if [[ -z "${CLOAKBROWSER_LICENSE_KEY:-}" && -f "$license_file" && ! -L "$license_file" ]]; then
+  IFS= read -r CLOAKBROWSER_LICENSE_KEY < "$license_file" || true
+  export CLOAKBROWSER_LICENSE_KEY
+fi
+
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
   exit 1
