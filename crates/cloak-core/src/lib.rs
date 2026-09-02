@@ -1,3 +1,4 @@
+mod license;
 mod profile_metadata;
 mod relay;
 mod workspace;
@@ -56,6 +57,14 @@ const GEO_CACHE_TTL_SECS: u64 = 300;
 const GEO_ATTEMPT_TIMEOUT_SECS: u64 = 4;
 const GEO_LOOKUP_ATTEMPTS: usize = 2;
 const MAX_ACCOUNT_NOTE_CHARS: usize = 1000;
+const BROWSER_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+// CloakBrowser may finish its license handshake a little after the process
+// first appears (the observed denial path is about two seconds).  Keep the
+// process alive long enough to surface that result instead of returning a
+// false-success PID to the picker.
+const BROWSER_STARTUP_STABILITY: Duration = Duration::from_secs(3);
+const BROWSER_STARTUP_POLL: Duration = Duration::from_millis(50);
+const BROWSER_EXIT_GRACE: Duration = Duration::from_millis(500);
 
 /// Apple Silicon GPU renderer pool — base chips only, coherent with 8-core hardwareConcurrency.
 /// Pro/Max/Ultra variants excluded to avoid "M4 Max + 8 cores" inconsistency.
@@ -241,6 +250,14 @@ pub enum CloakError {
     ExtensionMissing(PathBuf),
     #[error("privacy gate failed: {0}")]
     PrivacyGate(String),
+    #[error("CloakBrowser license denied (exit code {code}): {message}")]
+    LicenseDenied { code: u8, message: String },
+    #[error("CloakBrowser license session limit reached while another local browser is running")]
+    LicenseSeatInUse,
+    #[error("CloakBrowser license session is still held by the server; no local browser process was found")]
+    LicenseSeatStale,
+    #[error("browser exited during startup: {0}")]
+    BrowserStartup(String),
     #[error("launch cancelled")]
     LaunchCancelled,
     #[error("profile metadata is invalid: {0}")]
@@ -1374,7 +1391,28 @@ fn launch_plan(
     let preflight_duration = launch_started.saturating_duration_since(preflight_started);
     ensure_launch_not_cancelled(options.cancellation.as_deref())?;
     let license_key = resolve_cloakbrowser_license_key(&config.cloakbrowser_root);
-    let pid = launch_browser_process(
+    // The keyed binary owns the actual license decision.  We only do a
+    // read-only seat preflight when a key is available, and only wait for a
+    // stale lease when no managed browser process is present.  This avoids a
+    // needless second launch attempt (which can create another lease) while
+    // keeping the official binary as the final authority.
+    if !already_running {
+        if let Some(key) = license_key.as_deref() {
+            if is_keyed_browser_binary(&plan.browser_binary) {
+                ensure_license_seat_available(
+                    key,
+                    &plan.browser_binary,
+                    options.cancellation.as_deref(),
+                )?;
+            }
+        }
+    }
+    let status_file = if is_keyed_browser_binary(&plan.browser_binary) {
+        license::mint_status_file(&config.cloakbrowser_root)
+    } else {
+        None
+    };
+    let pid = match launch_browser_process(
         &plan.browser_binary,
         &plan.profile_path,
         &argv,
@@ -1382,7 +1420,14 @@ fn launch_plan(
             .then_some(plan.geo.timezone.as_deref())
             .flatten(),
         license_key.as_deref().map(|key| key.as_str()),
-    )?;
+        status_file.as_deref(),
+    ) {
+        Ok(pid) => pid,
+        Err(err) => {
+            license::remove_status_file(status_file.as_deref());
+            return Err(err);
+        }
+    };
     let result = LaunchResult {
         account: plan.account.clone(),
         profile_path: plan.profile_path.clone(),
@@ -1426,9 +1471,10 @@ fn launch_browser_process(
     argv: &[String],
     timezone: Option<&str>,
     license_key: Option<&str>,
+    status_file: Option<&Path>,
 ) -> Result<u32> {
     let Some(app_bundle) = macos_app_bundle_for_binary(browser_binary) else {
-        return launch_browser_direct(browser_binary, argv, timezone, license_key);
+        return launch_browser_direct(browser_binary, argv, timezone, license_key, status_file);
     };
 
     // LaunchServices makes Chromium, rather than whichever Picker/account tile
@@ -1449,11 +1495,17 @@ fn launch_browser_process(
     if let Some(key) = license_key {
         command.env("CLOAKBROWSER_LICENSE_KEY", key);
     }
+    if let Some(path) = status_file {
+        command.env(license::STATUS_FILE_ENV, path);
+    }
     command.arg(app_bundle).arg("--args").args(argv);
     command.stdin(Stdio::null());
 
     let output = command.output()?;
     if !output.status.success() {
+        if let Some(code) = status_file.and_then(license::read_denial_code) {
+            return Err(license::denial_error(code).expect("validated denial code"));
+        }
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(CloakError::Io(io::Error::other(if detail.is_empty() {
             format!("LaunchServices failed with status {}", output.status)
@@ -1462,21 +1514,7 @@ fn launch_browser_process(
         })));
     }
 
-    let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(5) {
-        if let Some(pid) = running_browser_pid(browser_binary, profile_path)? {
-            return Ok(pid);
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-
-    Err(CloakError::Io(io::Error::new(
-        io::ErrorKind::TimedOut,
-        format!(
-            "LaunchServices returned successfully, but no Chromium process appeared for {}",
-            profile_path.display()
-        ),
-    )))
+    wait_for_macos_browser_startup(browser_binary, profile_path, status_file)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1486,8 +1524,9 @@ fn launch_browser_process(
     argv: &[String],
     timezone: Option<&str>,
     license_key: Option<&str>,
+    status_file: Option<&Path>,
 ) -> Result<u32> {
-    launch_browser_direct(browser_binary, argv, timezone, license_key)
+    launch_browser_direct(browser_binary, argv, timezone, license_key, status_file)
 }
 
 fn launch_browser_direct(
@@ -1495,6 +1534,7 @@ fn launch_browser_direct(
     argv: &[String],
     timezone: Option<&str>,
     license_key: Option<&str>,
+    status_file: Option<&Path>,
 ) -> Result<u32> {
     let mut command = Command::new(browser_binary);
     command.args(argv);
@@ -1504,10 +1544,164 @@ fn launch_browser_direct(
     if let Some(key) = license_key {
         command.env("CLOAKBROWSER_LICENSE_KEY", key);
     }
+    if let Some(path) = status_file {
+        command.env(license::STATUS_FILE_ENV, path);
+    }
     command.stdin(Stdio::null());
     command.stdout(Stdio::null());
     command.stderr(Stdio::null());
-    Ok(command.spawn()?.id())
+    let mut child = command.spawn()?;
+    let pid = child.id();
+    let started = Instant::now();
+    while started.elapsed() < BROWSER_STARTUP_STABILITY {
+        if let Some(code) = status_file.and_then(license::read_denial_code) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(license::denial_error(code).expect("validated denial code"));
+        }
+        if let Some(status) = child.try_wait()? {
+            return Err(browser_exit_error(status));
+        }
+        thread::sleep(BROWSER_STARTUP_POLL);
+    }
+    if let Some(code) = status_file.and_then(license::read_denial_code) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(license::denial_error(code).expect("validated denial code"));
+    }
+    Ok(pid)
+}
+
+fn is_keyed_browser_binary(browser_binary: &Path) -> bool {
+    version_sort_key(browser_binary).1
+}
+
+fn ensure_license_seat_available(
+    license_key: &str,
+    browser_binary: &Path,
+    cancellation: Option<&AtomicBool>,
+) -> Result<()> {
+    license::wait_for_available_seat(
+        cancellation,
+        || license::query_session_seats(license_key),
+        || browser_has_primary_process(browser_binary),
+    )
+}
+
+/// Return whether a primary Cloak Chromium process for this binary is already
+/// alive. Helper/renderer processes are intentionally ignored. This check is
+/// only used to distinguish a real local holder from a stale remote lease; it
+/// never attempts to kill or alter a process.
+fn browser_has_primary_process(browser_binary: &Path) -> Result<bool> {
+    let listing = running_process_command_lines()?;
+    Ok(listing
+        .lines()
+        .any(|line| command_line_runs_browser(line, browser_binary)))
+}
+
+fn command_line_runs_browser(command: &str, browser_binary: &Path) -> bool {
+    let command = command.trim_start();
+    let executable = browser_binary.to_string_lossy();
+    let direct = command
+        .strip_prefix(executable.as_ref())
+        .is_some_and(|rest| {
+            rest.is_empty()
+                || rest
+                    .chars()
+                    .next()
+                    .map(char::is_whitespace)
+                    .unwrap_or(false)
+        });
+    let quoted_executable = format!("\"{executable}\"");
+    let quoted = command
+        .strip_prefix(&quoted_executable)
+        .is_some_and(|rest| {
+            rest.is_empty()
+                || rest
+                    .chars()
+                    .next()
+                    .map(char::is_whitespace)
+                    .unwrap_or(false)
+        });
+    (direct || quoted) && !command.contains(" --type=")
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_macos_browser_startup(
+    browser_binary: &Path,
+    profile_path: &Path,
+    status_file: Option<&Path>,
+) -> Result<u32> {
+    let deadline = Instant::now() + BROWSER_STARTUP_TIMEOUT;
+    let mut stable_pid: Option<u32> = None;
+    let mut stable_since: Option<Instant> = None;
+    let mut missing_since: Option<Instant> = None;
+
+    loop {
+        if let Some(code) = status_file.and_then(license::read_denial_code) {
+            return Err(license::denial_error(code).expect("validated denial code"));
+        }
+
+        let current_pid = running_browser_pid(browser_binary, profile_path)?;
+        match current_pid {
+            Some(pid) => {
+                // Chromium may replace its browser process during early
+                // LaunchServices hand-off. Treat continuous presence of a
+                // matching primary process as stable even if the PID changes.
+                stable_pid = Some(pid);
+                stable_since.get_or_insert_with(Instant::now);
+                missing_since = None;
+                if stable_since
+                    .map(|started| started.elapsed() >= BROWSER_STARTUP_STABILITY)
+                    .unwrap_or(false)
+                {
+                    if let Some(code) = status_file.and_then(license::read_denial_code) {
+                        return Err(license::denial_error(code).expect("validated denial code"));
+                    }
+                    return Ok(pid);
+                }
+            }
+            None => {
+                if stable_pid.is_some() {
+                    missing_since.get_or_insert_with(Instant::now);
+                }
+                if missing_since
+                    .map(|started| started.elapsed() >= BROWSER_EXIT_GRACE)
+                    .unwrap_or(false)
+                {
+                    if let Some(code) = status_file.and_then(license::read_denial_code) {
+                        return Err(license::denial_error(code).expect("validated denial code"));
+                    }
+                    return Err(CloakError::BrowserStartup(
+                        "Chromium 在启动阶段退出，未能保持稳定进程".to_string(),
+                    ));
+                }
+            }
+        }
+
+        if Instant::now() >= deadline {
+            if let Some(code) = status_file.and_then(license::read_denial_code) {
+                return Err(license::denial_error(code).expect("validated denial code"));
+            }
+            return Err(CloakError::BrowserStartup(format!(
+                "LaunchServices 已返回，但 Chromium 未在 {} 秒内保持运行",
+                BROWSER_STARTUP_TIMEOUT.as_secs()
+            )));
+        }
+        thread::sleep(BROWSER_STARTUP_POLL);
+    }
+}
+
+fn browser_exit_error(status: std::process::ExitStatus) -> CloakError {
+    if let Some(code) = status.code() {
+        if let Ok(code) = u8::try_from(code) {
+            if let Some(error) = license::denial_error(code) {
+                return error;
+            }
+        }
+        return CloakError::BrowserStartup(format!("Chromium 在启动阶段退出（exit code {code}）"));
+    }
+    CloakError::BrowserStartup("Chromium 在启动阶段被信号终止".to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -5316,6 +5510,51 @@ mod tests {
             browser_pid_from_process_listing(listing, browser, profile),
             Some(703)
         );
+    }
+
+    #[test]
+    fn browser_process_detection_ignores_helpers_and_prefix_collisions() {
+        let browser = Path::new("/Applications/Cloak Chromium.app/Contents/MacOS/Chromium");
+        assert!(command_line_runs_browser(
+            "/Applications/Cloak Chromium.app/Contents/MacOS/Chromium --user-data-dir=/tmp/work",
+            browser,
+        ));
+        assert!(command_line_runs_browser(
+            "\"/Applications/Cloak Chromium.app/Contents/MacOS/Chromium\" --user-data-dir=/tmp/work",
+            browser,
+        ));
+        assert!(!command_line_runs_browser(
+            "/Applications/Cloak Chromium.app/Contents/MacOS/Chromium Helper --type=renderer",
+            browser,
+        ));
+        assert!(!command_line_runs_browser(
+            "/Applications/Cloak Chromium.app/Contents/MacOS/Chromium-helper --user-data-dir=/tmp/work",
+            browser,
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_launch_surfaces_license_denial_instead_of_reporting_success() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let browser = dir.path().join("fake-chromium");
+        fs::write(
+            &browser,
+            "#!/bin/sh\nprintf '%s' 76 > \"$CLOAKBROWSER_LICENSE_STATUS_FILE\"\nexit 76\n",
+        )
+        .unwrap();
+        fs::set_permissions(&browser, fs::Permissions::from_mode(0o700)).unwrap();
+        let status_file = license::mint_status_file(dir.path()).expect("status path");
+
+        let result =
+            launch_browser_direct(&browser, &[], None, Some("fixture-key"), Some(&status_file));
+        assert!(matches!(
+            result,
+            Err(CloakError::LicenseDenied { code: 76, .. })
+        ));
+        license::remove_status_file(Some(&status_file));
     }
 
     #[cfg(target_os = "macos")]

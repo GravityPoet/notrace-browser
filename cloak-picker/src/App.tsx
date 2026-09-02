@@ -6809,7 +6809,7 @@ function isLaunchCancelledError(message: string) {
     || message.includes("启动已取消");
 }
 
-function errorMessage(caught: unknown) {
+export function errorMessage(caught: unknown) {
   const raw = caught instanceof Error ? caught.message : String(caught);
   const alreadyExistsPrefix = "account already exists: ";
   const doesNotExistPrefix = "account does not exist: ";
@@ -6845,6 +6845,27 @@ function errorMessage(caught: unknown) {
   }
   if (raw.includes("account note is invalid")) {
     return "备注内容无效：最多 1000 个字符，请移除不可见控制字符。";
+  }
+  if (raw.includes("exit code 76") || raw.includes("session limit reached for the current plan")) {
+    return "CloakBrowser 免费席位仍被上游占用；本机未检测到可关闭的浏览器进程。请等待服务端租约回收后重试。";
+  }
+  if (raw.includes("exit code 77") || raw.includes("license key is invalid, expired, or missing")) {
+    return "CloakBrowser license key 无效、已过期或未找到，请检查 ~/.cloakbrowser/license.key。";
+  }
+  if (raw.includes("exit code 78") || raw.includes("license verification could not reach the license server")) {
+    return "无法连接 CloakBrowser license 服务，请检查网络后重试。";
+  }
+  if (raw.includes("exit code 79") || raw.includes("local CloakBrowser license configuration is not writable")) {
+    return "CloakBrowser license 配置目录不可写，请检查 ~/.cloakbrowser 权限。";
+  }
+  if (raw.includes("CloakBrowser license session limit reached while another local browser is running")) {
+    return "已有其他 CloakBrowser 窗口占用免费席位，请先关闭后再启动此账号。";
+  }
+  if (raw.includes("CloakBrowser license session is still held by the server")) {
+    return "服务端仍保留一个旧席位租约，本机没有对应浏览器进程；等待自动回收后再试。";
+  }
+  if (raw.startsWith("browser exited during startup:")) {
+    return "浏览器在启动阶段退出，未能保持稳定进程；请稍后重试。";
   }
   if (raw.toLocaleLowerCase().includes("launch cancelled")) {
     return "启动已取消";
