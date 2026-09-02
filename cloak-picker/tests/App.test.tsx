@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App, {
   cancelNextMockChallengeAuditForTest,
+  errorMessage,
   failNextMockCommandForTest,
   mockCommandCountForTest,
   resetMockCommandsForTest,
@@ -179,6 +180,18 @@ describe("Cloak Picker dialog regressions", () => {
     if (!row) throw new Error(`account row not found: ${name}`);
     return row;
   }
+
+  it("explains license denials without calling them a generic browser crash", () => {
+    expect(errorMessage(new Error(
+      "CloakBrowser license denied (exit code 76): session limit reached for the current plan",
+    ))).toContain("上游占用");
+    expect(errorMessage(new Error(
+      "CloakBrowser license session limit reached while another local browser is running",
+    ))).toContain("已有其他 CloakBrowser 窗口");
+    expect(errorMessage(new Error(
+      "CloakBrowser license session is still held by the server; no local browser process was found",
+    ))).toContain("旧席位租约");
+  });
 
   function groupFilterLabels(): string[] {
     return Array.from(document.querySelectorAll<HTMLElement>(".groupFilterButton[data-group-label]"))

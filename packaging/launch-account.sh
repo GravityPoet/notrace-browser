@@ -90,6 +90,71 @@ fi
 BIN_DIR="$(cd "$(dirname "$BIN")" && pwd -P)"
 BIN="$BIN_DIR/$(basename "$BIN")"
 
+# The official keyed binary can write its numeric license denial to this path
+# immediately before exiting.  Keep the path private and per-launch; never put
+# the key itself in argv, logs, or a diagnostic message.
+LICENSE_STATUS_FILE=""
+LICENSE_DENIAL_CODE=""
+is_keyed_binary() {
+  [[ "$1" =~ /chromium-[0-9]+([.][0-9]+){3,4}-pro(-notrace)?/ ]]
+}
+
+mint_license_status_file() {
+  is_keyed_binary "$BIN" || return 0
+  local status_dir="$CB/denials" nonce candidate
+  if [[ -L "$status_dir" ]]; then
+    printf 'error: refusing a symlinked license status directory: %s\n' "$status_dir" >&2
+    exit 1
+  fi
+  mkdir -p "$status_dir"
+  chmod 700 "$status_dir" 2>/dev/null || true
+  nonce="$(/usr/bin/od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  [[ -n "$nonce" ]] || nonce="$(date '+%s')"
+  candidate="$status_dir/$$-$nonce.json"
+  [[ ! -e "$candidate" && ! -L "$candidate" ]] || return 0
+  LICENSE_STATUS_FILE="$candidate"
+}
+
+read_license_status() {
+  [[ -n "$LICENSE_STATUS_FILE" && -f "$LICENSE_STATUS_FILE" && ! -L "$LICENSE_STATUS_FILE" ]] || return 1
+  local code
+  code="$(head -1 "$LICENSE_STATUS_FILE" 2>/dev/null || true)"
+  case "$code" in
+    76|77|78|79) rm -f "$LICENSE_STATUS_FILE"; LICENSE_DENIAL_CODE="$code"; return 0;;
+    *) return 1;;
+  esac
+}
+
+print_license_denial() {
+  case "$LICENSE_DENIAL_CODE" in
+    76) printf 'error: CloakBrowser 免费席位仍被上游占用；本机启动未成功，请等待服务端租约回收后重试。\n' >&2;;
+    77) printf 'error: CloakBrowser license key 无效、已过期或未找到。\n' >&2;;
+    78) printf 'error: 无法连接 CloakBrowser license 服务，请检查网络后重试。\n' >&2;;
+    79) printf 'error: CloakBrowser license 配置目录不可写。\n' >&2;;
+    *) printf 'error: CloakBrowser license 拒绝了本次启动。\n' >&2;;
+  esac
+}
+
+cleanup_license_status() {
+  if [[ -n "$LICENSE_STATUS_FILE" && -f "$LICENSE_STATUS_FILE" && ! -L "$LICENSE_STATUS_FILE" ]]; then
+    rm -f "$LICENSE_STATUS_FILE"
+  fi
+}
+
+browser_profile_running() {
+  local line listing
+  listing="$(ps axww -o command= 2>/dev/null || true)"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    if [[ "$line" == "$BIN" || "$line" == "$BIN "* \
+          || "$line" == "\"$BIN\"" || "$line" == "\"$BIN\" "* ]]; then
+      [[ "$line" == *" --type="* ]] && continue
+      [[ "$line" == *"--user-data-dir=$UDD"* ]] && return 0
+    fi
+  done <<<"$listing"
+  return 1
+}
+
 CLOAK_MAC_UA_VERSION="10_15_7"
 CLOAK_MAC_PLATFORM_VERSION="15.5.0"
 CLOAK_NATIVE_IDENTITY_148_RELEASE="148.0.7778.215.3"
@@ -940,8 +1005,15 @@ if [[ -n "${DRY_RUN:-}" ]]; then
   exit 0
 fi
 
+mint_license_status_file
+
+# A successful launch must not leave a stale diagnostic file behind.  The
+# relay cleanup trap below calls this function too when a relay is needed.
+trap cleanup_license_status EXIT
+
 relay_pid=""
 cleanup_relay() {
+  cleanup_license_status
   if [[ -n "$relay_pid" ]]; then
     kill "$relay_pid" 2>/dev/null || true
     wait "$relay_pid" 2>/dev/null || true
@@ -1048,15 +1120,84 @@ if [[ "$(/usr/bin/uname -s)" == "Darwin" ]] && [[ "$BIN" == */Contents/MacOS/* ]
   open_args=(-W -n --stdin /dev/null --stdout /dev/null --stderr /dev/null)
   [[ -n "${TZ:-}" ]] && open_args+=(--env "TZ=$TZ")
   open_args+=("$browser_app" --args)
-  /usr/bin/open "${open_args[@]}" "${args[@]}" &
+  if [[ -n "$LICENSE_STATUS_FILE" ]]; then
+    CLOAKBROWSER_LICENSE_STATUS_FILE="$LICENSE_STATUS_FILE" \
+      /usr/bin/open "${open_args[@]}" "${args[@]}" &
+  else
+    /usr/bin/open "${open_args[@]}" "${args[@]}" &
+  fi
   browser_pid=$!
 else
-  "$BIN" "${args[@]}" &
+  if [[ -n "$LICENSE_STATUS_FILE" ]]; then
+    CLOAKBROWSER_LICENSE_STATUS_FILE="$LICENSE_STATUS_FILE" \
+      "$BIN" "${args[@]}" &
+  else
+    "$BIN" "${args[@]}" &
+  fi
   browser_pid=$!
+fi
+
+# Do not let an app-level LaunchServices success (or a short-lived Chromium
+# process) masquerade as a successful launch. Poll the official denial file
+# while the wrapper is alive, then preserve its exit status for the caller.
+startup_deadline=$((SECONDS + 5))
+startup_seen=0
+# The official binary can write a license denial roughly two seconds after its
+# primary process appears.  Require three seconds of continuous presence so a
+# delayed denial cannot be reported as a successful launch.
+startup_stable_checks=0
+while (( SECONDS < startup_deadline )); do
+  if read_license_status; then
+    print_license_denial
+    kill "$browser_pid" 2>/dev/null || true
+    wait "$browser_pid" 2>/dev/null || true
+    exit "$LICENSE_DENIAL_CODE"
+  fi
+  if browser_profile_running; then
+    startup_stable_checks=$((startup_stable_checks + 1))
+    if (( startup_stable_checks >= 60 )); then
+      startup_seen=1
+      break
+    fi
+  else
+    startup_stable_checks=0
+  fi
+  if ! kill -0 "$browser_pid" 2>/dev/null; then
+    break
+  fi
+  /bin/sleep 0.05
+done
+
+if [[ "$startup_seen" != "1" ]]; then
+  if read_license_status; then
+    print_license_denial
+    wait "$browser_pid" 2>/dev/null || true
+    exit "$LICENSE_DENIAL_CODE"
+  fi
+  printf 'error: Chromium 未在启动阶段保持稳定进程（账号=%s）\n' "$name" >&2
+  kill "$browser_pid" 2>/dev/null || true
+  wait "$browser_pid" 2>/dev/null || true
+  exit 1
 fi
 
 if [[ "${CLOAK_PREFLIGHT:-off}" == "async" ]]; then
   run_browser_selftest
 fi
 
-wait "$browser_pid"
+while kill -0 "$browser_pid" 2>/dev/null; do
+  if read_license_status; then
+    print_license_denial
+    kill "$browser_pid" 2>/dev/null || true
+    wait "$browser_pid" 2>/dev/null || true
+    exit "$LICENSE_DENIAL_CODE"
+  fi
+  /bin/sleep 0.2
+done
+
+browser_exit=0
+wait "$browser_pid" || browser_exit=$?
+if read_license_status; then
+  print_license_denial
+  exit "$LICENSE_DENIAL_CODE"
+fi
+exit "$browser_exit"
