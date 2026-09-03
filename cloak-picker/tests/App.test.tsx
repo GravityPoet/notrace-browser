@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App, {
   cancelNextMockChallengeAuditForTest,
+  emitMockStartupErrorForTest,
   errorMessage,
   failNextMockCommandForTest,
   mockCommandCountForTest,
@@ -1421,6 +1422,30 @@ describe("Cloak Picker dialog regressions", () => {
     expect(document.querySelector(".launchStatus")?.textContent).toContain("已启动");
     expect(mockCommandCountForTest("launch_account")).toBe(1);
     expect(mockCommandCountForTest("launch_preflight")).toBe(0);
+  });
+
+  it("turns a delayed official startup denial into a retryable failure", async () => {
+    await settle(180);
+    const accountName = document.querySelector(".detail h1")?.textContent ?? "demo-alpha@example.test";
+    await click(buttonWithText("启动"));
+    await settle(260);
+    expect(document.querySelector(".launchStatus")?.textContent).toContain("已启动");
+
+    await act(async () => {
+      emitMockStartupErrorForTest(accountName, "CloakBrowser license denied (exit code 77): license key is invalid, expired, or missing");
+    });
+    await settle(20);
+    expect(document.querySelector(".launchStatus")?.textContent).toContain("启动失败，可重试");
+    expect(document.body.textContent).toContain("license key 无效、已过期或未找到");
+
+    // A callback from the previous launch must not poison a new attempt.
+    await click(buttonWithText("启动"));
+    await settle(180);
+    await act(async () => {
+      emitMockStartupErrorForTest(accountName, "old attempt", 0);
+    });
+    await settle(20);
+    expect(document.querySelector(".launchStatus")?.textContent).toContain("已启动");
   });
 
   it("cancels an in-flight preflight without opening the browser", async () => {

@@ -21,7 +21,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 use zeroize::Zeroizing;
@@ -43,6 +43,32 @@ where
     tauri::async_runtime::spawn_blocking(operation)
         .await
         .map_err(|err| format!("后台任务异常：{err}"))?
+}
+
+/// Bridge one bounded, post-return startup error from the core worker to the
+/// Picker webview. The channel is optional so CLI/library callers keep their
+/// original synchronous launch semantics. A short-lived forwarding thread
+/// avoids holding the Tauri command future open while the official binary
+/// finishes its license handshake.
+fn startup_error_sender(
+    channel: Option<tauri::ipc::Channel<String>>,
+) -> Option<mpsc::Sender<String>> {
+    let channel = channel?;
+    let (sender, receiver) = mpsc::channel::<String>();
+    let forwarded = std::thread::Builder::new()
+        .name("cloak-picker-startup-error-channel".to_string())
+        .spawn(move || {
+            // This ends as soon as all core senders are dropped. Unlike a wall
+            // clock timeout, it remains correct when GeoIP or stale-seat
+            // preflight legitimately takes longer before the browser starts.
+            if let Ok(message) = receiver.recv() {
+                let _ = channel.send(message);
+            }
+        });
+    if forwarded.is_err() {
+        return None;
+    }
+    Some(sender)
 }
 
 struct PickerInstanceGuard {
@@ -529,15 +555,20 @@ async fn launch_preflight(name: String) -> Result<LaunchPlan, String> {
 #[tauri::command]
 async fn launch_account(
     name: String,
+    startup_error: Option<tauri::ipc::JavaScriptChannelId>,
+    webview: tauri::Webview,
     cancellations: State<'_, LaunchCancellationRegistry>,
 ) -> Result<LaunchResult, String> {
     let registry = cancellations.inner().clone();
     let cancellation_flag = registry.begin(&name)?;
+    let startup_errors =
+        startup_error_sender(startup_error.map(|channel| channel.channel_on(webview.clone())));
     let worker_name = name.clone();
     let worker_cancellation = Arc::clone(&cancellation_flag);
     let result = run_blocking(move || {
         let mut options = LaunchOptions::from_env(false);
         options.cancellation = Some(worker_cancellation);
+        options.startup_error_sender = startup_errors;
         core_launch_account(&config()?, &worker_name, &options).map_err(|err| err.to_string())
     })
     .await;
@@ -548,15 +579,20 @@ async fn launch_account(
 #[tauri::command]
 async fn launch_web_store(
     name: String,
+    startup_error: Option<tauri::ipc::JavaScriptChannelId>,
+    webview: tauri::Webview,
     cancellations: State<'_, LaunchCancellationRegistry>,
 ) -> Result<LaunchResult, String> {
     let registry = cancellations.inner().clone();
     let cancellation_flag = registry.begin(&name)?;
+    let startup_errors =
+        startup_error_sender(startup_error.map(|channel| channel.channel_on(webview.clone())));
     let worker_name = name.clone();
     let worker_cancellation = Arc::clone(&cancellation_flag);
     let result = run_blocking(move || {
         let mut options = LaunchOptions::from_env(false);
         options.cancellation = Some(worker_cancellation);
+        options.startup_error_sender = startup_errors;
         core_launch_chrome_web_store(&config()?, &worker_name, &options)
             .map_err(|err| err.to_string())
     })
