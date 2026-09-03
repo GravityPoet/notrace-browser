@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import {
   ArchiveRestore,
   CalendarClock,
@@ -329,6 +329,7 @@ const mockGroupOverrides = new Map<string, string | null>();
 const mockCommandCounts = new Map<string, number>();
 const mockCommandFailures = new Map<string, number>();
 const mockCancelledLaunches = new Set<string>();
+const mockStartupErrorCallbacks = new Map<string, Array<(message: string) => void>>();
 const mockTrashedOverrides = new Map<string, boolean>();
 const mockPermanentlyDeletedAccounts = new Set<string>();
 let mockChallengeAuditCancelled = false;
@@ -341,6 +342,7 @@ export function resetMockCommandsForTest() {
   mockCommandCounts.clear();
   mockCommandFailures.clear();
   mockCancelledLaunches.clear();
+  mockStartupErrorCallbacks.clear();
   mockTrashedOverrides.clear();
   mockPermanentlyDeletedAccounts.clear();
   mockChallengeAuditCancelled = false;
@@ -357,6 +359,13 @@ export function failNextMockCommandForTest(command: string) {
 
 export function cancelNextMockChallengeAuditForTest() {
   mockChallengeAuditCancelled = true;
+}
+
+/** Test-only hook for the delayed-denial path that the native Channel carries. */
+export function emitMockStartupErrorForTest(name: string, message: string, attemptIndex?: number) {
+  const callbacks = mockStartupErrorCallbacks.get(name) ?? [];
+  const index = attemptIndex ?? callbacks.length - 1;
+  callbacks[index]?.(message);
 }
 
 type AccountView = "active" | "trash";
@@ -594,6 +603,8 @@ export default function App() {
   const selectedNameRef = useRef<string>("");
   selectedNameRef.current = selected?.name ?? "";
   const launchInFlightRef = useRef<Set<string>>(new Set());
+  const launchAttemptSerialRef = useRef(0);
+  const launchAttemptRef = useRef<Map<string, number>>(new Map());
   const groupedAccounts = useMemo(() => {
     if (accountView === "trash") {
       return visibleAccounts.length > 0
@@ -2123,6 +2134,20 @@ export default function App() {
     }
     if (launchInFlightRef.current.has(account.name)) return;
     launchInFlightRef.current.add(account.name);
+    const attemptId = launchAttemptSerialRef.current + 1;
+    launchAttemptSerialRef.current = attemptId;
+    launchAttemptRef.current.set(account.name, attemptId);
+    let lateStartupError = false;
+    const startupError = createStartupErrorChannel((rawMessage) => {
+      if (launchAttemptRef.current.get(account.name) !== attemptId) return;
+      const message = errorMessage(rawMessage);
+      lateStartupError = true;
+      setLaunchStatus((current) => {
+        if (!current || current.accountName !== account.name || current.phase === "cancelled") return current;
+        return { ...current, phase: "failed" };
+      });
+      if (selectedNameRef.current === account.name) setError(message);
+    });
     setError("");
     setLaunchStatus({ accountName: account.name, target: "chatgpt", phase: "checking", startedAt: Date.now() });
     // The backend now performs the privacy/GeoIP preflight and launch in one
@@ -2130,7 +2155,12 @@ export default function App() {
     // round-trip while keeping the strict privacy gate in the core.
     setLaunchStatus((current) => current?.accountName === account.name ? { ...current, phase: "starting" } : current);
     try {
-      const result = await call<LaunchResult>("launch_account", { name: account.name });
+      const args: Record<string, unknown> = { name: account.name };
+      if (startupError) args.startupError = startupError;
+      const result = await call<LaunchResult>("launch_account", args);
+      // A denial can arrive through the channel before the invoke promise has
+      // settled. Never let the normal success continuation overwrite it.
+      if (lateStartupError) return;
       applyLaunchDiagnostics(result);
       setLaunchStatus((current) => current?.accountName === account.name
         ? { accountName: result.account, target: "chatgpt", phase: "opened", startedAt: current.startedAt, result }
@@ -2155,12 +2185,30 @@ export default function App() {
     }
     if (launchInFlightRef.current.has(account.name)) return;
     launchInFlightRef.current.add(account.name);
+    const attemptId = launchAttemptSerialRef.current + 1;
+    launchAttemptSerialRef.current = attemptId;
+    launchAttemptRef.current.set(account.name, attemptId);
+    let lateStartupError = false;
+    const startupError = createStartupErrorChannel((rawMessage) => {
+      if (launchAttemptRef.current.get(account.name) !== attemptId) return;
+      const message = errorMessage(rawMessage);
+      lateStartupError = true;
+      setWebStoreStatus((current) => current?.accountName === account.name ? null : current);
+      setLaunchStatus((current) => {
+        if (!current || current.accountName !== account.name || current.phase === "cancelled") return current;
+        return { ...current, phase: "failed" };
+      });
+      if (selectedNameRef.current === account.name) setError(message);
+    });
     setError("");
     setWebStoreStatus({ accountName: account.name, phase: "opening", startedAt: Date.now() });
     setLaunchStatus({ accountName: account.name, target: "web-store", phase: "checking", startedAt: Date.now() });
     setLaunchStatus((current) => current?.accountName === account.name ? { ...current, phase: "starting" } : current);
     try {
-      const result = await call<LaunchResult>("launch_web_store", { name: account.name });
+      const args: Record<string, unknown> = { name: account.name };
+      if (startupError) args.startupError = startupError;
+      const result = await call<LaunchResult>("launch_web_store", args);
+      if (lateStartupError) return;
       applyLaunchDiagnostics(result);
       setWebStoreStatus({ accountName: result.account, phase: "opened", result });
       setLaunchStatus((current) => current?.accountName === account.name
@@ -6211,6 +6259,13 @@ function shouldUseMockTauri() {
   return import.meta.env.DEV && !("__TAURI_INTERNALS__" in window);
 }
 
+type StartupErrorChannel = Pick<Channel<string>, "onmessage">;
+
+function createStartupErrorChannel(onmessage: (message: string) => void): StartupErrorChannel | undefined {
+  if (shouldUseMockTauri()) return { onmessage };
+  return new Channel<string>(onmessage);
+}
+
 async function mockInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   mockCommandCounts.set(command, (mockCommandCounts.get(command) ?? 0) + 1);
   const requestedName = String(args?.name ?? "");
@@ -6337,6 +6392,12 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
   }
   if (command === "launch_account" || command === "launch_web_store") {
     const name = String(args?.name ?? accounts[0].name);
+    const startupErrorChannel = args?.startupError as StartupErrorChannel | undefined;
+    if (startupErrorChannel) {
+      const callbacks = mockStartupErrorCallbacks.get(name) ?? [];
+      callbacks.push((message) => startupErrorChannel.onmessage(message));
+      mockStartupErrorCallbacks.set(name, callbacks);
+    }
     if (mockCancelledLaunches.delete(name)) {
       throw new Error("launch cancelled");
     }

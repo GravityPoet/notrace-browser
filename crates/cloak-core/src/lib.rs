@@ -58,13 +58,19 @@ const GEO_ATTEMPT_TIMEOUT_SECS: u64 = 4;
 const GEO_LOOKUP_ATTEMPTS: usize = 2;
 const MAX_ACCOUNT_NOTE_CHARS: usize = 1000;
 const BROWSER_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
-// CloakBrowser may finish its license handshake a little after the process
-// first appears (the observed denial path is about two seconds).  Keep the
-// process alive long enough to surface that result instead of returning a
-// false-success PID to the picker.
+// The conservative path still covers the observed delayed-denial window. The
+// Picker can use the native macOS readiness signal because it also receives a
+// bounded post-return denial notification from the core.
 const BROWSER_STARTUP_STABILITY: Duration = Duration::from_secs(3);
+const BROWSER_STARTUP_FAST_GRACE: Duration = Duration::from_millis(250);
 const BROWSER_STARTUP_POLL: Duration = Duration::from_millis(50);
 const BROWSER_EXIT_GRACE: Duration = Duration::from_millis(500);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupPolicy {
+    Fast,
+    Conservative,
+}
 
 /// Apple Silicon GPU renderer pool — base chips only, coherent with 8-core hardwareConcurrency.
 /// Pro/Max/Ultra variants excluded to avoid "M4 Max + 8 cores" inconsistency.
@@ -545,6 +551,10 @@ pub struct LaunchOptions {
     pub allow_privacy_fail: bool,
     pub preflight: PreflightMode,
     pub cancellation: Option<Arc<AtomicBool>>,
+    /// Optional UI bridge for denials that the official binary reports just
+    /// after its native application-ready signal. CLI callers leave this unset
+    /// and retain the conservative synchronous observation window.
+    pub startup_error_sender: Option<mpsc::Sender<String>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -577,6 +587,7 @@ impl LaunchOptions {
             allow_privacy_fail,
             preflight,
             cancellation: None,
+            startup_error_sender: None,
         }
     }
 
@@ -1412,6 +1423,18 @@ fn launch_plan(
     } else {
         None
     };
+    // The Picker supplies an error channel, so a keyed launch can return at
+    // native readiness and still surface a denial written a moment later. CLI
+    // and library callers omit the channel and keep the original synchronous
+    // grace period, preserving their error timing and semantics.
+    let startup_policy = if !is_keyed_browser_binary(&plan.browser_binary)
+        || already_running
+        || (options.startup_error_sender.is_some() && status_file.is_some())
+    {
+        StartupPolicy::Fast
+    } else {
+        StartupPolicy::Conservative
+    };
     let pid = match launch_browser_process(
         &plan.browser_binary,
         &plan.profile_path,
@@ -1421,6 +1444,7 @@ fn launch_plan(
             .flatten(),
         license_key.as_deref().map(|key| key.as_str()),
         status_file.as_deref(),
+        startup_policy,
     ) {
         Ok(pid) => pid,
         Err(err) => {
@@ -1428,6 +1452,21 @@ fn launch_plan(
             return Err(err);
         }
     };
+    if startup_policy == StartupPolicy::Fast && !already_running {
+        if let (Some(path), Some(sender)) =
+            (status_file.clone(), options.startup_error_sender.clone())
+        {
+            if spawn_startup_error_monitor(path.clone(), sender).is_err() {
+                // Thread creation is exceptionally unlikely, but do not turn
+                // it into a silent authorization false-success. Fall back to
+                // the same bounded observation synchronously.
+                if let Some(error) = wait_for_startup_denial(&path) {
+                    license::remove_status_file(Some(&path));
+                    return Err(error);
+                }
+            }
+        }
+    }
     let result = LaunchResult {
         account: plan.account.clone(),
         profile_path: plan.profile_path.clone(),
@@ -1472,9 +1511,17 @@ fn launch_browser_process(
     timezone: Option<&str>,
     license_key: Option<&str>,
     status_file: Option<&Path>,
+    startup_policy: StartupPolicy,
 ) -> Result<u32> {
     let Some(app_bundle) = macos_app_bundle_for_binary(browser_binary) else {
-        return launch_browser_direct(browser_binary, argv, timezone, license_key, status_file);
+        return launch_browser_direct(
+            browser_binary,
+            argv,
+            timezone,
+            license_key,
+            status_file,
+            startup_policy,
+        );
     };
 
     // LaunchServices makes Chromium, rather than whichever Picker/account tile
@@ -1514,7 +1561,7 @@ fn launch_browser_process(
         })));
     }
 
-    wait_for_macos_browser_startup(browser_binary, profile_path, status_file)
+    wait_for_macos_browser_startup(browser_binary, profile_path, status_file, startup_policy)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1525,8 +1572,16 @@ fn launch_browser_process(
     timezone: Option<&str>,
     license_key: Option<&str>,
     status_file: Option<&Path>,
+    startup_policy: StartupPolicy,
 ) -> Result<u32> {
-    launch_browser_direct(browser_binary, argv, timezone, license_key, status_file)
+    launch_browser_direct(
+        browser_binary,
+        argv,
+        timezone,
+        license_key,
+        status_file,
+        startup_policy,
+    )
 }
 
 fn launch_browser_direct(
@@ -1535,6 +1590,7 @@ fn launch_browser_direct(
     timezone: Option<&str>,
     license_key: Option<&str>,
     status_file: Option<&Path>,
+    startup_policy: StartupPolicy,
 ) -> Result<u32> {
     let mut command = Command::new(browser_binary);
     command.args(argv);
@@ -1553,7 +1609,11 @@ fn launch_browser_direct(
     let mut child = command.spawn()?;
     let pid = child.id();
     let started = Instant::now();
-    while started.elapsed() < BROWSER_STARTUP_STABILITY {
+    let startup_window = match startup_policy {
+        StartupPolicy::Fast => BROWSER_STARTUP_FAST_GRACE,
+        StartupPolicy::Conservative => BROWSER_STARTUP_STABILITY,
+    };
+    while started.elapsed() < startup_window {
         if let Some(code) = status_file.and_then(license::read_denial_code) {
             let _ = child.kill();
             let _ = child.wait();
@@ -1631,6 +1691,7 @@ fn wait_for_macos_browser_startup(
     browser_binary: &Path,
     profile_path: &Path,
     status_file: Option<&Path>,
+    startup_policy: StartupPolicy,
 ) -> Result<u32> {
     let deadline = Instant::now() + BROWSER_STARTUP_TIMEOUT;
     let mut stable_pid: Option<u32> = None;
@@ -1651,10 +1712,13 @@ fn wait_for_macos_browser_startup(
                 stable_pid = Some(pid);
                 stable_since.get_or_insert_with(Instant::now);
                 missing_since = None;
-                if stable_since
-                    .map(|started| started.elapsed() >= BROWSER_STARTUP_STABILITY)
-                    .unwrap_or(false)
-                {
+                let ready = match startup_policy {
+                    StartupPolicy::Fast => macos_process_finished_launching(pid),
+                    StartupPolicy::Conservative => stable_since
+                        .map(|started| started.elapsed() >= BROWSER_STARTUP_STABILITY)
+                        .unwrap_or(false),
+                };
+                if ready {
                     if let Some(code) = status_file.and_then(license::read_denial_code) {
                         return Err(license::denial_error(code).expect("validated denial code"));
                     }
@@ -1692,6 +1756,16 @@ fn wait_for_macos_browser_startup(
     }
 }
 
+#[cfg(target_os = "macos")]
+fn macos_process_finished_launching(pid: u32) -> bool {
+    // This is the same LaunchServices/AppKit signal used by macOS to indicate
+    // that an application has entered its main run loop. It is a stronger
+    // readiness boundary than merely seeing a Chromium PID, while avoiding a
+    // fixed sleep on the normal, preflight-validated path.
+    objc2_app_kit::NSRunningApplication::runningApplicationWithProcessIdentifier(pid as _)
+        .is_some_and(|application| application.isFinishedLaunching())
+}
+
 fn browser_exit_error(status: std::process::ExitStatus) -> CloakError {
     if let Some(code) = status.code() {
         if let Ok(code) = u8::try_from(code) {
@@ -1702,6 +1776,43 @@ fn browser_exit_error(status: std::process::ExitStatus) -> CloakError {
         return CloakError::BrowserStartup(format!("Chromium 在启动阶段退出（exit code {code}）"));
     }
     CloakError::BrowserStartup("Chromium 在启动阶段被信号终止".to_string())
+}
+
+/// Observe the status file after a fast Picker return. CloakBrowser performs
+/// part of its license handshake inside the launched process and can write a
+/// denial after the process has already entered its native run loop. Keeping
+/// this bounded monitor in the core lets the UI be responsive without turning
+/// that late denial into a silent false success. The file contains only the
+/// documented numeric code and is consumed on read; no key or browser data is
+/// exposed to the callback.
+fn spawn_startup_error_monitor(path: PathBuf, sender: mpsc::Sender<String>) -> io::Result<()> {
+    thread::Builder::new()
+        .name("cloak-startup-license-monitor".to_string())
+        .spawn(move || {
+            let deadline = Instant::now() + BROWSER_STARTUP_STABILITY;
+            while Instant::now() < deadline {
+                if let Some(code) = license::read_denial_code(&path) {
+                    if let Some(error) = license::denial_error(code) {
+                        let _ = sender.send(error.to_string());
+                    }
+                    return;
+                }
+                thread::sleep(BROWSER_STARTUP_POLL);
+            }
+            license::remove_status_file(Some(&path));
+        })
+        .map(|_| ())
+}
+
+fn wait_for_startup_denial(path: &Path) -> Option<CloakError> {
+    let deadline = Instant::now() + BROWSER_STARTUP_STABILITY;
+    while Instant::now() < deadline {
+        if let Some(code) = license::read_denial_code(path) {
+            return license::denial_error(code);
+        }
+        thread::sleep(BROWSER_STARTUP_POLL);
+    }
+    None
 }
 
 #[cfg(target_os = "macos")]
@@ -5548,13 +5659,59 @@ mod tests {
         fs::set_permissions(&browser, fs::Permissions::from_mode(0o700)).unwrap();
         let status_file = license::mint_status_file(dir.path()).expect("status path");
 
-        let result =
-            launch_browser_direct(&browser, &[], None, Some("fixture-key"), Some(&status_file));
+        let result = launch_browser_direct(
+            &browser,
+            &[],
+            None,
+            Some("fixture-key"),
+            Some(&status_file),
+            StartupPolicy::Conservative,
+        );
         assert!(matches!(
             result,
             Err(CloakError::LicenseDenied { code: 76, .. })
         ));
         license::remove_status_file(Some(&status_file));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fast_direct_launch_does_not_wait_for_the_conservative_grace_period() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let browser = dir.path().join("slow-but-running-browser");
+        fs::write(&browser, "#!/bin/sh\nexec sleep 5\n").unwrap();
+        fs::set_permissions(&browser, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let started = Instant::now();
+        let pid =
+            launch_browser_direct(&browser, &[], None, None, None, StartupPolicy::Fast).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "fast launch unexpectedly waited {:?}",
+            started.elapsed()
+        );
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status();
+    }
+
+    #[test]
+    fn startup_error_monitor_forwards_a_delayed_license_denial() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("denial.json");
+        let (sender, receiver) = mpsc::channel();
+        spawn_startup_error_monitor(path.clone(), sender).unwrap();
+
+        thread::sleep(Duration::from_millis(100));
+        fs::write(&path, "76").unwrap();
+        let message = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("monitor should forward the denial");
+        assert!(message.contains("exit code 76"));
+        assert!(!path.exists(), "monitor should consume the status file");
     }
 
     #[cfg(target_os = "macos")]
