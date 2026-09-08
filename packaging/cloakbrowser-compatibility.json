@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "reviewed_at": "2026-08-30",
+  "reviewed_at": "2026-09-08",
   "platform": "macos",
   "wrapper": {
     "package": "cloakbrowser",
-    "approved_versions": ["0.5.9"],
+    "approved_versions": ["0.5.10"],
     "node": ">=20.0.0",
     "license": "MIT",
-    "integrity": "sha512-vMLX6sxLoA9OWutHrT1h7fYKPm/YZdGcPaanOTXMimG4U9jg9wc2hqI/VsFo9Nzel/ab82nWZhfQal18tKw6pQ==",
-    "upstream_git_head": "0811704e7f5a5f67b5cc0b4a1f9b38810c7eb4d5",
+    "integrity": "sha512-Pzfi8WRAuXCk2GUKIpRZrLtQ/EaXfQ2t+N39fVGxxQfowRpyZB7qbsv0dYtmd+wuV/GK2aO1EBCcCV35TFVo2A==",
+    "upstream_git_head": "f04c23da285b3b3d3cf10c8f9d282e7adc1d52ce",
     "dependencies": {
       "tar": "^7.0.0"
     },

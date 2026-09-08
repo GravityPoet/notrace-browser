@@ -7,6 +7,6 @@
     "node": ">=20"
   },
   "dependencies": {
-    "cloakbrowser": "0.5.9"
+    "cloakbrowser": "0.5.10"
   }
 }
