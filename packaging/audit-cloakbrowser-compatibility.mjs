@@ -114,13 +114,14 @@ if (checkUpstream) {
   }
 
   // The changelog can lag a binary release (or contain an Unreleased section
-  // without a platform line). Prefer the official latest-release API when the
-  // matrix provides it, and require evidence that the release actually ships
-  // the macOS archive before accepting the pinned macOS version.
+  // without a platform line). Prefer the official latest-release API. A release
+  // for another platform may explicitly retain an older macOS Stable; verify
+  // that retained release's macOS archive before accepting the matrix.
   if (matrix.wrapper.upstream_release_api) {
-    let release;
-    try {
-      const response = await fetch(matrix.wrapper.upstream_release_api, {
+    const expected = matrix.wrapper.macos_stable_engine;
+    const macArchive = /cloakbrowser-darwin-(?:arm64|x64)\.tar\.gz/i;
+    const readRelease = async (url) => {
+      const response = await fetch(url, {
         headers: {
           Accept: "application/vnd.github+json",
           "User-Agent": "notrace-compatibility-audit",
@@ -128,20 +129,39 @@ if (checkUpstream) {
         signal: AbortSignal.timeout(30_000),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      release = await response.json();
+      const release = await response.json();
+      if (release?.draft || release?.prerelease) {
+        throw new Error("上游 Release 不是正式版本，必须人工复核矩阵");
+      }
+      return release;
+    };
+    let release;
+    try {
+      release = await readRelease(matrix.wrapper.upstream_release_api);
+      const latestVersion = release?.tag_name?.match(/[0-9]+(?:\.[0-9]+){3,4}/)?.[0];
+      const retainedVersion = release?.body?.match(
+        /\bmacOS\s+Stable\s+remains?\s+on\s+`([0-9]+(?:\.[0-9]+){3,4})`/i,
+      )?.[1];
+      if (retainedVersion && retainedVersion !== expected) {
+        fail(`macOS Stable 引擎漂移：upstream=${retainedVersion} matrix=${expected}`);
+      }
+      if (latestVersion && latestVersion !== expected && retainedVersion === expected
+          && !macArchive.test(release.body)
+          && matrix.wrapper.upstream_release_api.endsWith("/latest")) {
+        const retainedTag = release.tag_name.replace(latestVersion, retainedVersion);
+        release = await readRelease(matrix.wrapper.upstream_release_api.replace(
+          /\/latest$/, `/tags/${encodeURIComponent(retainedTag)}`,
+        ));
+      }
     } catch (error) {
-      fail(`无法读取上游最新 Release：${error instanceof Error ? error.message : String(error)}`);
+      fail(`无法核对上游 Release：${error instanceof Error ? error.message : String(error)}`);
     }
-    const expected = matrix.wrapper.macos_stable_engine;
     const releaseText = `${release?.name ?? ""}\n${release?.tag_name ?? ""}\n${release?.body ?? ""}`;
     const releaseVersion = release?.tag_name?.match(/[0-9]+(?:\.[0-9]+){3,4}/)?.[0];
-    if (release?.draft || release?.prerelease) {
-      fail("上游最新 Release 不是正式版本，必须人工复核矩阵");
-    }
     if (releaseVersion !== expected
         || !releaseText.includes(expected)
         || !/macOS/i.test(releaseText)
-        || !/cloakbrowser-darwin-(?:arm64|x64)\.tar\.gz/i.test(releaseText)) {
+        || !macArchive.test(releaseText)) {
       fail(`上游最新 Release 与 macOS Stable 矩阵不一致：release=${releaseVersion ?? "unknown"} matrix=${expected}`);
     }
   } else {
