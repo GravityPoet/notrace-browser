@@ -96,7 +96,7 @@ function harness({
       },
       click() {
         programmaticClicks += 1;
-        if (!hydrated || document.readyState !== "complete") return;
+        if (!hydrated) return;
         if (action === "auth") authVisible = true;
         if (action === "model") expanded = "true";
       },
@@ -105,9 +105,9 @@ function harness({
 
     return {
       button,
-      hydrate() {
+      hydrate({ reactBinding = true } = {}) {
         hydrated = true;
-        Object.defineProperty(button, "__reactProps$test", { value: {} });
+        if (reactBinding) Object.defineProperty(button, "__reactProps$test", { value: {} });
       },
       nativeClick() {
         const event = {
@@ -119,7 +119,7 @@ function harness({
           stopImmediatePropagation() { this.propagationStopped = true; },
         };
         documentListeners.get("click")?.(event);
-        if (!event.defaultPrevented && hydrated && document.readyState === "complete") {
+        if (!event.defaultPrevented && !event.propagationStopped && hydrated) {
           nativeClicks += 1;
           if (action === "auth") authVisible = true;
           if (action === "model") expanded = "true";
@@ -226,81 +226,78 @@ test("leaves normal and unrelated OpenAI auth pages untouched", () => {
   assert.equal(unrelatedPath.reloadCount(), 0);
 });
 
-test("replays one early login click after ChatGPT hydration completes", () => {
+test("does not intercept login or signup clicks before hydration", () => {
   const page = harness();
   const login = page.addButton({ text: "登录", testId: "login-button" });
+  const signup = page.addButton({ text: "免费注册", testId: "signup-button" });
 
-  const event = login.nativeClick();
-  assert.equal(event.defaultPrevented, true);
-  assert.equal(page.authVisible(), false);
-
-  login.hydrate();
+  for (const control of [login, signup]) {
+    const event = control.nativeClick();
+    assert.equal(event.defaultPrevented, false);
+    assert.equal(event.propagationStopped, false);
+    control.hydrate();
+  }
   page.setReadyState("complete");
-  page.advance(200);
-
-  assert.equal(login.programmaticClickCount(), 1);
-  assert.equal(page.authVisible(), true);
+  page.advance(10_000);
+  assert.equal(login.programmaticClickCount(), 0);
+  assert.equal(signup.programmaticClickCount(), 0);
+  assert.equal(page.authVisible(), false);
   assert.equal(page.reloadCount(), 0);
 });
 
-test("coalesces repeated early clicks instead of starving hydration", () => {
+for (const readyState of ["loading", "interactive", "complete"]) {
+  for (const reactBinding of [false, true]) {
+    test(`ready login and signup handlers respond immediately during ${readyState} (React marker: ${reactBinding})`, () => {
+      for (const [text, testId] of [["登录", "login-button"], ["免费注册", "signup-button"]]) {
+        const page = harness({ readyState });
+        const control = page.addButton({ text, testId });
+        control.hydrate({ reactBinding });
+
+        const event = control.nativeClick();
+        assert.equal(event.defaultPrevented, false);
+        assert.equal(event.propagationStopped, false);
+        assert.equal(control.nativeClickCount(), 1);
+        assert.equal(page.authVisible(), true);
+        page.setReadyState("complete");
+        page.advance(10_000);
+        assert.equal(control.programmaticClickCount(), 0);
+        assert.equal(page.reloadCount(), 0);
+      }
+    });
+  }
+}
+
+test("a fresh click after hydration is not trapped by an earlier click", () => {
   const page = harness();
   const login = page.addButton({ text: "登录", testId: "login-button" });
-
-  for (let index = 0; index < 20; index += 1) login.nativeClick();
-  login.hydrate();
-  page.setReadyState("complete");
-  page.advance(200);
-
-  assert.equal(login.programmaticClickCount(), 1);
-  assert.equal(page.authVisible(), true);
-  assert.equal(login.nativeClickCount(), 0);
-});
-
-test("leaves an already interactive login control untouched", () => {
-  const page = harness({ readyState: "complete", initialNow: 8_000 });
-  const login = page.addButton({ text: "登录", testId: "login-button" });
+  login.nativeClick();
   login.hydrate();
 
   const event = login.nativeClick();
-
   assert.equal(event.defaultPrevented, false);
+  assert.equal(event.propagationStopped, false);
   assert.equal(login.nativeClickCount(), 1);
-  assert.equal(login.programmaticClickCount(), 0);
   assert.equal(page.authVisible(), true);
+  page.advance(10_000);
+  assert.equal(login.programmaticClickCount(), 0);
 });
 
-test("replays the model selector after its handler is attached", () => {
-  const page = harness();
-  const model = page.addButton({
-    text: "ChatGPT",
-    testId: "model-switcher-dropdown-button",
-    action: "model",
-  });
-
-  model.nativeClick();
-  model.hydrate();
-  page.setReadyState("complete");
-  page.advance(200);
-
-  assert.equal(model.programmaticClickCount(), 1);
+test("model and provider controls receive original clicks without delayed duplicates", () => {
+  const page = harness({ readyState: "interactive" });
+  const model = page.addButton({ text: "ChatGPT", testId: "model-switcher-dropdown-button", action: "model" });
+  const provider = page.addButton({ text: "使用 Google 账户继续", dialog: true, action: "none" });
+  for (const control of [model, provider]) {
+    control.hydrate();
+    const event = control.nativeClick();
+    assert.equal(event.defaultPrevented, false);
+    assert.equal(event.propagationStopped, false);
+    assert.equal(control.nativeClickCount(), 1);
+  }
   assert.equal(model.expanded(), "true");
-});
-
-test("replays a server-rendered login-dialog button only once", () => {
-  const page = harness();
-  const provider = page.addButton({
-    text: "使用 Google 账户继续",
-    dialog: true,
-    action: "none",
-  });
-
-  provider.nativeClick();
-  provider.hydrate();
   page.setReadyState("complete");
-  page.advance(5_000);
-
-  assert.equal(provider.programmaticClickCount(), 1);
+  page.advance(10_000);
+  assert.equal(model.programmaticClickCount(), 0);
+  assert.equal(provider.programmaticClickCount(), 0);
   assert.equal(page.reloadCount(), 0);
 });
 
