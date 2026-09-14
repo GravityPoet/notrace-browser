@@ -1,3 +1,7 @@
+mod browser_processes;
+pub use browser_processes::{
+    browser_process_status, force_close_all_browsers, BrowserProcessStatus, ForceCloseResult,
+};
 mod license;
 mod profile_metadata;
 mod relay;
@@ -1411,6 +1415,7 @@ fn launch_plan(
         if let Some(key) = license_key.as_deref() {
             if is_keyed_browser_binary(&plan.browser_binary) {
                 ensure_license_seat_available(
+                    config,
                     key,
                     &plan.browser_binary,
                     options.cancellation.as_deref(),
@@ -1418,6 +1423,7 @@ fn launch_plan(
             }
         }
     }
+    ensure_launch_not_cancelled(options.cancellation.as_deref())?;
     let status_file = if is_keyed_browser_binary(&plan.browser_binary) {
         license::mint_status_file(&config.cloakbrowser_root)
     } else {
@@ -1637,6 +1643,7 @@ fn is_keyed_browser_binary(browser_binary: &Path) -> bool {
 }
 
 fn ensure_license_seat_available(
+    config: &CloakConfig,
     license_key: &str,
     browser_binary: &Path,
     cancellation: Option<&AtomicBool>,
@@ -1644,21 +1651,27 @@ fn ensure_license_seat_available(
     license::wait_for_available_seat(
         cancellation,
         || license::query_session_seats(license_key),
-        || browser_has_primary_process(browser_binary),
+        || browser_has_primary_process(config, browser_binary),
     )
 }
 
-/// Return whether a primary Cloak Chromium process for this binary is already
-/// alive. Helper/renderer processes are intentionally ignored. This check is
-/// only used to distinguish a real local holder from a stale remote lease; it
-/// never attempts to kill or alter a process.
-fn browser_has_primary_process(browser_binary: &Path) -> Result<bool> {
-    let listing = running_process_command_lines()?;
-    Ok(listing
-        .lines()
-        .any(|line| command_line_runs_browser(line, browser_binary)))
+fn browser_has_primary_process(config: &CloakConfig, browser_binary: &Path) -> Result<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = browser_binary;
+        let status = browser_process_status(config)?;
+        Ok(status.browser_count + status.helper_count > 0)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = config;
+        Ok(running_process_command_lines()?
+            .lines()
+            .any(|line| command_line_runs_browser(line, browser_binary)))
+    }
 }
 
+#[cfg(any(test, not(target_os = "macos")))]
 fn command_line_runs_browser(command: &str, browser_binary: &Path) -> bool {
     let command = command.trim_start();
     let executable = browser_binary.to_string_lossy();

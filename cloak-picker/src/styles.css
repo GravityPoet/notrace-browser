@@ -135,7 +135,26 @@ summary:focus-visible {
 
 .topActions {
   justify-content: flex-end;
-  flex: 0 0 200px;
+  flex: 0 0 auto;
+}
+
+.browserProcessCount {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.forceCloseButton {
+  min-width: 92px;
+  border-color: rgba(217, 45, 32, 0.28);
+  background: rgba(255, 244, 242, 0.9);
+  color: var(--danger);
+}
+
+.forceCloseButton:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: #a51f14;
 }
 
 .manageMenuWrap {

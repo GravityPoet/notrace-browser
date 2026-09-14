@@ -77,6 +77,7 @@ node -e '
     "path-ellipsis-copy-source",
     "path-copy-action",
     "runtime-source-provenance",
+    "close-all-native-command",
     "migration-tab-keyboard-aria-controls",
   ];
   const missing = required.filter((check) => !report.checks.includes(check));

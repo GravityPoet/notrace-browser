@@ -158,6 +158,15 @@ type LaunchStatus = {
   result?: LaunchResult;
 };
 
+type ForceCloseResult = {
+  closed: number;
+  force_killed: number;
+  remaining: number;
+  seats: { active: number; limit: number | null } | null;
+};
+
+type BrowserProcessStatus = { browser_count: number; helper_count: number };
+
 type ChallengeAuditResult = {
   passed: boolean;
   cancelled?: boolean;
@@ -334,6 +343,12 @@ const mockTrashedOverrides = new Map<string, boolean>();
 const mockPermanentlyDeletedAccounts = new Set<string>();
 let mockChallengeAuditCancelled = false;
 let mockWorkspaceCancellation = false;
+const mockRunningAccounts = new Set<string>();
+let mockCloseSeats: ForceCloseResult["seats"] = { active: 0, limit: 1 };
+
+export function setMockCloseSeatsForTest(seats: ForceCloseResult["seats"]) {
+  mockCloseSeats = seats;
+}
 
 export function resetMockCommandsForTest() {
   mockMarkOverrides.clear();
@@ -347,6 +362,8 @@ export function resetMockCommandsForTest() {
   mockPermanentlyDeletedAccounts.clear();
   mockChallengeAuditCancelled = false;
   mockWorkspaceCancellation = false;
+  mockRunningAccounts.clear();
+  mockCloseSeats = { active: 0, limit: 1 };
 }
 
 export function mockCommandCountForTest(command: string) {
@@ -533,6 +550,10 @@ export default function App() {
   const [bulkSelectedNames, setBulkSelectedNames] = useState<string[]>([]);
   const [bulkActionMenuOpen, setBulkActionMenuOpen] = useState(false);
   const [bulkStatus, setBulkStatus] = useState("");
+  const [forceCloseStatus, setForceCloseStatus] = useState("");
+  const [forceCloseBusy, setForceCloseBusy] = useState(false);
+  const forceCloseRef = useRef(false);
+  const [browserStatus, setBrowserStatus] = useState<BrowserProcessStatus | null>(null);
   const [groupContextMenu, setGroupContextMenu] = useState<GroupContextMenuState | null>(null);
   const [accountContextMenu, setAccountContextMenu] = useState<AccountContextMenuState | null>(null);
   const groupPointerDragRef = useRef<GroupPointerDrag | null>(null);
@@ -683,6 +704,41 @@ export default function App() {
       return null;
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function forceCloseAllBrowsers() {
+    if (forceCloseRef.current || busy) return;
+    forceCloseRef.current = true;
+    setForceCloseBusy(true);
+    setForceCloseStatus("正在关闭所有 CloakBrowser 窗口及后台进程…");
+    setBulkStatus("");
+    setError("");
+    // Invalidate old promises and delayed-denial callbacks before cancellation.
+    launchAttemptRef.current.clear();
+    setLaunchStatus(null);
+    setWebStoreStatus(null);
+    try {
+      const result = await call<ForceCloseResult>("force_close_all_browsers");
+      if (result.remaining > 0) {
+        setForceCloseStatus("");
+        setError(`仍有 ${result.remaining} 个 CloakBrowser 进程未退出，请再次关闭。`);
+      } else {
+        setBrowserStatus({ browser_count: 0, helper_count: 0 });
+        const closed = result.closed > 0 ? `已关闭所有窗口，清理 ${result.closed} 个进程。` : "本机已无 CloakBrowser 窗口及后台进程。";
+        const seatsFull = result.seats?.limit != null && result.seats.active >= result.seats.limit;
+        setForceCloseStatus(seatsFull
+          ? `${closed}上游仍显示席位占用 ${result.seats?.active}/${result.seats?.limit}，请稍后重试启动。新建账号可正常使用。`
+          : result.seats
+            ? `${closed}席位已可用，可以重新启动或新建账号。`
+            : `${closed}可以重新启动或新建账号；上游席位暂时无法查询。`);
+      }
+    } catch (caught) {
+      setForceCloseStatus("");
+      setError(`关闭浏览器失败：${errorMessage(caught)}`);
+    } finally {
+      forceCloseRef.current = false;
+      setForceCloseBusy(false);
     }
   }
 
@@ -979,6 +1035,33 @@ export default function App() {
     window.addEventListener("resize", clampSidebarToWorkspace);
     return () => window.removeEventListener("resize", clampSidebarToWorkspace);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let checking = false;
+    async function check() {
+      if (checking || forceCloseRef.current) return;
+      checking = true;
+      try {
+        const next = await call<BrowserProcessStatus>("browser_process_status");
+        if (!cancelled && !forceCloseRef.current) setBrowserStatus(next);
+      } catch {
+        if (!cancelled) setBrowserStatus(null);
+      } finally {
+        checking = false;
+      }
+    }
+    void check();
+    const timer = window.setInterval(() => void check(), 2000);
+    window.addEventListener("focus", check);
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", check); };
+  }, []);
+
+  useEffect(() => {
+    if (!forceCloseStatus || forceCloseBusy) return;
+    const timer = window.setTimeout(() => setForceCloseStatus(""), 10000);
+    return () => window.clearTimeout(timer);
+  }, [forceCloseStatus, forceCloseBusy]);
 
   useEffect(() => {
     if (!error) return;
@@ -2125,6 +2208,8 @@ export default function App() {
   }
 
   async function launchAccount(account: Account) {
+    if (forceCloseRef.current) return;
+    setForceCloseStatus("");
     // A row launches on double click, which bypasses the button's disabled
     // state. Without this guard the second call cancels the first, so the user
     // is told "启动已取消" while a third launch quietly opens the browser.
@@ -2160,12 +2245,13 @@ export default function App() {
       const result = await call<LaunchResult>("launch_account", args);
       // A denial can arrive through the channel before the invoke promise has
       // settled. Never let the normal success continuation overwrite it.
-      if (lateStartupError) return;
+      if (lateStartupError || launchAttemptRef.current.get(account.name) !== attemptId) return;
       applyLaunchDiagnostics(result);
       setLaunchStatus((current) => current?.accountName === account.name
         ? { accountName: result.account, target: "chatgpt", phase: "opened", startedAt: current.startedAt, result }
         : current);
     } catch (caught) {
+      if (launchAttemptRef.current.get(account.name) !== attemptId) return;
       const message = errorMessage(caught);
       const cancelled = isLaunchCancelledError(message);
       setLaunchStatus((current) => current?.accountName === account.name
@@ -2178,6 +2264,8 @@ export default function App() {
   }
 
   async function launchWebStore(account: Account) {
+    if (forceCloseRef.current) return;
+    setForceCloseStatus("");
     if (account.trashed) return;
     if (plan?.account === account.name && plan.runtime.blocks_launch) {
       setError(plan.runtime.message);
@@ -2208,13 +2296,14 @@ export default function App() {
       const args: Record<string, unknown> = { name: account.name };
       if (startupError) args.startupError = startupError;
       const result = await call<LaunchResult>("launch_web_store", args);
-      if (lateStartupError) return;
+      if (lateStartupError || launchAttemptRef.current.get(account.name) !== attemptId) return;
       applyLaunchDiagnostics(result);
       setWebStoreStatus({ accountName: result.account, phase: "opened", result });
       setLaunchStatus((current) => current?.accountName === account.name
         ? { accountName: result.account, target: "web-store", phase: "opened", startedAt: current.startedAt, result }
         : current);
     } catch (caught) {
+      if (launchAttemptRef.current.get(account.name) !== attemptId) return;
       const message = errorMessage(caught);
       const cancelled = isLaunchCancelledError(message);
       setWebStoreStatus(null);
@@ -2716,6 +2805,20 @@ export default function App() {
           </div>
         </div>
         <div className="topActions">
+          <span className="browserProcessCount" title="按进程统计；关闭窗口后后台进程仍可能短暂保留">
+            {browserStatus ? `运行中 ${browserStatus.browser_count}${browserStatus.helper_count > 0 ? ` · 后台 ${browserStatus.helper_count}` : ""}` : "运行状态未知"}
+          </span>
+          <button
+            aria-label="强制关闭所有 CloakBrowser 窗口"
+            className="secondaryButton dangerText forceCloseButton"
+            disabled={busy || forceCloseBusy}
+            title="关闭所有由此选择器管理的 CloakBrowser 窗口；未保存内容可能丢失"
+            type="button"
+            onClick={() => void forceCloseAllBrowsers()}
+          >
+            {forceCloseBusy ? <Loader2 aria-hidden="true" className="spin" size={14} /> : <X aria-hidden="true" size={14} />}
+            {forceCloseBusy ? "关闭中…" : "强制关闭所有窗口"}
+          </button>
           <button className="primaryButton" disabled={busy} onClick={(event) => openCreateDialog(event.currentTarget)}>
             <Plus size={15} />
             新建
@@ -3292,7 +3395,7 @@ export default function App() {
                       </button>
                       <button
                         className="launchButton"
-                        disabled={busy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "chatgpt")}
+                        disabled={busy || forceCloseBusy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "chatgpt")}
                         title={runtimeLaunchBlocked ? plan?.runtime.message : "启动账号但保持回收站状态"}
                         onClick={() => void (
                           launchStatusIsPending && launchStatus?.target === "chatgpt"
@@ -3310,7 +3413,7 @@ export default function App() {
                     <div className="detailHeaderActions">
                       <button
                         className="secondaryButton"
-                        disabled={busy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "web-store")}
+                        disabled={busy || forceCloseBusy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "web-store")}
                         title={runtimeLaunchBlocked ? plan?.runtime.message : `用 ${selected.name} 打开 Chrome Web Store`}
                         onClick={() => void (
                           launchStatusIsPending && launchStatus?.target === "web-store"
@@ -3323,7 +3426,7 @@ export default function App() {
                       </button>
                       <button
                         className="launchButton"
-                        disabled={busy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "chatgpt")}
+                        disabled={busy || forceCloseBusy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "chatgpt")}
                         title={runtimeLaunchBlocked ? plan?.runtime.message : "启动账号"}
                         onClick={() => void (
                           launchStatusIsPending && launchStatus?.target === "chatgpt"
@@ -3681,13 +3784,19 @@ export default function App() {
         </div>
       ) : null}
       {error && !dialog ? <div className="toast errorToast" role="alert">{error}</div> : null}
-      {bulkStatus && !dialog && !error && !loadError ? (
+      {forceCloseStatus && !dialog && !error ? (
+        <div className="toast successToast" role="status" aria-live="polite" aria-atomic="true">
+          {forceCloseBusy ? <Loader2 aria-hidden="true" className="spin" size={14} /> : <Check aria-hidden="true" size={14} />}
+          {forceCloseStatus}
+        </div>
+      ) : null}
+      {bulkStatus && !forceCloseStatus && !dialog && !error && !loadError ? (
         <div className="toast successToast" role="status" aria-live="polite" aria-atomic="true">
           <Check aria-hidden="true" size={14} />
           {bulkStatus}
         </div>
       ) : null}
-      {copyAnnouncement && !bulkStatus && !dialog && !error && !loadError ? (
+      {copyAnnouncement && !forceCloseStatus && !bulkStatus && !dialog && !error && !loadError ? (
         <div className="toast copyToast accountCopyStatus" role="status" aria-live="polite" aria-atomic="true">
           <Check aria-hidden="true" size={14} />
           {copyAnnouncement}
@@ -6290,6 +6399,12 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
     mockCommandFailures.set(command, failures - 1);
     throw new Error(`mock ${command} failed`);
   }
+  if (command === "browser_process_status") return { browser_count: mockRunningAccounts.size, helper_count: 0 } as T;
+  if (command === "force_close_all_browsers") {
+    const closed = mockRunningAccounts.size;
+    mockRunningAccounts.clear();
+    return { closed, force_killed: 0, remaining: 0, seats: mockCloseSeats } as T;
+  }
   const accounts = mockAccounts();
   if (command === "run_challenge_audit") {
     const cancelled = mockChallengeAuditCancelled;
@@ -6403,6 +6518,7 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
     }
     const account = accounts.find((item) => item.name === name) ?? accounts[0];
     const plan = mockLaunchPlan(account, true);
+    mockRunningAccounts.add(account.name);
     return {
       account: account.name,
       profile_path: account.profile_path,
@@ -6908,7 +7024,7 @@ export function errorMessage(caught: unknown) {
     return "备注内容无效：最多 1000 个字符，请移除不可见控制字符。";
   }
   if (raw.includes("exit code 76") || raw.includes("session limit reached for the current plan")) {
-    return "CloakBrowser 免费席位仍被上游占用；本机未检测到可关闭的浏览器进程。请等待服务端租约回收后重试。";
+    return "CloakBrowser 拒绝启动：当前许可的并发席位已满。可点顶部“强制关闭所有窗口”清理本机实例并刷新席位，然后重试。";
   }
   if (raw.includes("exit code 77") || raw.includes("license key is invalid, expired, or missing")) {
     return "CloakBrowser license key 无效、已过期或未找到，请检查 ~/.cloakbrowser/license.key。";
@@ -6920,10 +7036,10 @@ export function errorMessage(caught: unknown) {
     return "CloakBrowser license 配置目录不可写，请检查 ~/.cloakbrowser 权限。";
   }
   if (raw.includes("CloakBrowser license session limit reached while another local browser is running")) {
-    return "已有其他 CloakBrowser 窗口占用免费席位，请先关闭后再启动此账号。";
+    return "已有其他 CloakBrowser 实例占用席位（关闭窗口后也可能仍在后台运行）。请点顶部“强制关闭所有窗口”后重试。";
   }
   if (raw.includes("CloakBrowser license session is still held by the server")) {
-    return "服务端仍保留一个旧席位租约，本机没有对应浏览器进程；等待自动回收后再试。";
+    return "本机已无 CloakBrowser 实例，但上游仍报告席位占满。可点“强制关闭所有窗口”重新检查；若其他设备正在使用同一许可，请先关闭，旧席位租约需等待上游回收。";
   }
   if (raw.startsWith("browser exited during startup:")) {
     return "浏览器在启动阶段退出，未能保持稳定进程；请稍后重试。";
