@@ -242,6 +242,25 @@ const NATIVE_E2E_DRIVER: &str = r#"
     }
     checks.push('runtime-source-provenance');
 
+    const closeButton = await waitFor(
+      () => document.querySelector('button[aria-label="强制关闭所有 CloakBrowser 窗口"]'),
+      '强制关闭所有窗口入口',
+    );
+    const closeBounds = closeButton.getBoundingClientRect();
+    if (closeBounds.width < 60 || closeBounds.right > window.innerWidth || closeBounds.left < 0) {
+      throw new Error('强制关闭按钮没有完整显示');
+    }
+    closeButton.focus();
+    closeButton.click();
+    await waitFor(
+      () => document.body.textContent.includes('本机已无 CloakBrowser 窗口及后台进程') && !closeButton.disabled,
+      '原生关闭命令与零进程结果',
+    );
+    if (!document.querySelector('.browserProcessCount')?.textContent.includes('运行中 0')) {
+      throw new Error('关闭后运行状态没有归零');
+    }
+    checks.push('close-all-native-command');
+
     const manageButton = Array.from(document.querySelectorAll('button')).find(
       (button) => button.textContent?.trim().startsWith('管理'),
     );

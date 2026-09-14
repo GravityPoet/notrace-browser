@@ -9,6 +9,7 @@ import App, {
   failNextMockCommandForTest,
   mockCommandCountForTest,
   resetMockCommandsForTest,
+  setMockCloseSeatsForTest,
 } from "../src/App";
 
 declare global {
@@ -185,13 +186,54 @@ describe("Cloak Picker dialog regressions", () => {
   it("explains license denials without calling them a generic browser crash", () => {
     expect(errorMessage(new Error(
       "CloakBrowser license denied (exit code 76): session limit reached for the current plan",
-    ))).toContain("上游占用");
+    ))).toContain("强制关闭");
     expect(errorMessage(new Error(
       "CloakBrowser license session limit reached while another local browser is running",
-    ))).toContain("已有其他 CloakBrowser 窗口");
+    ))).toContain("已有其他 CloakBrowser 实例");
     expect(errorMessage(new Error(
       "CloakBrowser license session is still held by the server; no local browser process was found",
     ))).toContain("旧席位租约");
+  });
+
+  it("offers a managed-browser force-close action and reports a clean rescan", async () => {
+    await settle(180);
+    const forceClose = buttonWithText("强制关闭所有窗口");
+    expect(forceClose.getAttribute("aria-label")).toContain("强制关闭所有");
+    await click(forceClose);
+    await settle(120);
+    expect(document.body.textContent).toContain("本机已无 CloakBrowser 窗口及后台进程");
+    expect(mockCommandCountForTest("force_close_all_browsers")).toBe(1);
+  });
+
+  it("clears old launch state and delayed denials after closing, then launches again", async () => {
+    const name = document.querySelector(".detail h1")?.textContent ?? "";
+    await click(buttonWithText("启动"));
+    await settle(150);
+    await click(buttonWithText("强制关闭所有窗口"));
+    expect(buttonWithText("启动").disabled).toBe(true);
+    await settle(150);
+    expect(document.querySelector(".launchStatus")).toBeNull();
+    expect(document.body.textContent).toContain("席位已可用");
+    await act(async () => emitMockStartupErrorForTest(name, "old denial"));
+    expect(document.body.textContent).not.toContain("old denial");
+    await click(buttonWithText("启动"));
+    await settle(150);
+    expect(document.querySelector(".launchStatus")?.textContent).toContain("已启动");
+  });
+
+  it("distinguishes a remote occupied seat and a failed close from a clean local result", async () => {
+    setMockCloseSeatsForTest({ active: 1, limit: 1 });
+    await click(buttonWithText("强制关闭所有窗口"));
+    await settle(150);
+    expect(document.body.textContent).toContain("上游仍显示席位占用 1/1");
+    expect(document.body.textContent).not.toContain("席位已可用");
+    failNextMockCommandForTest("force_close_all_browsers");
+    await click(buttonWithText("强制关闭所有窗口"));
+    await settle(150);
+    expect(document.body.textContent).toContain("关闭浏览器失败");
+    expect(buttonWithText("强制关闭所有窗口").disabled).toBe(false);
+    await click(buttonWithText("新建"));
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
   function groupFilterLabels(): string[] {

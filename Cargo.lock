@@ -525,6 +525,7 @@ dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
  "fs4",
+ "libc",
  "objc2-app-kit",
  "percent-encoding",
  "rand 0.8.6",

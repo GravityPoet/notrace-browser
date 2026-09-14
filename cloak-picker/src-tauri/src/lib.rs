@@ -12,8 +12,8 @@ use cloak_core::{
     set_account_trashed as core_set_account_trashed, set_group as core_set_group,
     set_mark as core_set_mark, set_note as core_set_note, set_proxy as core_set_proxy,
     set_region as core_set_region, toggle_locale as core_toggle_locale, Account, CloakConfig,
-    LaunchOptions, LaunchPlan, LaunchResult, WorkspaceExportSummary, WorkspaceImportMapping,
-    WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
+    ForceCloseResult, LaunchOptions, LaunchPlan, LaunchResult, WorkspaceExportSummary,
+    WorkspaceImportMapping, WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
 };
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -78,6 +78,15 @@ struct PickerInstanceGuard {
 #[derive(Clone, Default)]
 struct LaunchCancellationRegistry {
     active: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    closing_all: Arc<AtomicBool>,
+}
+
+struct BrowserCloseGuard(LaunchCancellationRegistry);
+
+impl Drop for BrowserCloseGuard {
+    fn drop(&mut self) {
+        self.0.closing_all.store(false, Ordering::Release);
+    }
 }
 
 #[derive(Clone, Default)]
@@ -131,6 +140,9 @@ impl LaunchCancellationRegistry {
             .active
             .lock()
             .map_err(|_| "启动取消状态已损坏".to_string())?;
+        if self.closing_all.load(Ordering::Acquire) {
+            return Err("正在关闭所有浏览器，请完成后再启动".to_string());
+        }
         if let Some(previous) = active.remove(name) {
             previous.store(true, Ordering::Release);
         }
@@ -161,6 +173,38 @@ impl LaunchCancellationRegistry {
         };
         cancellation_flag.store(true, Ordering::Release);
         Ok(true)
+    }
+
+    fn begin_close_all(&self) -> Result<BrowserCloseGuard, String> {
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| "启动取消状态已损坏".to_string())?;
+        if self.closing_all.swap(true, Ordering::AcqRel) {
+            return Err("正在关闭所有浏览器".to_string());
+        }
+        for flag in active.values() {
+            flag.store(true, Ordering::Release);
+        }
+        Ok(BrowserCloseGuard(self.clone()))
+    }
+
+    fn wait_for_launches_to_stop(&self) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            if self
+                .active
+                .lock()
+                .map_err(|_| "启动取消状态已损坏".to_string())?
+                .is_empty()
+            {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("启动任务尚未停止，请稍后再次关闭".to_string());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
 }
 
@@ -615,6 +659,24 @@ async fn account_is_running(name: String) -> Result<bool, String> {
         .await
 }
 
+#[tauri::command]
+async fn force_close_all_browsers(
+    cancellations: State<'_, LaunchCancellationRegistry>,
+) -> Result<ForceCloseResult, String> {
+    let guard = cancellations.begin_close_all()?;
+    run_blocking(move || {
+        guard.0.wait_for_launches_to_stop()?;
+        cloak_core::force_close_all_browsers(&config()?).map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn browser_process_status() -> Result<cloak_core::BrowserProcessStatus, String> {
+    run_blocking(|| cloak_core::browser_process_status(&config()?).map_err(|err| err.to_string()))
+        .await
+}
+
 /// WebKit can expose `navigator.clipboard` without ever settling its promise
 /// in a signed native window. Keep the clipboard boundary native and pass the
 /// value through stdin so paths never enter a shell command line.
@@ -900,6 +962,8 @@ pub fn run() {
             launch_web_store,
             cancel_launch,
             account_is_running,
+            force_close_all_browsers,
+            browser_process_status,
             copy_to_clipboard,
             run_challenge_audit,
             complete_native_e2e
@@ -1042,6 +1106,22 @@ mod tests {
         assert!(second.load(Ordering::Acquire));
         registry.finish("work", &second);
         assert!(!registry.cancel("work").unwrap());
+    }
+
+    #[test]
+    fn close_all_cancels_pending_launches_and_blocks_new_ones_until_finished() {
+        let registry = LaunchCancellationRegistry::default();
+        let first = registry.begin("one").unwrap();
+        let second = registry.begin("two").unwrap();
+        let guard = registry.begin_close_all().unwrap();
+        assert!(first.load(Ordering::Acquire));
+        assert!(second.load(Ordering::Acquire));
+        assert!(registry.begin("three").is_err());
+        registry.finish("one", &first);
+        registry.finish("two", &second);
+        registry.wait_for_launches_to_stop().unwrap();
+        drop(guard);
+        assert!(registry.begin("three").is_ok());
     }
 
     #[test]
