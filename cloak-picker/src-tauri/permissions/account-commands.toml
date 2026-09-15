@@ -29,6 +29,7 @@ commands.allow = [
   "account_is_running",
   "force_close_all_browsers",
   "browser_process_status",
+  "license_session_status",
   "copy_to_clipboard",
   "run_challenge_audit",
   "complete_native_e2e",

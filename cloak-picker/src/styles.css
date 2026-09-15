@@ -2022,6 +2022,15 @@ button:disabled {
   color: #13713b;
 }
 
+.warningToast {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  border: 1px solid var(--warning-border);
+  background: var(--warning-bg);
+  color: #8a4b08;
+}
+
 .toastAction {
   margin-left: 10px;
   padding: 2px 8px;

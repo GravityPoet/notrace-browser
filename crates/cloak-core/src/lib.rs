@@ -1,6 +1,7 @@
 mod browser_processes;
 pub use browser_processes::{
-    browser_process_status, force_close_all_browsers, BrowserProcessStatus, ForceCloseResult,
+    browser_process_status, force_close_all_browsers, license_session_status, BrowserProcessStatus,
+    ForceCloseResult, SeatUsage,
 };
 mod license;
 mod profile_metadata;
