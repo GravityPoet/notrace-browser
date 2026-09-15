@@ -192,7 +192,7 @@ describe("Cloak Picker dialog regressions", () => {
     ))).toContain("已有其他 CloakBrowser 实例");
     expect(errorMessage(new Error(
       "CloakBrowser license session is still held by the server; no local browser process was found",
-    ))).toContain("旧席位租约");
+    ))).toContain("自动回收");
   });
 
   it("offers a managed-browser force-close action and reports a clean rescan", async () => {
@@ -235,6 +235,17 @@ describe("Cloak Picker dialog regressions", () => {
     await click(buttonWithText("新建"));
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
   });
+
+  it("keeps stale seat recovery visible until the upstream count clears", async () => {
+    setMockCloseSeatsForTest({ active: 1, limit: 1 });
+    await click(buttonWithText("强制关闭所有窗口"));
+    await settle(150);
+    expect(document.querySelector(".warningToast")?.textContent).toContain("自动复查");
+    setMockCloseSeatsForTest({ active: 0, limit: 1 });
+    await settle(5300);
+    expect(document.body.textContent).toContain("上游席位已释放，可以启动浏览器了");
+    expect(document.querySelector(".warningToast")).toBeNull();
+  }, 12_000);
 
   function groupFilterLabels(): string[] {
     return Array.from(document.querySelectorAll<HTMLElement>(".groupFilterButton[data-group-label]"))

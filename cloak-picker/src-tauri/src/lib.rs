@@ -12,7 +12,7 @@ use cloak_core::{
     set_account_trashed as core_set_account_trashed, set_group as core_set_group,
     set_mark as core_set_mark, set_note as core_set_note, set_proxy as core_set_proxy,
     set_region as core_set_region, toggle_locale as core_toggle_locale, Account, CloakConfig,
-    ForceCloseResult, LaunchOptions, LaunchPlan, LaunchResult, WorkspaceExportSummary,
+    ForceCloseResult, LaunchOptions, LaunchPlan, LaunchResult, SeatUsage, WorkspaceExportSummary,
     WorkspaceImportMapping, WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
 };
 use std::collections::HashMap;
@@ -677,6 +677,11 @@ async fn browser_process_status() -> Result<cloak_core::BrowserProcessStatus, St
         .await
 }
 
+#[tauri::command]
+async fn license_session_status() -> Result<Option<SeatUsage>, String> {
+    run_blocking(|| Ok(cloak_core::license_session_status(&config()?))).await
+}
+
 /// WebKit can expose `navigator.clipboard` without ever settling its promise
 /// in a signed native window. Keep the clipboard boundary native and pass the
 /// value through stdin so paths never enter a shell command line.
@@ -964,6 +969,7 @@ pub fn run() {
             account_is_running,
             force_close_all_browsers,
             browser_process_status,
+            license_session_status,
             copy_to_clipboard,
             run_challenge_audit,
             complete_native_e2e

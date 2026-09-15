@@ -165,6 +165,8 @@ type ForceCloseResult = {
   seats: { active: number; limit: number | null } | null;
 };
 
+type SeatUsage = { active: number; limit: number | null };
+
 type BrowserProcessStatus = { browser_count: number; helper_count: number };
 
 type ChallengeAuditResult = {
@@ -554,6 +556,7 @@ export default function App() {
   const [forceCloseBusy, setForceCloseBusy] = useState(false);
   const forceCloseRef = useRef(false);
   const [browserStatus, setBrowserStatus] = useState<BrowserProcessStatus | null>(null);
+  const [seatRecovery, setSeatRecovery] = useState<SeatUsage | null>(null);
   const [groupContextMenu, setGroupContextMenu] = useState<GroupContextMenuState | null>(null);
   const [accountContextMenu, setAccountContextMenu] = useState<AccountContextMenuState | null>(null);
   const groupPointerDragRef = useRef<GroupPointerDrag | null>(null);
@@ -727,8 +730,9 @@ export default function App() {
         setBrowserStatus({ browser_count: 0, helper_count: 0 });
         const closed = result.closed > 0 ? `已关闭所有窗口，清理 ${result.closed} 个进程。` : "本机已无 CloakBrowser 窗口及后台进程。";
         const seatsFull = result.seats?.limit != null && result.seats.active >= result.seats.limit;
+        setSeatRecovery(seatsFull ? result.seats : null);
         setForceCloseStatus(seatsFull
-          ? `${closed}上游仍显示席位占用 ${result.seats?.active}/${result.seats?.limit}，请稍后重试启动。新建账号可正常使用。`
+          ? `${closed}上游仍显示席位占用 ${result.seats?.active}/${result.seats?.limit}。选择器会自动复查，席位释放后再启动。`
           : result.seats
             ? `${closed}席位已可用，可以重新启动或新建账号。`
             : `${closed}可以重新启动或新建账号；上游席位暂时无法查询。`);
@@ -854,6 +858,37 @@ export default function App() {
   useEffect(() => {
     void run(() => refresh(undefined, "active"));
   }, []);
+
+  const seatRecoveryActive = seatRecovery !== null;
+  useEffect(() => {
+    if (!seatRecoveryActive) return;
+    let cancelled = false;
+    let checking = false;
+    async function checkSeat() {
+      if (checking || forceCloseRef.current) return;
+      checking = true;
+      try {
+        const next = await call<SeatUsage | null>("license_session_status");
+        if (cancelled || forceCloseRef.current || !next) return;
+        const available = next.limit === null || next.active < next.limit;
+        if (available) {
+          setSeatRecovery(null);
+          setForceCloseStatus("上游席位已释放，可以启动浏览器了。");
+        } else {
+          setSeatRecovery(next);
+          setForceCloseStatus(`本机已无 CloakBrowser 进程；上游仍占用席位 ${next.active}/${next.limit}。自动复查中，硬退出后的租约通常会在约 15 分钟内自动释放。`);
+        }
+      } catch {
+        // Keep the recovery state visible; a transient status-query failure
+        // must not be mistaken for a released seat.
+      } finally {
+        checking = false;
+      }
+    }
+    void checkSeat();
+    const timer = window.setInterval(() => void checkSeat(), 5000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [seatRecoveryActive]);
 
   useEffect(() => {
     if (selectedGroup === allGroupsValue) return;
@@ -1058,10 +1093,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!forceCloseStatus || forceCloseBusy) return;
+    if (!forceCloseStatus || forceCloseBusy || seatRecoveryActive) return;
     const timer = window.setTimeout(() => setForceCloseStatus(""), 10000);
     return () => window.clearTimeout(timer);
-  }, [forceCloseStatus, forceCloseBusy]);
+  }, [forceCloseStatus, forceCloseBusy, seatRecoveryActive]);
 
   useEffect(() => {
     if (!error) return;
@@ -3785,8 +3820,8 @@ export default function App() {
       ) : null}
       {error && !dialog ? <div className="toast errorToast" role="alert">{error}</div> : null}
       {forceCloseStatus && !dialog && !error ? (
-        <div className="toast successToast" role="status" aria-live="polite" aria-atomic="true">
-          {forceCloseBusy ? <Loader2 aria-hidden="true" className="spin" size={14} /> : <Check aria-hidden="true" size={14} />}
+        <div className={`toast ${seatRecovery ? "warningToast" : "successToast"}`} role="status" aria-live="polite" aria-atomic="true">
+          {forceCloseBusy ? <Loader2 aria-hidden="true" className="spin" size={14} /> : seatRecovery ? <ShieldAlert aria-hidden="true" size={14} /> : <Check aria-hidden="true" size={14} />}
           {forceCloseStatus}
         </div>
       ) : null}
@@ -6400,6 +6435,7 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
     throw new Error(`mock ${command} failed`);
   }
   if (command === "browser_process_status") return { browser_count: mockRunningAccounts.size, helper_count: 0 } as T;
+  if (command === "license_session_status") return mockCloseSeats as T;
   if (command === "force_close_all_browsers") {
     const closed = mockRunningAccounts.size;
     mockRunningAccounts.clear();
@@ -7024,7 +7060,7 @@ export function errorMessage(caught: unknown) {
     return "备注内容无效：最多 1000 个字符，请移除不可见控制字符。";
   }
   if (raw.includes("exit code 76") || raw.includes("session limit reached for the current plan")) {
-    return "CloakBrowser 拒绝启动：当前许可的并发席位已满。可点顶部“强制关闭所有窗口”清理本机实例并刷新席位，然后重试。";
+    return "CloakBrowser 拒绝启动：当前许可的并发席位已满。可点顶部“强制关闭所有窗口”清理本机实例并刷新席位；如果本机已无进程，硬退出留下的服务端租约通常约 15 分钟内自动释放。";
   }
   if (raw.includes("exit code 77") || raw.includes("license key is invalid, expired, or missing")) {
     return "CloakBrowser license key 无效、已过期或未找到，请检查 ~/.cloakbrowser/license.key。";
@@ -7036,10 +7072,10 @@ export function errorMessage(caught: unknown) {
     return "CloakBrowser license 配置目录不可写，请检查 ~/.cloakbrowser 权限。";
   }
   if (raw.includes("CloakBrowser license session limit reached while another local browser is running")) {
-    return "已有其他 CloakBrowser 实例占用席位（关闭窗口后也可能仍在后台运行）。请点顶部“强制关闭所有窗口”后重试。";
+    return "已有其他 CloakBrowser 实例占用席位（关闭窗口后也可能仍在后台运行）。请点顶部“强制关闭所有窗口”后重试；若本机已无进程，服务端租约通常约 15 分钟内自动释放。";
   }
   if (raw.includes("CloakBrowser license session is still held by the server")) {
-    return "本机已无 CloakBrowser 实例，但上游仍报告席位占满。可点“强制关闭所有窗口”重新检查；若其他设备正在使用同一许可，请先关闭，旧席位租约需等待上游回收。";
+    return "本机已无 CloakBrowser 实例，但上游仍报告席位占满。选择器会自动复查；若其他设备正在使用同一许可，请先关闭，硬退出留下的旧租约通常约 15 分钟内自动回收。";
   }
   if (raw.startsWith("browser exited during startup:")) {
     return "浏览器在启动阶段退出，未能保持稳定进程；请稍后重试。";
