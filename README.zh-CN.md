@@ -105,6 +105,21 @@ NoTrace Browser 的每个账号工作区都可以通过编译生成的 `cloak` �
 | **启动浏览器实例**| `cloak launch <name> [--dry-run] [--skip-geo]`| 带指纹参数拉起实例。`--dry-run` 仅输出最终组装的启动 flags。 |
 | **环境自我诊断** | `cloak self-check [--json]` | 校验 CloakBrowser 内核完整性、签名以及插件目录是否准备就绪。 |
 
+### ChatGPT / Codex OAuth 授权保活
+
+Picker 的账号详情页可以连接官方 Codex OAuth。NoTrace 只刷新自己发起并保存的授权，按每天检查、访问令牌到期前 36 小时续期；不会把 ChatGPT 网页 Cookie 当成 OAuth 凭据。活跃账号和回收站账号都参与到期检查，彻底删除账号时对应的私有 OAuth 目录也会一并清理。
+
+同一邮箱在官方 Codex、CPA、Cockpit 中可能是不同的授权链。为避免轮换型 `refresh_token` 被多个程序同时使用，授权状态会记录刷新权威；登记为外部应用后，NoTrace 会停止自动和手动刷新。可用 CLI 显式切换：
+
+```bash
+cloak auth status <账号>
+cloak auth authority <账号> cockpit   # 由 Cockpit 负责这条授权链
+cloak auth authority <账号> notrace    # 外部应用停止刷新后，切回 NoTrace
+cloak auth refresh-all                 # 只检查到期窗口，不做无条件轮换
+```
+
+安装 Picker 后，可运行 `packaging/install-auth-refresh.sh` 安装 macOS LaunchAgent。它在登录时和每 24 小时调用一次内置 `cloak`，但只有到期窗口内的 NoTrace 授权才会实际刷新；`packaging/uninstall-auth-refresh.sh` 可移除该任务。NoTrace 不会直接修改 Cockpit 的 SQLite、Keychain 或 sidecar 凭据，也不会把刷新成功误报成 CPA/Cockpit 已完成导入。
+
 ## 🔐 加密工作区备份与恢复
 
 在 Cloak Picker 打开 **管理 → 工作区备份**，即可导出或恢复一个 `.ntrace` 文件。备份包含活跃账号、回收站账号的完整目录，以及 Picker 的分组/账号顺序、折叠与隐藏状态、侧栏宽度和自定义标签；不会打包单独安装的浏览器内核，也不会保存可重建的浏览器缓存、relay 和 companion 运行目录。

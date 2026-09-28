@@ -1567,6 +1567,28 @@ h2 {
   letter-spacing: -0.18px;
 }
 
+.inspectorHint {
+  grid-column: 2;
+  margin: 0;
+  padding: 8px 12px 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  background: #ffffff;
+}
+
+.authActions {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 12px;
+  background: #ffffff;
+}
+
+.authError { color: #b42318; }
+
 .infoRow {
   display: grid;
   grid-template-columns: 122px minmax(0, 1fr);

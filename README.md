@@ -110,6 +110,21 @@ existing `https://chatgpt.com/` default. Arguments are passed directly to
 Chromium without shell interpolation.
 | **Self Check** | `cloak self-check [--json]` | Verifies local engine integrity and unpacked extensions path. |
 
+### ChatGPT / Codex OAuth keepalive
+
+The Picker can connect an account to the official Codex OAuth flow. NoTrace refreshes only grants it initiated and stores, checks daily, and rotates inside a 36-hour access-token lead window. Browser cookies are never treated as OAuth credentials. Active and trashed accounts remain eligible; permanent purge removes the account's private OAuth directory.
+
+The same email may have independent grants in official Codex, CPA, and Cockpit. Each grant records one refresh authority. Marking an external authority disables NoTrace's scheduled and manual rotation so a rotating `refresh_token` is not used concurrently:
+
+```bash
+cloak auth status <account>
+cloak auth authority <account> cockpit
+cloak auth authority <account> notrace   # only after the external app stops refreshing
+cloak auth refresh-all                  # due-window checks; no unconditional rotation
+```
+
+After installing Picker, `packaging/install-auth-refresh.sh` installs a macOS LaunchAgent that runs the bundled `cloak` at login and every 24 hours. It performs a real refresh only for due NoTrace-owned grants; `packaging/uninstall-auth-refresh.sh` removes the job. NoTrace does not edit Cockpit's SQLite, Keychain, or sidecar credentials, and does not claim that CPA/Cockpit imported a refreshed token without a verified handoff.
+
 ## 🔐 Encrypted Workspace Backup & Recovery
 
 Open **Manage → Workspace Backup** in Cloak Picker to export or restore one `.ntrace` archive. A backup contains all active and trashed account directories plus Picker group/account ordering, collapsed and hidden groups, sidebar width, and custom mark presets. It deliberately excludes the separately installed browser engine and rebuildable browser caches, relay, and companion runtime files.
