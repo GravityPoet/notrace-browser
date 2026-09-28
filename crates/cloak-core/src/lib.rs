@@ -3,6 +3,12 @@ pub use browser_processes::{
     browser_process_status, force_close_all_browsers, license_session_status, BrowserProcessStatus,
     ForceCloseResult, SeatUsage,
 };
+mod auth;
+pub use auth::{
+    auth_status, login_account_auth, login_account_auth_with_cancellation, refresh_account_auth,
+    refresh_all_account_auth, remove_account_auth, set_auth_authority, set_auth_auto_refresh,
+    AuthAuthority, AuthRefreshSummary, AuthState, AuthStatus,
+};
 mod license;
 mod profile_metadata;
 mod relay;
@@ -293,6 +299,8 @@ pub enum CloakError {
     Json(#[from] serde_json::Error),
     #[error("relay: {0}")]
     Relay(String),
+    #[error("ChatGPT 授权：{0}")]
+    Auth(String),
 }
 
 pub type Result<T> = std::result::Result<T, CloakError>;
@@ -923,6 +931,10 @@ pub fn permanently_delete_account(config: &CloakConfig, name: &str) -> Result<()
     }
     profile_metadata::require_profile_owner(&profile)?;
 
+    // The OAuth grant lives beside Accounts so it is not included in browser
+    // profile exports. Purge it before removing the account directory; a soft
+    // delete never reaches this path and therefore keeps the grant usable.
+    remove_account_auth(config, name)?;
     fs::remove_dir_all(profile)?;
     Ok(())
 }

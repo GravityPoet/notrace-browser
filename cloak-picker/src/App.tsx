@@ -1,3 +1,4 @@
+import { AuthPanel } from "./AuthPanel";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import {
   ArchiveRestore,
@@ -2697,6 +2698,7 @@ export default function App() {
   const emptyAction = accountView === "active" ? "新建账号" : "查看活跃";
   const proxyLabel = selected ? middleTruncate(selected.proxy_display, 48) : "";
   const statusLabel = selected?.trashed ? "已移入回收站" : "活跃";
+
   const webStoreStatusIsCurrent = Boolean(selected && webStoreStatus?.accountName === selected.name);
   const webStoreStatusLabel = webStoreStatus
     ? webStoreStatus.phase === "opening"
@@ -3424,6 +3426,14 @@ export default function App() {
                 {selected.trashed ? (
                   <div className="detailHeaderControl">
                     <div className="detailHeaderActions">
+                      <button
+                        className="secondaryButton dangerText"
+                        disabled={busy}
+                        onClick={(event) => openDialog({ kind: "permanentDelete", account: selected }, event.currentTarget)}
+                      >
+                        <Trash2 size={16} />
+                        彻底删除
+                      </button>
                       <button className="secondaryButton" disabled={busy} onClick={() => void restoreAccount(selected)}>
                         <ArchiveRestore size={16} />
                         恢复
@@ -3502,6 +3512,8 @@ export default function App() {
                     <InfoRow copyable label="账号目录" value={selected.profile_path} mono />
                   </InspectorGroup>
 
+                  <AuthPanel key={selected.profile_id} name={selected.name} />
+
                   <InspectorGroup title="网络">
                     <InfoRow icon={<Tag size={15} />} label="区域" value={selected.region ?? "未设置"} />
                     <InfoRow icon={<Globe2 size={15} />} label="语言" value={selected.locale_enabled ? "跟随出口" : "关"} />
@@ -3574,15 +3586,9 @@ export default function App() {
                 </details>
               </div>
 
+              {selected.trashed ? null : (
               <footer className="detailFooter">
                 <div className="actionBar">
-                  {selected.trashed ? (
-                    <>
-                      <ActionButton icon={<ArchiveRestore size={15} />} label="恢复账号" onClick={() => void restoreAccount(selected)} />
-                      <ActionButton danger icon={<Trash2 size={15} />} label="彻底删除" onClick={(event) => openDialog({ kind: "permanentDelete", account: selected }, event.currentTarget)} />
-                    </>
-                  ) : (
-                    <>
                       <ActionButton icon={<ShieldCheck size={15} />} label="检查出口" onClick={() => void diagnoseAccount(selected)} />
                       <ActionButton
                         icon={challengeAudit?.phase === "running" ? <Loader2 className="spin" size={15} /> : <ShieldCheck size={15} />}
@@ -3596,10 +3602,9 @@ export default function App() {
                       <ActionButton icon={<Globe2 size={15} />} label={selected.locale_enabled ? "关闭语言" : "开启语言"} onClick={() => void toggleLocale(selected)} />
                       <ActionButton icon={<Pencil size={15} />} label="重命名" onClick={(event) => openDialog({ kind: "rename", account: selected, value: selected.name }, event.currentTarget)} />
                       <ActionButton danger icon={<Trash2 size={15} />} label="删除" onClick={(event) => openDialog({ kind: "delete", account: selected }, event.currentTarget)} />
-                    </>
-                  )}
                 </div>
               </footer>
+              )}
             </>
           ) : (
             <div className="emptyState detailEmpty">
@@ -6811,7 +6816,7 @@ function mockLaunchPlan(account: Account, full: boolean): LaunchPlan {
     },
     geo: full
       ? {
-          exit_ip: "45.92.159.246",
+          exit_ip: "45.66.129.206",
           country: account.region,
           timezone: account.region === "JP" ? "Asia/Tokyo" : "America/Los_Angeles",
           asn: "AS64501",

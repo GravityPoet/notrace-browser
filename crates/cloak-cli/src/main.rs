@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use cloak_core::{
-    build_launch_plan, create_account, delete_account, launch_account, list_accounts,
-    list_trashed_accounts, permanently_delete_account, read_account, rename_account,
-    self_check_report, set_account_trashed, set_group, set_mark, set_proxy, set_region,
-    toggle_locale, CloakConfig, LaunchOptions,
+    auth_status, build_launch_plan, create_account, delete_account, launch_account, list_accounts,
+    list_trashed_accounts, login_account_auth, permanently_delete_account, read_account,
+    refresh_account_auth, refresh_all_account_auth, rename_account, self_check_report,
+    set_account_trashed, set_auth_authority, set_group, set_mark, set_proxy, set_region,
+    toggle_locale, AuthAuthority, CloakConfig, LaunchOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -21,10 +22,41 @@ enum Command {
         command: AccountCommand,
     },
     Launch(LaunchArgs),
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
     SelfCheck {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum AuthCommand {
+    Status {
+        name: String,
+    },
+    Login {
+        name: String,
+    },
+    Refresh {
+        name: String,
+    },
+    Authority {
+        name: String,
+        #[arg(value_enum)]
+        authority: AuthorityArg,
+    },
+    RefreshAll,
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+enum AuthorityArg {
+    NoTrace,
+    Codex,
+    Cpa,
+    Cockpit,
 }
 
 #[derive(Debug, Subcommand)]
@@ -127,6 +159,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Account { command } => handle_account(command, &config),
         Command::Launch(args) => handle_launch(args, &config),
+        Command::Auth { command } => handle_auth(command, &config),
         Command::SelfCheck { json } => {
             let report = self_check_report(&config)?;
             if json {
@@ -140,6 +173,33 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn handle_auth(command: AuthCommand, config: &CloakConfig) -> Result<()> {
+    match command {
+        AuthCommand::Status { name } => print_json(&auth_status(config, &name)?)?,
+        AuthCommand::Login { name } => print_json(&login_account_auth(config, &name)?)?,
+        AuthCommand::Refresh { name } => print_json(&refresh_account_auth(config, &name)?)?,
+        AuthCommand::Authority { name, authority } => {
+            let authority = match authority {
+                AuthorityArg::NoTrace => AuthAuthority::NoTrace,
+                AuthorityArg::Codex => AuthAuthority::Codex,
+                AuthorityArg::Cpa => AuthAuthority::Cpa,
+                AuthorityArg::Cockpit => AuthAuthority::Cockpit,
+            };
+            print_json(&set_auth_authority(config, &name, authority)?)?;
+        }
+        AuthCommand::RefreshAll => {
+            let mut accounts = list_accounts(config)?;
+            accounts.extend(list_trashed_accounts(config)?);
+            let names = accounts
+                .into_iter()
+                .map(|account| account.name)
+                .collect::<Vec<_>>();
+            print_json(&refresh_all_account_auth(config, &names))?;
+        }
+    }
+    Ok(())
 }
 
 fn handle_account(command: AccountCommand, config: &CloakConfig) -> Result<()> {

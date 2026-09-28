@@ -1275,7 +1275,7 @@ describe("Cloak Picker dialog regressions", () => {
 
     expect(document.querySelector(".detail")?.textContent).toContain("已移入回收站");
     expect(buttonWithText("临时启动")).toBeTruthy();
-    expect(buttonWithText("恢复账号")).toBeTruthy();
+    expect(buttonWithText("恢复")).toBeTruthy();
     expect(buttonWithText("彻底删除")).toBeTruthy();
 
     await settle(120);

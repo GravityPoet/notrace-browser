@@ -1,19 +1,24 @@
 use cloak_core::{
-    account_is_running as core_account_is_running, build_launch_plan,
-    create_account_with_group as core_create_account_with_group,
+    account_is_running as core_account_is_running, auth_status as core_auth_status,
+    build_launch_plan, create_account_with_group as core_create_account_with_group,
     delete_account as core_delete_account,
     export_workspace_with_picker_state_and_cancellation as core_export_workspace,
     import_workspace_with_cancellation as core_import_workspace,
     launch_account as core_launch_account, launch_chrome_web_store as core_launch_chrome_web_store,
     list_accounts as core_list_accounts, list_trashed_accounts as core_list_trashed_accounts,
+    login_account_auth_with_cancellation as core_login_account_auth,
     permanently_delete_account as core_permanently_delete_account,
     preview_workspace_import_with_cancellation as core_preview_workspace_import,
+    refresh_account_auth as core_refresh_account_auth,
+    refresh_all_account_auth as core_refresh_all_account_auth,
     rename_account as core_rename_account, self_check_report as core_self_check_report,
-    set_account_trashed as core_set_account_trashed, set_group as core_set_group,
+    set_account_trashed as core_set_account_trashed, set_auth_authority as core_set_auth_authority,
+    set_auth_auto_refresh as core_set_auth_auto_refresh, set_group as core_set_group,
     set_mark as core_set_mark, set_note as core_set_note, set_proxy as core_set_proxy,
-    set_region as core_set_region, toggle_locale as core_toggle_locale, Account, CloakConfig,
-    ForceCloseResult, LaunchOptions, LaunchPlan, LaunchResult, SeatUsage, WorkspaceExportSummary,
-    WorkspaceImportMapping, WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
+    set_region as core_set_region, toggle_locale as core_toggle_locale, Account, AuthAuthority,
+    AuthRefreshSummary, AuthStatus, CloakConfig, ForceCloseResult, LaunchOptions, LaunchPlan,
+    LaunchResult, SeatUsage, WorkspaceExportSummary, WorkspaceImportMapping,
+    WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
 };
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -22,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 use zeroize::Zeroizing;
@@ -30,6 +36,44 @@ mod native_e2e;
 
 fn config() -> Result<CloakConfig, String> {
     CloakConfig::from_env().map_err(|err| err.to_string())
+}
+
+const AUTH_REFRESH_START_DELAY: Duration = Duration::from_secs(30);
+// This is only a metadata check. An OAuth refresh is requested only when the
+// access token is inside the lead window, so a long-lived token is not rotated
+// every day.
+const AUTH_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Keep each account's managed ChatGPT OAuth session warm without sharing the
+/// browser Cookie store or another client's refresh token.  The official
+/// app-server owns token rotation; this scheduler only requests a refresh.
+fn start_auth_refresh_scheduler() {
+    let _ = std::thread::Builder::new()
+        .name("notrace-auth-refresh".to_string())
+        .spawn(|| {
+            std::thread::sleep(AUTH_REFRESH_START_DELAY);
+            loop {
+                let Ok(config) = CloakConfig::from_env() else {
+                    std::thread::sleep(AUTH_REFRESH_INTERVAL);
+                    continue;
+                };
+                let Ok(mut accounts) = core_list_accounts(&config) else {
+                    std::thread::sleep(AUTH_REFRESH_INTERVAL);
+                    continue;
+                };
+                if let Ok(trashed) = core_list_trashed_accounts(&config) {
+                    accounts.extend(trashed);
+                }
+                let names = accounts
+                    .into_iter()
+                    .map(|account| account.name)
+                    .collect::<Vec<_>>();
+                let summary = core_refresh_all_account_auth(&config, &names);
+                std::thread::sleep(Duration::from_secs(
+                    summary.next_check_in_seconds.clamp(30, 24 * 60 * 60),
+                ));
+            }
+        });
 }
 
 /// Core launch/preflight work uses blocking filesystem, process and HTTP APIs.
@@ -92,6 +136,34 @@ impl Drop for BrowserCloseGuard {
 #[derive(Clone, Default)]
 struct WorkspaceCancellationRegistry {
     active: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+}
+
+#[derive(Default)]
+struct AuthCancellationRegistry(Mutex<HashMap<String, Arc<AtomicBool>>>);
+
+impl AuthCancellationRegistry {
+    fn begin(&self, name: &str) -> Result<Arc<AtomicBool>, String> {
+        let mut active = self.0.lock().map_err(|_| "授权状态不可用")?;
+        if active.contains_key(name) {
+            return Err("该账号正在授权，请先完成或取消".to_string());
+        }
+        let flag = Arc::new(AtomicBool::new(false));
+        active.insert(name.to_string(), flag.clone());
+        Ok(flag)
+    }
+    fn cancel(&self, name: &str) -> Result<bool, String> {
+        let active = self.0.lock().map_err(|_| "授权状态不可用")?;
+        if let Some(flag) = active.get(name) {
+            flag.store(true, Ordering::Release);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+    fn finish(&self, name: &str) {
+        if let Ok(mut active) = self.0.lock() {
+            active.remove(name);
+        }
+    }
 }
 
 impl WorkspaceCancellationRegistry {
@@ -575,6 +647,82 @@ async fn toggle_locale(name: String) -> Result<Account, String> {
 }
 
 #[tauri::command]
+async fn auth_status(name: String) -> Result<AuthStatus, String> {
+    run_blocking(move || core_auth_status(&config()?, &name).map_err(|err| err.to_string())).await
+}
+
+#[tauri::command]
+async fn refresh_account_auth(name: String) -> Result<AuthStatus, String> {
+    run_blocking(move || {
+        core_refresh_account_auth(&config()?, &name).map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn login_account_auth(
+    name: String,
+    registry: State<'_, AuthCancellationRegistry>,
+) -> Result<AuthStatus, String> {
+    let flag = registry.begin(&name)?;
+    let worker_name = name.clone();
+    let result = run_blocking(move || {
+        core_login_account_auth(&config()?, &worker_name, &flag).map_err(|err| err.to_string())
+    })
+    .await;
+    registry.finish(&name);
+    result
+}
+
+#[tauri::command]
+fn cancel_account_auth(
+    name: String,
+    registry: State<'_, AuthCancellationRegistry>,
+) -> Result<bool, String> {
+    registry.cancel(&name)
+}
+
+#[tauri::command]
+async fn set_auth_auto_refresh(name: String, enabled: bool) -> Result<AuthStatus, String> {
+    run_blocking(move || {
+        core_set_auth_auto_refresh(&config()?, &name, enabled).map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn set_auth_authority(name: String, authority: String) -> Result<AuthStatus, String> {
+    let parsed = match authority.trim().to_ascii_lowercase().as_str() {
+        "notrace" => AuthAuthority::NoTrace,
+        "codex" => AuthAuthority::Codex,
+        "cpa" => AuthAuthority::Cpa,
+        "cockpit" => AuthAuthority::Cockpit,
+        _ => return Err("刷新权威必须是 NoTrace、Codex、CPA 或 Cockpit".to_string()),
+    };
+    run_blocking(move || {
+        core_set_auth_authority(&config()?, &name, parsed).map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn refresh_all_account_auth() -> Result<AuthRefreshSummary, String> {
+    run_blocking(|| {
+        let config = config()?;
+        let mut accounts = core_list_accounts(&config).map_err(|err| err.to_string())?;
+        if let Ok(trashed) = core_list_trashed_accounts(&config) {
+            accounts.extend(trashed);
+        }
+        let names = accounts
+            .into_iter()
+            .map(|account| account.name)
+            .collect::<Vec<_>>();
+        Ok(core_refresh_all_account_auth(&config, &names))
+    })
+    .await
+}
+
+#[tauri::command]
 async fn launch_dry_run(name: String) -> Result<LaunchPlan, String> {
     run_blocking(move || {
         let mut options = LaunchOptions::from_env(true);
@@ -918,6 +1066,7 @@ pub fn run() {
         .manage(instance_guard)
         .manage(LaunchCancellationRegistry::default())
         .manage(WorkspaceCancellationRegistry::default())
+        .manage(AuthCancellationRegistry::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
@@ -939,6 +1088,7 @@ pub fn run() {
             window.set_focus()?;
             focus_main_window_after_launch(app.handle().clone());
             native_e2e::schedule(app.handle().clone());
+            start_auth_refresh_scheduler();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -961,6 +1111,13 @@ pub fn run() {
             set_note,
             set_mark,
             toggle_locale,
+            auth_status,
+            refresh_account_auth,
+            login_account_auth,
+            cancel_account_auth,
+            set_auth_auto_refresh,
+            set_auth_authority,
+            refresh_all_account_auth,
             launch_dry_run,
             launch_preflight,
             launch_account,

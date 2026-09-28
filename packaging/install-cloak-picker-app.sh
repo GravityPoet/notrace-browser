@@ -31,11 +31,17 @@ fi
 
 cd "$ROOT"
 npm --prefix "$PICKER_DIR" run tauri -- build --bundles app
+cargo build --release -p cloak-cli >/dev/null
 
 if [[ ! -d "$BUILT_APP" ]]; then
   printf 'error: built app not found: %s\n' "$BUILT_APP" >&2
   exit 1
 fi
+
+# Keep the background authority check inside the canonical app bundle so it
+# does not depend on a source checkout or a mutable target directory.
+cp "$ROOT/target/release/cloak" "$BUILT_APP/Contents/MacOS/cloak"
+chmod 755 "$BUILT_APP/Contents/MacOS/cloak"
 
 if [[ -e "$INSTALL_APP/Contents/Info.plist" ]]; then
   existing_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INSTALL_APP/Contents/Info.plist" 2>/dev/null || true)"
