@@ -162,6 +162,24 @@ fn external_authority_blocks_no_trace_rotation_until_explicit_takeover() {
 }
 
 #[test]
+fn broker_handoff_freezes_refresh_before_sending_even_if_reply_is_lost() {
+    let f = Fixture::new();
+    f.seed(now() + 3600);
+    let result = with_broker_handoff(&f.config, &f.name, |_profile_id, _body| -> Result<()> {
+        assert_eq!(policy(&f.home).unwrap().authority, AuthAuthority::Broker);
+        assert!(!policy(&f.home).unwrap().enabled);
+        Err(CloakError::Auth("synthetic lost reply".into()))
+    });
+    assert!(result.is_err());
+    assert_eq!(
+        auth_status(&f.config, &f.name).unwrap().authority,
+        AuthAuthority::Broker
+    );
+    assert!(set_auth_authority(&f.config, &f.name, AuthAuthority::NoTrace).is_err());
+    assert!(refresh_with(&f.config, &f.name, Path::new("/must-not-start")).is_err());
+}
+
+#[test]
 fn trashed_account_keeps_authorization_binding_and_refresh_policy() {
     let f = Fixture::new();
     f.seed(now() + 60);

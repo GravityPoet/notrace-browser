@@ -3281,6 +3281,23 @@ button:disabled {
   animation: spin 0.9s linear infinite;
 }
 
+.brokerModal { width: min(980px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow: auto; padding: 28px; }
+.brokerPanelHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.brokerPanelHeader h2 { margin: 4px 0 8px; font-size: 22px; }
+.brokerPanelHeader p, .brokerRowMain > span, .brokerStatus { color: var(--muted); font-size: 12px; }
+.brokerConnection { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin: 20px 0; }
+.brokerConnection input { min-width: 0; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; padding: 10px 12px; }
+.brokerRows { display: grid; gap: 10px; }
+.brokerRow { display: grid; gap: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 14px; }
+.brokerRowTop { display: flex; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.brokerRowMain { display: grid; gap: 6px; min-width: 0; }
+.brokerRowMain strong { overflow-wrap: anywhere; font-size: 13px; }
+.brokerRowActions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.brokerStatus { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.brokerStatus span { display: grid; gap: 4px; }
+.brokerStatus b { color: var(--text); font-weight: 500; }
+.brokerError { color: var(--danger); font-size: 12px; margin: 0; }
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

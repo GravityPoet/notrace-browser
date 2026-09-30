@@ -2,6 +2,7 @@
 members = [
     "crates/cloak-core",
     "crates/cloak-cli",
+    "crates/cloak-broker",
     "cloak-picker/src-tauri",
 ]
 resolver = "2"

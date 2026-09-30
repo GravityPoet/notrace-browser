@@ -53,6 +53,7 @@ pub enum AuthAuthority {
     Codex,
     Cpa,
     Cockpit,
+    Broker,
 }
 
 impl AuthAuthority {
@@ -62,6 +63,7 @@ impl AuthAuthority {
             Self::Codex => "官方 Codex",
             Self::Cpa => "CPA",
             Self::Cockpit => "Cockpit",
+            Self::Broker => "NoTrace Broker",
         }
     }
 }
@@ -453,6 +455,11 @@ pub fn set_auth_authority(
         ));
     }
     let mut p = policy(&home)?;
+    if p.authority == AuthAuthority::Broker && authority != AuthAuthority::Broker {
+        return Err(CloakError::Auth(
+            "此授权链已交给 Broker，不能恢复本机旧刷新凭据；请重新连接获得新授权".to_string(),
+        ));
+    }
     p.authority = authority;
     p.enabled = authority == AuthAuthority::NoTrace;
     p.next_retry_at = None;
@@ -519,6 +526,34 @@ fn prepare_pending(home: &Path, kind: &str, previous: Option<&Credentials>) -> R
 }
 fn cleanup_pending(path: &Path) -> Result<()> {
     fs::remove_dir_all(path).map_err(Into::into)
+}
+
+/// Read the complete local grant for a one-time, authenticated Broker import.
+/// Callers must send it directly to the configured Broker and must never print
+/// or persist the returned body outside the protected transport.
+pub(crate) fn with_broker_handoff<T>(
+    config: &CloakConfig,
+    name: &str,
+    send: impl FnOnce(&str, &str) -> Result<T>,
+) -> Result<T> {
+    let home = auth_home(config, name, false)?;
+    let _guard = lock(&home.join(".operation.lock"))?;
+    let credentials = Credentials::read(&home)
+        .map_err(|_| CloakError::Auth("授权文件无效，需要重新连接账号".to_string()))?
+        .ok_or_else(|| CloakError::Auth("账号尚未连接 OAuth".to_string()))?;
+    let mut p = policy(&home)?;
+    if !matches!(p.authority, AuthAuthority::NoTrace | AuthAuthority::Broker) {
+        return Err(CloakError::Auth(
+            "授权链由其他应用持有，不能交给 Broker".to_string(),
+        ));
+    }
+    // Freeze before sending. On an ambiguous HTTP failure ownership remains
+    // frozen; retrying the same handoff is idempotent at the Broker.
+    p.authority = AuthAuthority::Broker;
+    p.enabled = false;
+    save_policy(&home, &p)?;
+    let profile_id = crate::read_account(config, name)?.profile_id;
+    send(&profile_id, &credentials.body)
 }
 
 pub fn refresh_account_auth(config: &CloakConfig, name: &str) -> Result<AuthStatus> {

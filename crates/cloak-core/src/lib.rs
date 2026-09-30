@@ -3,6 +3,15 @@ pub use browser_processes::{
     browser_process_status, force_close_all_browsers, license_session_status, BrowserProcessStatus,
     ForceCloseResult, SeatUsage,
 };
+mod broker;
+mod broker_client;
+pub use broker::{
+    push_local_grant, AccessCredential, BrokerConfig, BrokerError, BrokerMetadata, BrokerStore,
+};
+pub use broker_client::{
+    broker_overview, broker_push_account, broker_refresh_account, broker_set_cpa,
+    save_broker_connection, BrokerOverview,
+};
 mod auth;
 pub use auth::{
     auth_status, login_account_auth, login_account_auth_with_cancellation, refresh_account_auth,
