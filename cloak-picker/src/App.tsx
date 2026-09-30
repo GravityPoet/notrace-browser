@@ -1,4 +1,5 @@
 import { AuthPanel } from "./AuthPanel";
+import { BrokerPanel } from "./BrokerPanel";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import {
   ArchiveRestore,
@@ -12,6 +13,7 @@ import {
   GripVertical,
   Globe2,
   KeyRound,
+  Link2,
   ListChecks,
   Loader2,
   MessageSquareText,
@@ -252,6 +254,7 @@ type DialogState =
   | { kind: "renameGroup"; groupLabel: string; count: number; value: string; returnToManage?: boolean }
   | { kind: "manage"; section: "groups" | "marks" }
   | { kind: "workspace" }
+  | { kind: "broker" }
   | { kind: "proxy"; account: Account; value: string }
   | { kind: "region"; account: Account; value: string }
   | { kind: "group"; account: Account; value: string }
@@ -1225,7 +1228,7 @@ export default function App() {
       return;
     }
 
-    if (dialog.kind === "manage" || dialog.kind === "workspace") return;
+    if (dialog.kind === "manage" || dialog.kind === "workspace" || dialog.kind === "broker") return;
 
     const value = dialog.value.trim();
     if (dialog.kind === "createGroup") {
@@ -2937,6 +2940,15 @@ export default function App() {
                       <ArchiveRestore aria-hidden="true" size={14} />
                       <span className="contextMenuItemLabel">工作区备份</span>
                     </button>
+                    <button
+                      className="contextMenuItem"
+                      role="menuitem"
+                      type="button"
+                      onClick={() => { setManageMenuOpen(false); openDialog({ kind: "broker" }, manageButtonRef.current); }}
+                    >
+                      <Link2 aria-hidden="true" size={14} />
+                      <span className="contextMenuItemLabel">统一授权续期</span>
+                    </button>
                   </div>
                 ) : null}
               </div>
@@ -4190,6 +4202,17 @@ function EditorDialog({
           modalRef.current = node;
         }}
       />
+    );
+  }
+
+  if (dialog.kind === "broker") {
+    return (
+      <div className="modalBackdrop">
+        <section aria-labelledby={dialogTitleId} aria-modal="true" className="modal brokerModal" ref={(node) => { modalRef.current = node; }} role="dialog" tabIndex={-1}>
+          <button className="modalClose" type="button" aria-label="关闭" onClick={onClose}><X size={15} /></button>
+          <BrokerPanel />
+        </section>
+      </div>
     );
   }
 
@@ -5757,6 +5780,7 @@ function dialogConfig(
     | { kind: "deleteGroup" }
     | { kind: "manage" }
     | { kind: "workspace" }
+    | { kind: "broker" }
   >,
 ): {
   title: string;

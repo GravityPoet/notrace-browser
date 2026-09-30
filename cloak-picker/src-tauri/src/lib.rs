@@ -1,5 +1,7 @@
 use cloak_core::{
     account_is_running as core_account_is_running, auth_status as core_auth_status,
+    broker_overview as core_broker_overview, broker_push_account as core_broker_push_account,
+    broker_refresh_account as core_broker_refresh_account, broker_set_cpa as core_broker_set_cpa,
     build_launch_plan, create_account_with_group as core_create_account_with_group,
     delete_account as core_delete_account,
     export_workspace_with_picker_state_and_cancellation as core_export_workspace,
@@ -11,14 +13,15 @@ use cloak_core::{
     preview_workspace_import_with_cancellation as core_preview_workspace_import,
     refresh_account_auth as core_refresh_account_auth,
     refresh_all_account_auth as core_refresh_all_account_auth,
-    rename_account as core_rename_account, self_check_report as core_self_check_report,
-    set_account_trashed as core_set_account_trashed, set_auth_authority as core_set_auth_authority,
+    rename_account as core_rename_account, save_broker_connection as core_save_broker_connection,
+    self_check_report as core_self_check_report, set_account_trashed as core_set_account_trashed,
+    set_auth_authority as core_set_auth_authority,
     set_auth_auto_refresh as core_set_auth_auto_refresh, set_group as core_set_group,
     set_mark as core_set_mark, set_note as core_set_note, set_proxy as core_set_proxy,
     set_region as core_set_region, toggle_locale as core_toggle_locale, Account, AuthAuthority,
-    AuthRefreshSummary, AuthStatus, CloakConfig, ForceCloseResult, LaunchOptions, LaunchPlan,
-    LaunchResult, SeatUsage, WorkspaceExportSummary, WorkspaceImportMapping,
-    WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
+    AuthRefreshSummary, AuthStatus, BrokerMetadata, BrokerOverview, CloakConfig, ForceCloseResult,
+    LaunchOptions, LaunchPlan, LaunchResult, SeatUsage, WorkspaceExportSummary,
+    WorkspaceImportMapping, WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
 };
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -652,6 +655,45 @@ async fn auth_status(name: String) -> Result<AuthStatus, String> {
 }
 
 #[tauri::command]
+async fn broker_overview() -> Result<BrokerOverview, String> {
+    run_blocking(|| core_broker_overview(&config()?).map_err(|err| err.to_string())).await
+}
+
+#[tauri::command]
+async fn save_broker_connection(
+    endpoint: String,
+    admin_key: String,
+) -> Result<BrokerOverview, String> {
+    run_blocking(move || {
+        core_save_broker_connection(&config()?, &endpoint, &admin_key)
+            .map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn broker_push_account(name: String) -> Result<BrokerMetadata, String> {
+    run_blocking(move || core_broker_push_account(&config()?, &name).map_err(|err| err.to_string()))
+        .await
+}
+
+#[tauri::command]
+async fn broker_refresh_account(profile_id: String) -> Result<BrokerMetadata, String> {
+    run_blocking(move || {
+        core_broker_refresh_account(&config()?, &profile_id).map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn broker_set_cpa(profile_id: String, enabled: bool) -> Result<BrokerMetadata, String> {
+    run_blocking(move || {
+        core_broker_set_cpa(&config()?, &profile_id, enabled).map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
 async fn refresh_account_auth(name: String) -> Result<AuthStatus, String> {
     run_blocking(move || {
         core_refresh_account_auth(&config()?, &name).map_err(|err| err.to_string())
@@ -697,7 +739,8 @@ async fn set_auth_authority(name: String, authority: String) -> Result<AuthStatu
         "codex" => AuthAuthority::Codex,
         "cpa" => AuthAuthority::Cpa,
         "cockpit" => AuthAuthority::Cockpit,
-        _ => return Err("刷新权威必须是 NoTrace、Codex、CPA 或 Cockpit".to_string()),
+        "broker" => AuthAuthority::Broker,
+        _ => return Err("刷新权威必须是 NoTrace、Codex、CPA、Cockpit 或 Broker".to_string()),
     };
     run_blocking(move || {
         core_set_auth_authority(&config()?, &name, parsed).map_err(|err| err.to_string())
@@ -1112,6 +1155,11 @@ pub fn run() {
             set_mark,
             toggle_locale,
             auth_status,
+            broker_overview,
+            save_broker_connection,
+            broker_push_account,
+            broker_refresh_account,
+            broker_set_cpa,
             refresh_account_auth,
             login_account_auth,
             cancel_account_auth,

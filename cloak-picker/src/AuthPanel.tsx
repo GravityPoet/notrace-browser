@@ -11,7 +11,7 @@ export type AuthStatus = {
   last_refresh_at: number | null;
   auto_refresh: boolean;
   next_retry_at: number | null;
-  authority: "no_trace" | "codex" | "cpa" | "cockpit";
+  authority: "no_trace" | "codex" | "cpa" | "cockpit" | "broker";
   message: string | null;
 };
 
@@ -48,6 +48,7 @@ const authorityLabels: Record<AuthStatus["authority"], string> = {
   codex: "官方 Codex",
   cpa: "CPA",
   cockpit: "Cockpit",
+  broker: "NoTrace Broker",
 };
 function time(seconds: number | null) {
   return seconds ? new Date(seconds * 1000).toLocaleString("zh-CN", {

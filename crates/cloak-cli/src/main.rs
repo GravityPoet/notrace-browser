@@ -2,10 +2,10 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use cloak_core::{
     auth_status, build_launch_plan, create_account, delete_account, launch_account, list_accounts,
-    list_trashed_accounts, login_account_auth, permanently_delete_account, read_account,
-    refresh_account_auth, refresh_all_account_auth, rename_account, self_check_report,
-    set_account_trashed, set_auth_authority, set_group, set_mark, set_proxy, set_region,
-    toggle_locale, AuthAuthority, CloakConfig, LaunchOptions,
+    list_trashed_accounts, login_account_auth, permanently_delete_account, push_local_grant,
+    read_account, refresh_account_auth, refresh_all_account_auth, rename_account,
+    self_check_report, set_account_trashed, set_auth_authority, set_group, set_mark, set_proxy,
+    set_region, toggle_locale, AuthAuthority, CloakConfig, LaunchOptions,
 };
 
 #[derive(Debug, Parser)]
@@ -48,6 +48,11 @@ enum AuthCommand {
         #[arg(value_enum)]
         authority: AuthorityArg,
     },
+    BrokerPush {
+        name: String,
+        #[arg(long, env = "NOTRACE_BROKER_ENDPOINT")]
+        endpoint: String,
+    },
     RefreshAll,
 }
 
@@ -57,6 +62,7 @@ enum AuthorityArg {
     Codex,
     Cpa,
     Cockpit,
+    Broker,
 }
 
 #[derive(Debug, Subcommand)]
@@ -186,8 +192,14 @@ fn handle_auth(command: AuthCommand, config: &CloakConfig) -> Result<()> {
                 AuthorityArg::Codex => AuthAuthority::Codex,
                 AuthorityArg::Cpa => AuthAuthority::Cpa,
                 AuthorityArg::Cockpit => AuthAuthority::Cockpit,
+                AuthorityArg::Broker => AuthAuthority::Broker,
             };
             print_json(&set_auth_authority(config, &name, authority)?)?;
+        }
+        AuthCommand::BrokerPush { name, endpoint } => {
+            let key = std::env::var("NOTRACE_BROKER_ADMIN_KEY")
+                .context("missing NOTRACE_BROKER_ADMIN_KEY")?;
+            print_json(&push_local_grant(config, &name, &endpoint, &key)?)?;
         }
         AuthCommand::RefreshAll => {
             let mut accounts = list_accounts(config)?;
