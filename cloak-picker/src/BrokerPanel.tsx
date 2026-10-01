@@ -66,6 +66,12 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
     await read();
     if (mounted.current) setMessage("授权已交给 Broker；本机已停止刷新这条授权链");
   }
+  async function reauthorize(row: BrokerRow) {
+    await call("login_account_auth", { name: row.name });
+    await call("broker_push_account", { name: row.name });
+    await read();
+    if (mounted.current) setMessage("新授权已交给 Broker；下游会在下一代凭据同步后恢复");
+  }
   const disabled = Boolean(busy);
   return <section className="brokerPanel" aria-label="统一授权续期">
     <div className="brokerPanelHeader">
@@ -85,10 +91,11 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
       const remote = row.remote;
       const canManage = ["no_trace", "broker"].includes(row.local.authority);
       const needsLogin = ["missing", "reauth_required"].includes(row.local.state);
+      const needsReauth = Boolean(remote?.error && ["reauth_required", "recovery_required"].includes(remote.error));
       return <article className="brokerRow" key={row.profile_id}>
         <div className="brokerRowTop"><div className="brokerRowMain"><strong>{row.name}</strong><span>{row.trashed ? "回收站账号" : "浏览器账号"} · {remote ? `NoTrace Broker 负责刷新 · 第 ${remote.generation} 代` : row.local.authority === "broker" ? "正在确认授权交接" : needsLogin ? "尚未连接 OAuth" : "本机授权尚未纳管"}</span></div>
-          <div className="brokerRowActions">{remote ? <>
-            <button className="secondaryButton" type="button" disabled={disabled || !overview.connected || Boolean(remote.error && ["reauth_required", "recovery_required"].includes(remote.error))} onClick={() => void run(row.profile_id, async () => { await call("broker_refresh_account", { profileId: row.profile_id }); await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>
+          <div className="brokerRowActions">{remote ? needsReauth ? <button className="secondaryButton" type="button" disabled={disabled || !overview.connected} onClick={() => void run(row.profile_id, () => reauthorize(row))}><KeyRound size={14} />重新授权并纳管</button> : <>
+            <button className="secondaryButton" type="button" disabled={disabled || !overview.connected} onClick={() => void run(row.profile_id, async () => { await call("broker_refresh_account", { profileId: row.profile_id }); await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>
             <button className="secondaryButton" type="button" disabled={disabled || !overview.connected} onClick={() => void run(row.profile_id, async () => { await call("broker_set_cpa", { profileId: row.profile_id, enabled: !remote.cpa_enabled }); await read(); })}>{remote.cpa_enabled ? "暂停 CPA 同步" : "同步到 CPA"}</button>
           </> : <button className="secondaryButton" type="button" disabled={disabled || !overview.connected || !canManage} onClick={() => void run(row.profile_id, () => manage(row))}>{needsLogin ? <KeyRound size={14} /> : <UploadCloud size={14} />}{needsLogin ? "授权并纳管" : "交给 Broker"}</button>}</div>
         </div>
