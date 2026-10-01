@@ -41,4 +41,19 @@ describe("统一授权续期窗口", () => {
     expect(container.textContent).toContain("尚未完成适配验收");
     expect(container.textContent).not.toContain("refresh_token");
   });
+
+  it("offers reauthorization when the Broker grant needs a new OAuth chain", async () => {
+    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: "reauth_required", cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const calls: string[] = [];
+    const call: AuthCall = async function call<T>(command: string): Promise<T> { calls.push(command); return overview(remote) as T; };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    expect(container.textContent).toContain("重新授权并纳管");
+    const button = [...container.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("重新授权并纳管"));
+    await act(async () => button?.click());
+    await settle();
+    expect(calls).toContain("login_account_auth");
+    expect(calls).toContain("broker_push_account");
+  });
 });
