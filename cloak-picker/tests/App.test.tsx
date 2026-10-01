@@ -205,6 +205,13 @@ describe("Cloak Picker dialog regressions", () => {
     expect(mockCommandCountForTest("force_close_all_browsers")).toBe(1);
   });
 
+  it("keeps workspace tools visible without opening the management menu", () => {
+    const toolLabels = Array.from(document.querySelectorAll<HTMLElement>('[aria-label="工作区工具"] .workspaceTool strong'))
+      .map((label) => label.textContent?.trim());
+    expect(toolLabels).toEqual(["统一授权续期", "工作区备份", "管理分组", "管理标签"]);
+    expect(document.querySelector('[aria-label="工作区工具"]')).not.toBeNull();
+  });
+
   it("clears old launch state and delayed denials after closing, then launches again", async () => {
     const name = document.querySelector(".detail h1")?.textContent ?? "";
     await click(buttonWithText("启动"));

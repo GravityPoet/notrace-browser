@@ -2866,6 +2866,52 @@ export default function App() {
         </div>
       </header>
 
+      <section className="workspaceToolbar" aria-label="工作区工具">
+        <div className="workspaceToolbarIntro">
+          <span className="workspaceToolbarEyebrow">工作区工具</span>
+          <strong>常用操作</strong>
+          <span>入口保持可见，不需要先打开管理菜单。</span>
+        </div>
+        <div className="workspaceToolbarActions">
+          <button
+            className="workspaceTool workspaceToolPrimary"
+            type="button"
+            disabled={busy}
+            onClick={(event) => openDialog({ kind: "broker" }, event.currentTarget)}
+          >
+            <Link2 aria-hidden="true" size={16} />
+            <span><strong>统一授权续期</strong><small>Broker、CPA 与授权状态</small></span>
+          </button>
+          <button
+            className="workspaceTool"
+            type="button"
+            disabled={busy}
+            onClick={(event) => openWorkspaceDialog(event.currentTarget)}
+          >
+            <ArchiveRestore aria-hidden="true" size={16} />
+            <span><strong>工作区备份</strong><small>导出或恢复账号环境</small></span>
+          </button>
+          <button
+            className="workspaceTool"
+            type="button"
+            disabled={busy || bulkSelectionMode}
+            onClick={(event) => openManageDialog("groups", event.currentTarget)}
+          >
+            <Folder aria-hidden="true" size={16} />
+            <span><strong>管理分组</strong><small>组织活跃与回收站账号</small></span>
+          </button>
+          <button
+            className="workspaceTool"
+            type="button"
+            disabled={busy || bulkSelectionMode}
+            onClick={(event) => openManageDialog("marks", event.currentTarget)}
+          >
+            <Tags aria-hidden="true" size={16} />
+            <span><strong>管理标签</strong><small>维护常用标记与颜色</small></span>
+          </button>
+        </div>
+      </section>
+
       <section className={`workspace ${resizingPane ? "resizing" : ""}`} ref={workspaceRef} style={workspaceStyle}>
         <aside className="sidebar">
           <div className="sidebarHeader">
@@ -3500,6 +3546,35 @@ export default function App() {
               </header>
 
               <div className="detailScroll">
+                <div className="detailSummary" aria-label="账号摘要">
+                  <span className={`detailSummaryChip ${selected.trashed ? "warning" : "success"}`}>
+                    <ShieldCheck aria-hidden="true" size={13} />
+                    {selected.trashed ? "回收站账号" : "可启动"}
+                  </span>
+                  <span className="detailSummaryChip"><KeyRound aria-hidden="true" size={13} />{statusLabel}</span>
+                  <span className="detailSummaryChip"><Network aria-hidden="true" size={13} />{selected.has_proxy ? proxyLabel : "直连"}</span>
+                  <span className="detailSummaryChip"><Folder aria-hidden="true" size={13} />{accountGroupLabel(selected)}</span>
+                  <span className="detailSummaryHint">环境 #{selected.serial} · {selected.region ?? "未设置区域"}</span>
+                </div>
+
+                {selected.trashed ? null : (
+                  <div className="detailInlineActions" aria-label="账号操作">
+                    <ActionButton icon={<ShieldCheck size={15} />} label="检查出口" onClick={() => void diagnoseAccount(selected)} />
+                    <ActionButton
+                      icon={challengeAudit?.phase === "running" ? <Loader2 className="spin" size={15} /> : <ShieldCheck size={15} />}
+                      label={challengeAudit?.phase === "running" ? "检查挑战中" : "挑战兼容"}
+                      disabled={challengeAudit?.phase === "running" || launchStatusIsPending}
+                      onClick={() => void auditChallengeCompatibility()}
+                    />
+                    <ActionButton icon={<Network size={15} />} label="代理" onClick={(event) => openDialog({ kind: "proxy", account: selected, value: "" }, event.currentTarget)} />
+                    <ActionButton icon={<Tag size={15} />} label="区域" onClick={(event) => openDialog({ kind: "region", account: selected, value: selected.region ?? "" }, event.currentTarget)} />
+                    <ActionButton icon={<Folder size={15} />} label="分组" onClick={(event) => openDialog({ kind: "group", account: selected, value: selected.group ?? "" }, event.currentTarget)} />
+                    <ActionButton icon={<Globe2 size={15} />} label={selected.locale_enabled ? "关闭语言" : "开启语言"} onClick={() => void toggleLocale(selected)} />
+                    <ActionButton icon={<Pencil size={15} />} label="重命名" onClick={(event) => openDialog({ kind: "rename", account: selected, value: selected.name }, event.currentTarget)} />
+                    <ActionButton danger icon={<Trash2 size={15} />} label="删除" onClick={(event) => openDialog({ kind: "delete", account: selected }, event.currentTarget)} />
+                  </div>
+                )}
+
                 <section className="inspector">
                   <InspectorGroup title="身份">
                     <InfoRow icon={<ShieldCheck size={15} />} label="环境编号" value={`#${selected.serial}`} mono />
@@ -3598,25 +3673,6 @@ export default function App() {
                 </details>
               </div>
 
-              {selected.trashed ? null : (
-              <footer className="detailFooter">
-                <div className="actionBar">
-                      <ActionButton icon={<ShieldCheck size={15} />} label="检查出口" onClick={() => void diagnoseAccount(selected)} />
-                      <ActionButton
-                        icon={challengeAudit?.phase === "running" ? <Loader2 className="spin" size={15} /> : <ShieldCheck size={15} />}
-                        label={challengeAudit?.phase === "running" ? "检查挑战中" : "挑战兼容"}
-                        disabled={challengeAudit?.phase === "running" || launchStatusIsPending}
-                        onClick={() => void auditChallengeCompatibility()}
-                      />
-                      <ActionButton icon={<Network size={15} />} label="代理" onClick={(event) => openDialog({ kind: "proxy", account: selected, value: "" }, event.currentTarget)} />
-                      <ActionButton icon={<Tag size={15} />} label="区域" onClick={(event) => openDialog({ kind: "region", account: selected, value: selected.region ?? "" }, event.currentTarget)} />
-                      <ActionButton icon={<Folder size={15} />} label="分组" onClick={(event) => openDialog({ kind: "group", account: selected, value: selected.group ?? "" }, event.currentTarget)} />
-                      <ActionButton icon={<Globe2 size={15} />} label={selected.locale_enabled ? "关闭语言" : "开启语言"} onClick={() => void toggleLocale(selected)} />
-                      <ActionButton icon={<Pencil size={15} />} label="重命名" onClick={(event) => openDialog({ kind: "rename", account: selected, value: selected.name }, event.currentTarget)} />
-                      <ActionButton danger icon={<Trash2 size={15} />} label="删除" onClick={(event) => openDialog({ kind: "delete", account: selected }, event.currentTarget)} />
-                </div>
-              </footer>
-              )}
             </>
           ) : (
             <div className="emptyState detailEmpty">

@@ -261,18 +261,31 @@ const NATIVE_E2E_DRIVER: &str = r#"
     }
     checks.push('close-all-native-command');
 
-    const manageButton = Array.from(document.querySelectorAll('button')).find(
-      (button) => button.textContent?.trim().startsWith('管理'),
-    );
-    if (!manageButton) throw new Error('找不到管理菜单按钮');
-    manageButton.click();
-    const workspaceButton = await waitFor(
+    const visibleTools = Array.from(document.querySelectorAll('.workspaceTool strong'))
+      .map((node) => node.textContent?.trim())
+      .filter(Boolean);
+    for (const label of ['统一授权续期', '工作区备份', '管理分组', '管理标签']) {
+      if (!visibleTools.includes(label)) throw new Error(`首屏工具栏缺少：${label}`);
+    }
+    checks.push('workspace-tools-visible');
+
+    const visibleWorkspaceButton = Array.from(document.querySelectorAll('.workspaceTool'))
+      .find((button) => button.textContent?.includes('工作区备份'));
+    const workspaceButton = visibleWorkspaceButton ?? (() => {
+      const manageButton = Array.from(document.querySelectorAll('button')).find(
+        (button) => button.textContent?.trim().startsWith('管理'),
+      );
+      if (!manageButton) throw new Error('找不到管理菜单按钮');
+      manageButton.click();
+      return null;
+    })();
+    const workspaceEntry = workspaceButton ?? await waitFor(
       () => Array.from(document.querySelectorAll('[role="menuitem"]')).find(
         (button) => button.textContent?.includes('工作区备份'),
       ),
-      '工作区备份菜单项',
+      '工作区备份入口',
     );
-    workspaceButton.click();
+    workspaceEntry.click();
     const exportTab = await waitFor(
       () => document.querySelector('#cloak-workspace-export-tab[aria-selected="true"]'),
       '导出备份 tab',
