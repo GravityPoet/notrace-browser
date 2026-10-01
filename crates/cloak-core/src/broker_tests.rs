@@ -5,6 +5,9 @@ use std::net::TcpListener;
 use std::thread;
 use tempfile::TempDir;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 fn jwt(value: Value) -> String {
     format!(
         "header.{}.signature",
@@ -165,6 +168,27 @@ fn cpa_sync_refuses_unmanaged_existing_file() {
     .unwrap();
     let metadata = store.sync_cpa(key).unwrap();
     assert_eq!(metadata.cpa_sync_error, Some(BrokerError::ConsumerConflict));
+}
+
+#[cfg(unix)]
+#[test]
+fn cpa_projection_write_preserves_external_directory_permissions() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o750)).unwrap();
+    let destination = dir.path().join("notrace_projection.json");
+    write_cpa_projection_atomic(&destination, "{\"access_token\":\"only\"}").unwrap();
+    assert_eq!(
+        fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+        0o750
+    );
+    assert_eq!(
+        fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::read_to_string(destination).unwrap(),
+        "{\"access_token\":\"only\"}\n"
+    );
 }
 
 fn now() -> u64 {

@@ -394,7 +394,7 @@ impl BrokerStore {
             if let Some(disabled) = existing.as_ref().and_then(|v| v.get("disabled")) {
                 projection["disabled"] = disabled.clone();
             }
-            crate::write_secret_atomic(&destination, &projection.to_string())
+            write_cpa_projection_atomic(&destination, &projection.to_string())
                 .map_err(|_| BrokerError::Storage)
         })();
         match result {
@@ -492,6 +492,39 @@ impl BrokerStore {
         .map_err(|_| BrokerError::Storage)?;
         crate::write_secret_atomic(path, &encrypted).map_err(|_| BrokerError::Storage)
     }
+}
+
+/// Write an access-only projection into an externally managed CPA directory.
+/// The regular workspace writer hardens its parent to mode 0700, which would
+/// erase the ACL that lets the non-root Broker cooperate with CPA's root-owned
+/// auth directory. Stage the protected file in a Broker-owned child directory
+/// and rename it into the existing directory without changing the parent's
+/// ownership or mode.
+fn write_cpa_projection_atomic(path: &Path, value: &str) -> BrokerResult<()> {
+    let parent = path.parent().ok_or(BrokerError::Storage)?;
+    reject_link(parent)?;
+    if !parent.is_dir() {
+        return Err(BrokerError::Storage);
+    }
+    reject_link(path)?;
+
+    let mut nonce = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let suffix = nonce
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let staging = parent.join(format!(".notrace-cpa-stage-{suffix}"));
+    fs::create_dir(&staging).map_err(|_| BrokerError::Storage)?;
+    let staged = staging.join("projection.json");
+    let result = (|| {
+        crate::write_secret_atomic(&staged, value).map_err(|_| BrokerError::Storage)?;
+        reject_link(path)?;
+        fs::rename(&staged, path).map_err(|_| BrokerError::Storage)?;
+        crate::sync_directory(parent).map_err(|_| BrokerError::Storage)
+    })();
+    let _ = fs::remove_dir_all(&staging);
+    result
 }
 
 fn cpa_destination(
