@@ -3348,9 +3348,57 @@ button:disabled {
   }
 
   .shell {
+    grid-template-rows: auto minmax(0, 1fr);
     height: auto;
     min-height: 100vh;
     overflow: auto;
+  }
+
+  /* The native window can be resized down to 760px. Keep the brand and
+     destructive actions readable by giving the search its own row instead of
+     squeezing all three topbar regions into one 44px line. */
+  .topbar {
+    display: grid;
+    grid-template-areas:
+      "brand actions"
+      "search search";
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px 10px;
+    min-height: 78px;
+  }
+
+  .brand {
+    grid-area: brand;
+    flex: 0 1 auto;
+    max-width: 100%;
+  }
+
+  .accountSearch {
+    grid-area: search;
+    width: 100%;
+    max-width: none;
+  }
+
+  .topActions {
+    grid-area: actions;
+    min-width: 0;
+  }
+
+  .accountSearchField {
+    height: 32px;
+  }
+
+  .detailHeader {
+    height: auto;
+    min-height: 72px;
+    align-items: flex-start;
+    padding: 12px 14px;
+  }
+
+  .detailHeaderActions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .workspace {
@@ -3384,5 +3432,23 @@ button:disabled {
   .workspacePreviewSummary {
     display: grid;
     gap: 3px;
+  }
+}
+
+@media (max-width: 620px) {
+  .shell {
+    padding: 8px;
+  }
+
+  .topbar {
+    gap: 7px 8px;
+  }
+
+  .browserProcessCount {
+    display: none;
+  }
+
+  .forceCloseButton {
+    padding-inline: 8px;
   }
 }
