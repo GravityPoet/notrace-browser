@@ -67,7 +67,7 @@ summary:focus-visible {
 
 .shell {
   display: grid;
-  grid-template-rows: 44px minmax(0, 1fr);
+  grid-template-rows: 44px auto minmax(0, 1fr);
   gap: 12px;
   width: 100%;
   height: 100vh;
@@ -136,6 +136,127 @@ summary:focus-visible {
 .topActions {
   justify-content: flex-end;
   flex: 0 0 auto;
+}
+
+.workspaceToolbar {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 10px 26px rgba(0, 0, 0, 0.06);
+  backdrop-filter: saturate(180%) blur(22px);
+}
+
+.workspaceToolbarIntro {
+  display: grid;
+  flex: 0 0 150px;
+  align-content: center;
+  gap: 1px;
+  min-width: 0;
+  padding: 0 7px;
+}
+
+.workspaceToolbarEyebrow {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.workspaceToolbarIntro strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.workspaceToolbarIntro > span:last-child {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspaceToolbarActions {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+  min-width: 0;
+}
+
+.workspaceTool {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 9px;
+  min-height: 46px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--text);
+  cursor: pointer;
+  padding: 7px 10px;
+  text-align: left;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, transform 100ms ease;
+}
+
+.workspaceTool svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.workspaceTool > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.workspaceTool strong,
+.workspaceTool small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspaceTool strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.workspaceTool small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.workspaceTool:hover:not(:disabled) {
+  border-color: rgba(0, 113, 227, 0.34);
+  background: #ffffff;
+  box-shadow: 0 3px 10px rgba(0, 74, 150, 0.1);
+}
+
+.workspaceTool:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.workspaceTool:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.workspaceToolPrimary {
+  border-color: rgba(0, 113, 227, 0.3);
+  background: linear-gradient(135deg, rgba(0, 113, 227, 0.1), rgba(255, 255, 255, 0.9));
 }
 
 .browserProcessCount {
@@ -1377,7 +1498,8 @@ summary:focus-visible {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  background: #ffffff;
+  background: #f7f8fa;
+  padding: 0 0 18px;
 }
 
 .detailFooter {
@@ -1393,6 +1515,80 @@ summary:focus-visible {
   flex: 1 1 auto;
   min-width: 0;
   gap: 2px;
+}
+
+.detailSummary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 18px 0;
+}
+
+.detailSummaryChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--muted);
+  padding: 0 9px;
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.detailSummaryChip svg {
+  color: var(--accent);
+}
+
+.detailSummaryChip.success {
+  border-color: rgba(26, 143, 75, 0.2);
+  background: rgba(26, 143, 75, 0.08);
+  color: #14723d;
+}
+
+.detailSummaryChip.success svg {
+  color: #14723d;
+}
+
+.detailSummaryChip.warning {
+  border-color: rgba(161, 92, 0, 0.24);
+  background: rgba(255, 247, 234, 0.92);
+  color: #8a4b08;
+}
+
+.detailSummaryChip.warning svg {
+  color: #a15c00;
+}
+
+.detailSummaryHint {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detailInlineActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 18px 0;
+  padding: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.detailInlineActions .actionButton {
+  min-height: 30px;
+  padding-inline: 9px;
 }
 
 .eyebrow {
@@ -1538,30 +1734,33 @@ h2 {
 
 .inspector {
   display: grid;
-  gap: 0;
+  gap: 10px;
   margin: 16px 18px 0;
   border: 0;
-  border-radius: 14px;
-  overflow: hidden;
-  background: #f5f5f7;
-  box-shadow: var(--shadow-panel);
+  background: transparent;
 }
 
 .inspectorGroup {
   display: grid;
   grid-template-columns: 122px minmax(0, 1fr);
   min-width: 0;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03), 0 5px 18px rgba(0, 0, 0, 0.035);
 }
 
 .inspectorGroup:last-child {
-  border-bottom: 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
 }
 
 .inspectorGroup h2 {
-  padding: 12px;
+  display: flex;
+  align-items: flex-start;
+  padding: 12px 11px;
   border-right: 1px solid rgba(0, 0, 0, 0.06);
-  background: #f5f5f7;
+  background: #f8f9fb;
   color: var(--muted);
   font-weight: 600;
   letter-spacing: -0.18px;
@@ -3348,7 +3547,7 @@ button:disabled {
   }
 
   .shell {
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
     height: auto;
     min-height: 100vh;
     overflow: auto;
@@ -3389,6 +3588,27 @@ button:disabled {
     height: 32px;
   }
 
+  .workspaceToolbar {
+    display: grid;
+    gap: 7px;
+  }
+
+  .workspaceToolbarIntro {
+    display: flex;
+    align-items: baseline;
+    flex-basis: auto;
+    gap: 7px;
+    padding: 0 5px;
+  }
+
+  .workspaceToolbarIntro > span:last-child {
+    flex: 1 1 auto;
+  }
+
+  .workspaceToolbarActions {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
   .detailHeader {
     height: auto;
     min-height: 72px;
@@ -3399,6 +3619,19 @@ button:disabled {
   .detailHeaderActions {
     flex-wrap: wrap;
     justify-content: flex-end;
+  }
+
+  .detailSummary,
+  .detailInlineActions {
+    margin-inline: 12px;
+  }
+
+  .detailSummary {
+    padding-inline: 0;
+  }
+
+  .detailInlineActions {
+    padding: 7px;
   }
 
   .workspace {
@@ -3450,5 +3683,13 @@ button:disabled {
 
   .forceCloseButton {
     padding-inline: 8px;
+  }
+
+  .workspaceToolbarActions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workspaceTool {
+    min-height: 42px;
   }
 }
