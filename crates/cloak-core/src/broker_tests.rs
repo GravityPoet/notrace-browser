@@ -54,6 +54,8 @@ fn encrypted_store_and_access_projection_never_expose_refresh_token() {
     );
     let metadata = store.import_grant("alpha@example.test", &body).unwrap();
     assert_eq!(metadata.email, "alpha@example.test");
+    assert_eq!(metadata.refresh_count, 0);
+    assert_eq!(metadata.automatic_refresh_count, 0);
     let projection = store.access_credential("alpha@example.test").unwrap();
     let serialized = serde_json::to_string(&projection).unwrap();
     assert!(serialized.contains("access_token"));
@@ -102,6 +104,11 @@ fn repeated_handoff_is_idempotent_and_identity_change_is_rejected() {
     let first_status = store.import_grant("alpha@example.test", &first).unwrap();
     let retry = store.import_grant("alpha@example.test", &first).unwrap();
     assert_eq!(first_status.generation, retry.generation);
+    assert_eq!(first_status.refresh_count, retry.refresh_count);
+    assert_eq!(
+        first_status.automatic_refresh_count,
+        retry.automatic_refresh_count
+    );
     let wrong = grant_body("other@example.test", "acct-2", "refresh-b", now() + 3600);
     assert!(matches!(
         store.import_grant("alpha@example.test", &wrong),
@@ -149,6 +156,8 @@ fn refresh_rotates_and_preserves_omitted_refresh_token() {
         .unwrap();
     let metadata = store.refresh("alpha@example.test", true).unwrap();
     assert_eq!(metadata.generation, 2);
+    assert_eq!(metadata.refresh_count, 1);
+    assert_eq!(metadata.automatic_refresh_count, 0);
     assert_eq!(
         store
             .access_credential("alpha@example.test")
@@ -171,6 +180,7 @@ fn ambiguous_refresh_is_journaled_and_does_not_retry_old_token() {
         store.refresh("alpha@example.test", true),
         Err(BrokerError::RecoveryRequired)
     ));
+    assert_eq!(store.load(&path).unwrap().refresh_count, 0);
 }
 
 #[test]
@@ -239,6 +249,23 @@ fn old_handoff_retry_cannot_replace_a_rotated_grant() {
 }
 
 #[test]
+fn reauthorization_preserves_refresh_count_without_incrementing_it() {
+    let (_dir, store) = store();
+    let first = grant_body("alpha@example.test", "acct-1", "initial", now() + 3600);
+    store.import_grant("alpha", &first).unwrap();
+    let path = store.path("alpha").unwrap();
+    let mut current = store.load(&path).unwrap();
+    current.refresh_count = 4;
+    current.automatic_refresh_count = 3;
+    store.save(&path, &current).unwrap();
+    let replacement = grant_body("alpha@example.test", "acct-1", "replacement", now() + 3600);
+    let metadata = store.import_grant("alpha", &replacement).unwrap();
+    assert_eq!(metadata.generation, 2);
+    assert_eq!(metadata.refresh_count, 4);
+    assert_eq!(metadata.automatic_refresh_count, 3);
+}
+
+#[test]
 fn durable_pending_rotation_is_recovered_without_an_oauth_request() {
     let (_dir, store) = store();
     store
@@ -254,13 +281,100 @@ fn durable_pending_rotation_is_recovered_without_an_oauth_request() {
     let mut candidate = current.clone();
     candidate.refresh_token = "newest".into();
     candidate.generation = 2;
+    candidate.refresh_count = 1;
+    candidate.automatic_refresh_count = 1;
     candidate.in_flight = false;
     store
         .save(&path.with_extension("pending"), &candidate)
         .unwrap();
-    assert_eq!(store.refresh("alpha", true).unwrap().generation, 2);
+    let recovered = store.refresh("alpha", true).unwrap();
+    assert_eq!(recovered.generation, 2);
+    assert_eq!(recovered.refresh_count, 1);
+    assert_eq!(recovered.automatic_refresh_count, 1);
     assert_eq!(store.load(&path).unwrap().refresh_token, "newest");
     assert!(!path.with_extension("pending").exists());
+    let reopened = BrokerStore::new(store.config.clone(), [7; 32]).unwrap();
+    let unchanged = reopened.refresh("alpha", false).unwrap();
+    assert_eq!(unchanged.refresh_count, 1);
+    assert_eq!(unchanged.automatic_refresh_count, 1);
+}
+
+#[test]
+fn automatic_renewal_is_counted_once_and_failed_or_skipped_requests_are_not() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let provider = thread::spawn(move || {
+        for status in [200, 503] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 2048];
+            let _ = stream.read(&mut request);
+            let body = if status == 200 {
+                json!({"access_token":jwt(json!({
+                    "exp":now() + 7200,
+                    "https://api.openai.com/profile":{"email":"alpha@example.test"},
+                    "https://api.openai.com/auth":{"chatgpt_account_id":"acct-1"}
+                })),"refresh_token":"rotated"})
+                .to_string()
+            } else {
+                json!({"error":"temporarily_unavailable"}).to_string()
+            };
+            stream.write_all(format!(
+                "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{body}", body.len()
+            ).as_bytes()).unwrap();
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let config = BrokerConfig {
+        root: dir.path().into(),
+        cpa_auth_dir: None,
+        proxy_url: None,
+        token_url: format!("http://{address}"),
+    };
+    let store = BrokerStore::new(config.clone(), [8; 32]).unwrap();
+    let key = "alpha";
+    store
+        .import_grant(
+            key,
+            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+        )
+        .unwrap();
+    let path = store.path(key).unwrap();
+    let mut due = store.load(&path).unwrap();
+    due.expires_at = now() + 60;
+    due.issued_at = now() - 3600;
+    store.save(&path, &due).unwrap();
+    let automatic = store.refresh(key, false).unwrap();
+    assert_eq!(automatic.refresh_count, 1);
+    assert_eq!(automatic.automatic_refresh_count, 1);
+    assert_eq!(store.refresh(key, false).unwrap().refresh_count, 1);
+    assert!(matches!(
+        store.refresh(key, true),
+        Err(BrokerError::ServiceUnavailable)
+    ));
+    provider.join().unwrap();
+    let reopened = BrokerStore::new(config, [8; 32]).unwrap();
+    let metadata = reopened.list().unwrap().pop().unwrap();
+    assert_eq!(metadata.refresh_count, 1);
+    assert_eq!(metadata.automatic_refresh_count, 1);
+}
+
+#[test]
+fn legacy_grants_do_not_infer_renewal_counts_from_generation() {
+    let mut legacy = serde_json::to_value(
+        parse_grant(
+            "alpha",
+            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    legacy["generation"] = json!(9);
+    let object = legacy.as_object_mut().unwrap();
+    object.remove("refresh_count");
+    object.remove("automatic_refresh_count");
+    let grant: Grant = serde_json::from_value(legacy).unwrap();
+    assert_eq!(grant.refresh_count, 0);
+    assert_eq!(grant.automatic_refresh_count, 0);
 }
 
 #[test]

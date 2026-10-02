@@ -30,20 +30,24 @@ describe("统一授权续期窗口", () => {
     expect(calls).toContain("broker_overview");
   });
 
-  it("shows generation and consumer sync state for a Broker-owned grant", async () => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
+  it("shows recorded renewal counts independently of generation and consumer sync", async () => {
+    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, refresh_count: 3, automatic_refresh_count: 2, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 9, cpa_sync_error: null, cockpit_synced_generation: null };
     const call: AuthCall = async function call<T>(command: string): Promise<T> { if (command === "broker_overview") return overview(remote) as T; return overview(remote) as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root?.render(createElement(BrokerPanel, { call })));
     await settle();
     expect(container.textContent).toContain("已授权 · NoTrace Broker 自动续期");
     expect(container.textContent).toContain("已同步");
+    expect(container.textContent).toContain("成功续期3 次");
+    expect(container.textContent).toContain("自动 2 次 · 手动 1 次");
+    expect(container.textContent).toContain("启用统计后累计");
+    expect(container.textContent).not.toContain("9 次");
     expect(container.textContent).toContain("尚未完成适配验收");
     expect(container.textContent).not.toContain("refresh_token");
   });
 
   it("offers reauthorization when the Broker grant needs a new OAuth chain", async () => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: "reauth_required", cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: "reauth_required", cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
     const calls: string[] = [];
     const call: AuthCall = async function call<T>(command: string): Promise<T> { calls.push(command); return overview(remote) as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -58,7 +62,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("offers access-only JSON export for a Broker-owned grant", async () => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
     const call: AuthCall = async function call<T>(command: string): Promise<T> { if (command === "broker_overview") return overview(remote) as T; return overview(remote) as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root?.render(createElement(BrokerPanel, { call })));
@@ -75,7 +79,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("keeps refresh token clearing enabled by default and only preserves it when unchecked", async () => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
     const calls: Array<{ command: string; args?: unknown }> = [];
     const call: AuthCall = async function call<T>(command: string, args?: unknown): Promise<T> {
       calls.push({ command, args });
@@ -104,7 +108,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("filters the account list into all, authorized, and unauthorized views", async () => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
     const base = overview(remote);
     const unauthorized = { ...base.accounts[0], name: "unmanaged@example.test", profile_id: "profile-2", local: { ...local, account: "unmanaged@example.test", email: "unmanaged@example.test", state: "missing" as const }, remote: null };
     const data = { ...base, accounts: [base.accounts[0], unauthorized] };

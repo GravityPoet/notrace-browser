@@ -69,6 +69,16 @@ have reached OpenAI, the Broker journals the in-flight state and stops retrying
 the old refresh token. An operator must reauthorize that account or recover the
 pending result; this is deliberate protection against `refresh_token_reused`.
 
+The Broker stores renewal counters alongside the encrypted grant. `refresh_count`
+counts successful OAuth renewals, and `automatic_refresh_count` counts the subset
+triggered by due checks. A forced refresh from “立即刷新” counts toward the total
+but not the automatic subset. First authorization, reauthorization, failed
+requests, status checks and CPA synchronization do not increment either counter.
+Reauthorization preserves the totals, and journal recovery promotes the saved
+counts without adding them twice. Legacy grants start at zero; earlier history
+is not inferred from `generation`. The Picker labels the counts as accumulated
+since statistics were enabled.
+
 ## Current migration boundary
 
 CPA synchronization is opt-in per account and refuses to overwrite an existing

@@ -6,6 +6,7 @@ import type { AuthCall, AuthStatus } from "./AuthPanel";
 export type BrokerMetadata = {
   key: string; email: string; account_id: string; plan_type: string | null;
   expires_at: number; last_refresh_at: number; generation: number;
+  refresh_count?: number; automatic_refresh_count?: number;
   next_refresh_at: number; next_retry_at: number | null; error: string | null;
   cpa_enabled: boolean; cpa_synced_generation: number | null; cpa_sync_error: string | null;
   cockpit_synced_generation: number | null;
@@ -41,6 +42,9 @@ function syncLabel(enabled: boolean, synced: number | null, generation: number, 
   if (!enabled) return "未启用同步";
   if (error) return errors[error] ?? "同步未完成";
   return synced === generation ? "已同步" : "等待同步";
+}
+function refreshCountLabel(count: number | undefined) {
+  return count === undefined ? "服务端尚未统计" : `${count} 次`;
 }
 export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCall; onBusyChange?: (busy: boolean) => void }) {
   const [overview, setOverview] = useState<BrokerOverview | null>(null);
@@ -182,7 +186,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => { setPreserveRefreshToken(false); setImportPreview(null); setExportRow(row); setJsonFormat("cockpit_tools"); }}><Download size={14} />导出 JSON</button>
           </> : <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected || !canManage} onClick={() => void run(row.profile_id, () => manage(row))}>{needsLogin || needsReauthLocal ? <KeyRound size={14} /> : <UploadCloud size={14} />}{needsLogin ? "授权并纳管" : needsReauthLocal ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
         </div>
-        {remote && <><div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? "已确认" : "尚未完成适配验收"}</b></span></div>{remote.error && <p className="brokerError">{errors[remote.error] ?? "授权操作未完成"}</p>}</>}
+        {remote && <><div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span title="从启用统计起累计，只计成功续期；首次授权、重新授权和失败重试不计入。">成功续期<b>{refreshCountLabel(remote.refresh_count)}</b>{remote.refresh_count !== undefined && remote.automatic_refresh_count !== undefined && <small>自动 {remote.automatic_refresh_count} 次 · 手动 {Math.max(0, remote.refresh_count - remote.automatic_refresh_count)} 次</small>}<small>启用统计后累计</small></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? "已确认" : "尚未完成适配验收"}</b></span></div>{remote.error && <p className="brokerError">{errors[remote.error] ?? "授权操作未完成"}</p>}</>}
       </article>;
     })}</div>
     {overview && visibleAccounts.length === 0 && <p className="brokerEmpty">当前筛选没有匹配账号。可以切换“全部”或清空搜索。</p>}
