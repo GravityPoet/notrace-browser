@@ -3482,6 +3482,7 @@ button:disabled {
 
 .brokerModal { width: min(980px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow: auto; padding: 28px; }
 .brokerPanelHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.brokerPanelHeaderActions { display: inline-flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .brokerPanelHeader h2 { margin: 4px 0 8px; font-size: 22px; }
 .brokerPanelHeader p, .brokerRowMain > span, .brokerStatus { color: var(--muted); font-size: 12px; }
 .brokerConnection { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin: 20px 0; }
@@ -3496,6 +3497,21 @@ button:disabled {
 .brokerStatus span { display: grid; gap: 4px; }
 .brokerStatus b { color: var(--text); font-weight: 500; }
 .brokerError { color: var(--danger); font-size: 12px; margin: 0; }
+.brokerJsonCard { display: grid; gap: 10px; margin-top: 12px; border: 1px solid rgba(0, 113, 227, 0.2); border-radius: 12px; background: rgba(247, 250, 255, 0.96); padding: 12px; box-shadow: 0 8px 24px rgba(0, 74, 150, 0.08); }
+.brokerJsonCardHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.brokerJsonCardHeader > div { display: grid; gap: 2px; }
+.brokerJsonCardHeader strong { color: var(--text); font-size: 13px; }
+.brokerJsonCardHeader span, .brokerJsonPath { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.brokerJsonCardHeader .iconButton { flex: 0 0 auto; width: 26px; min-height: 26px; border: 0; background: transparent; color: var(--muted); font-size: 18px; line-height: 1; }
+.brokerJsonField { display: grid; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 650; }
+.brokerJsonField select { width: 100%; min-height: 34px; border: 1px solid var(--border-strong); border-radius: 8px; background: #ffffff; color: var(--text); padding: 0 9px; }
+.brokerJsonNotice { margin: 0; border-radius: 8px; background: rgba(0, 113, 227, 0.08); color: #164d86; padding: 8px 9px; font-size: 11px; line-height: 1.45; }
+.brokerJsonNotice.warning { background: var(--warning-bg); color: #8a4b08; }
+.brokerJsonPath { margin: 0; border: 1px solid var(--border); border-radius: 7px; background: rgba(255, 255, 255, 0.72); padding: 7px 8px; }
+.brokerJsonAccountList { display: grid; gap: 5px; max-height: 140px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: rgba(255, 255, 255, 0.7); padding: 7px 8px; }
+.brokerJsonAccountList span, .brokerJsonAccountList small { display: inline-flex; align-items: center; gap: 5px; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.brokerJsonAccountList svg { flex: 0 0 auto; color: var(--accent); }
+.brokerJsonActions { display: flex; justify-content: flex-end; gap: 7px; }
 
 @keyframes spin {
   to {

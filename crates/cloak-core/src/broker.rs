@@ -931,7 +931,7 @@ fn claim_plan(v: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
 }
-fn iso_time(t: u64) -> String {
+pub(crate) fn iso_time(t: u64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp(t as i64, 0)
         .map(|t| t.to_rfc3339())
         .unwrap_or_default()

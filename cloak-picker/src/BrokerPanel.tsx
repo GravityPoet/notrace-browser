@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { KeyRound, Link2, Loader2, RefreshCw, UploadCloud } from "lucide-react";
+import { Download, FileJson, KeyRound, Link2, Loader2, RefreshCw, UploadCloud } from "lucide-react";
 import type { AuthCall, AuthStatus } from "./AuthPanel";
 
 export type BrokerMetadata = {
@@ -12,7 +12,16 @@ export type BrokerMetadata = {
 };
 type BrokerRow = { name: string; profile_id: string; trashed: boolean; local: AuthStatus; remote: BrokerMetadata | null };
 export type BrokerOverview = { configured: boolean; endpoint: string | null; connected: boolean; message: string | null; accounts: BrokerRow[]; unmatched: BrokerMetadata[] };
+type BrokerJsonFormat = "cockpit_tools" | "auth_json" | "cpa" | "sub2api";
+type BrokerJsonPreviewAccount = { email: string | null; account_id: string | null; has_access_token: boolean; has_refresh_token: boolean };
+type BrokerJsonPreview = { path: string; detected_format: string; account_count: number; accounts: BrokerJsonPreviewAccount[]; contains_refresh_token: boolean; message: string };
 const nativeCall: AuthCall = (command, args) => invoke(command, args);
+const jsonFormats: Array<{ value: BrokerJsonFormat; label: string }> = [
+  { value: "cockpit_tools", label: "Cockpit Tools" },
+  { value: "auth_json", label: "官方 auth.json" },
+  { value: "cpa", label: "CPA" },
+  { value: "sub2api", label: "Sub2API" },
+];
 const errors: Record<string, string> = {
   reauth_required: "授权已失效，需要重新授权",
   recovery_required: "上次刷新结果不确定，已停止重用旧凭据",
@@ -38,6 +47,9 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [exportRow, setExportRow] = useState<BrokerRow | null>(null);
+  const [jsonFormat, setJsonFormat] = useState<BrokerJsonFormat>("cockpit_tools");
+  const [importPreview, setImportPreview] = useState<BrokerJsonPreview | null>(null);
   const mounted = useRef(true);
   const inFlight = useRef(false);
   const read = useCallback(async () => {
@@ -72,11 +84,29 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
     await read();
     if (mounted.current) setMessage("新授权已交给 Broker；下游会在下一代凭据同步后恢复");
   }
+  async function importJson() {
+    const path = await call<string | null>("choose_broker_json_import_path", {});
+    if (!path) return;
+    const preview = await call<BrokerJsonPreview>("broker_preview_json", { path });
+    if (mounted.current) setImportPreview(preview);
+  }
+  async function exportJson(row: BrokerRow) {
+    await call("broker_export_json", { profileId: row.profile_id, format: jsonFormat });
+    if (mounted.current) { setExportRow(null); setMessage(`${row.name} 的 ${jsonFormats.find((item) => item.value === jsonFormat)?.label ?? "JSON"} 已保存（仅 access-only）`); }
+  }
+  async function convertImportedJson() {
+    if (!importPreview) return;
+    await call("broker_convert_json", { path: importPreview.path, format: jsonFormat });
+    if (mounted.current) { setImportPreview(null); setMessage(`已转换为 ${jsonFormats.find((item) => item.value === jsonFormat)?.label ?? "JSON"}（不会写入 Broker）`); }
+  }
   const disabled = Boolean(busy);
   return <section className="brokerPanel" aria-label="统一授权续期">
     <div className="brokerPanelHeader">
       <div><span className="eyebrow">授权管理中心</span><h2 id="cloak-editor-dialog-title">统一授权续期</h2><p>查看谁负责刷新，以及各端是否收到最新凭据。</p></div>
-      <button className="secondaryButton" type="button" disabled={disabled} onClick={() => void run("status", read)}><RefreshCw size={14} />读取状态</button>
+      <div className="brokerPanelHeaderActions">
+        <button className="secondaryButton" type="button" disabled={disabled} onClick={() => void run("import-json", importJson)}><UploadCloud size={14} />导入 JSON</button>
+        <button className="secondaryButton" type="button" disabled={disabled} onClick={() => void run("status", read)}><RefreshCw size={14} />读取状态</button>
+      </div>
     </div>
     {overview?.configured && !editing ? <p className="inspectorHint">{overview.connected ? "续期服务已连接" : "续期服务暂不可用"} · {overview.endpoint} <button className="textButton" type="button" onClick={() => setEditing(true)} disabled={disabled}>更换连接</button></p> : <div className="brokerConnection">
       <input aria-label="Broker 地址" placeholder="续期服务地址" value={endpoint} onChange={event => setEndpoint(event.target.value)} disabled={disabled} />
@@ -97,11 +127,26 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
           <div className="brokerRowActions">{remote ? needsReauth ? <button className="secondaryButton" type="button" disabled={disabled || !overview.connected} onClick={() => void run(row.profile_id, () => reauthorize(row))}><KeyRound size={14} />重新授权并纳管</button> : <>
             <button className="secondaryButton" type="button" disabled={disabled || !overview.connected} onClick={() => void run(row.profile_id, async () => { await call("broker_refresh_account", { profileId: row.profile_id }); await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>
             <button className="secondaryButton" type="button" disabled={disabled || !overview.connected} onClick={() => void run(row.profile_id, async () => { await call("broker_set_cpa", { profileId: row.profile_id, enabled: !remote.cpa_enabled }); await read(); })}>{remote.cpa_enabled ? "暂停 CPA 同步" : "同步到 CPA"}</button>
+            <button className="secondaryButton" type="button" disabled={disabled || !overview.connected} onClick={() => { setExportRow(row); setJsonFormat("cockpit_tools"); }}><Download size={14} />导出 JSON</button>
           </> : <button className="secondaryButton" type="button" disabled={disabled || !overview.connected || !canManage} onClick={() => void run(row.profile_id, () => manage(row))}>{needsLogin ? <KeyRound size={14} /> : <UploadCloud size={14} />}{needsLogin ? "授权并纳管" : "交给 Broker"}</button>}</div>
         </div>
         {remote && <><div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? `已确认 · 第 ${remote.generation} 代` : "尚未完成适配验收"}</b></span></div>{remote.error && <p className="brokerError">{errors[remote.error] ?? "授权操作未完成"}</p>}</>}
       </article>;
     })}</div>
     {!!overview?.unmatched.length && <p className="inspectorHint">服务端还有 {overview.unmatched.length} 条未绑定本机浏览器的授权。它们保留在 Broker，不会被窗口自动删除。</p>}
+    {exportRow && <div className="brokerJsonCard" role="dialog" aria-label="导出 JSON">
+      <div className="brokerJsonCardHeader"><div><strong>导出 JSON</strong><span>{exportRow.name}</span></div><button className="iconButton" type="button" aria-label="关闭导出 JSON" onClick={() => setExportRow(null)}>×</button></div>
+      <label className="brokerJsonField">导出格式<select value={jsonFormat} onChange={(event) => setJsonFormat(event.target.value as BrokerJsonFormat)} disabled={disabled}>{jsonFormats.map((format) => <option value={format.value} key={format.value}>{format.label}</option>)}</select></label>
+      <p className="brokerJsonNotice">只导出 access token / id token；refresh_token 始终为空，由 NoTrace Broker 继续负责续期。</p>
+      <div className="brokerJsonActions"><button className="secondaryButton" type="button" disabled={disabled} onClick={() => setExportRow(null)}>取消</button><button className="primaryButton" type="button" disabled={disabled} onClick={() => void run("export-json", () => exportJson(exportRow))}><Download size={14} />保存 JSON</button></div>
+    </div>}
+    {importPreview && <div className="brokerJsonCard" role="dialog" aria-label="导入 JSON">
+      <div className="brokerJsonCardHeader"><div><strong>导入 JSON</strong><span>{importPreview.account_count} 个账号 · {importPreview.detected_format}</span></div><button className="iconButton" type="button" aria-label="关闭导入 JSON" onClick={() => setImportPreview(null)}>×</button></div>
+      <p className="brokerJsonPath" title={importPreview.path}>{importPreview.path}</p>
+      <p className={`brokerJsonNotice ${importPreview.contains_refresh_token ? "warning" : ""}`}>{importPreview.message}</p>
+      <div className="brokerJsonAccountList">{importPreview.accounts.slice(0, 6).map((account, index) => <span key={`${account.email ?? account.account_id ?? "account"}-${index}`}><FileJson size={13} />{account.email ?? account.account_id ?? `账号 ${index + 1}`}{account.has_refresh_token ? " · 含 refresh_token" : " · access-only"}</span>)}{importPreview.account_count > 6 && <small>还有 {importPreview.account_count - 6} 个账号</small>}</div>
+      <label className="brokerJsonField">转换为<select value={jsonFormat} onChange={(event) => setJsonFormat(event.target.value as BrokerJsonFormat)} disabled={disabled}>{jsonFormats.map((format) => <option value={format.value} key={format.value}>{format.label}</option>)}</select></label>
+      <div className="brokerJsonActions"><button className="secondaryButton" type="button" disabled={disabled} onClick={() => setImportPreview(null)}>关闭</button><button className="primaryButton" type="button" disabled={disabled} onClick={() => void run("convert-json", convertImportedJson)}><Download size={14} />转换并保存</button></div>
+    </div>}
   </section>;
 }

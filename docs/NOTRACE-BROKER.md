@@ -42,6 +42,18 @@ These projections intentionally contain an empty `refresh_token` and identify
 `refresh_owner: notrace_broker`. A consumer must never receive the Broker's
 master refresh token.
 
+The Picker also provides JSON exchange for a Broker-owned account. It can
+write access-only files in Cockpit Tools, official `auth.json`, CPA, and
+Sub2API-compatible shapes. Exported files always contain an empty
+`refresh_token`; the format marker identifies `notrace_broker` ownership where
+the consumer supports it.
+
+JSON import is a validation/conversion flow. It previews recognized accounts
+and can convert them to one of the supported access-only formats, but it never
+promotes an imported refresh token to Broker ownership and never overwrites a
+production consumer automatically. A browser authorization or an explicitly
+approved Broker handoff remains the source of truth for a rotating grant.
+
 `POST /v1/admin/accounts/<account>/grant` is the one-time handoff from a local
 NoTrace account. The `cloak auth broker-push` command sends the protected local
 grant and then marks the local copy as Broker-owned, preventing the Mac-side
