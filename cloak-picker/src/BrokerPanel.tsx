@@ -21,8 +21,8 @@ type BrokerAccountFilter = "all" | "authorized" | "unauthorized";
 type BrokerAccountSort = "default" | "recent" | "expiry" | "name";
 const nativeCall: AuthCall = (command, args) => invoke(command, args);
 const jsonFormats: Array<{ value: BrokerJsonFormat; label: string }> = [
-  { value: "cockpit_tools", label: "Cockpit Tools" },
   { value: "auth_json", label: "官方 auth.json" },
+  { value: "cockpit_tools", label: "Cockpit Tools" },
   { value: "cpa", label: "CPA" },
   { value: "sub2api", label: "Sub2API" },
 ];
@@ -55,7 +55,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [exportRow, setExportRow] = useState<BrokerRow | null>(null);
-  const [jsonFormat, setJsonFormat] = useState<BrokerJsonFormat>("cockpit_tools");
+  const [jsonFormat, setJsonFormat] = useState<BrokerJsonFormat>("auth_json");
   const [importPreview, setImportPreview] = useState<BrokerJsonPreview | null>(null);
   const [preserveRefreshToken, setPreserveRefreshToken] = useState(false);
   const [clearImportedRefreshToken, setClearImportedRefreshToken] = useState(false);
@@ -184,7 +184,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
           <div className="brokerRowActions">{remote ? needsReauth ? <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, () => reauthorize(row))}><KeyRound size={14} />重新授权并纳管</button> : <>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { await call("broker_refresh_account", { profileId: row.profile_id }); await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { await call("broker_set_cpa", { profileId: row.profile_id, enabled: !remote.cpa_enabled }); await read(); })}>{remote.cpa_enabled ? "暂停 CPA 同步" : "同步到 CPA"}</button>
-            <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => { setPreserveRefreshToken(false); setImportPreview(null); setExportRow(row); setJsonFormat("cockpit_tools"); }}><Download size={14} />导出 JSON</button>
+            <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => { setPreserveRefreshToken(false); setImportPreview(null); setExportRow(row); setJsonFormat("auth_json"); }}><Download size={14} />导出 JSON</button>
           </> : <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected || !canManage} onClick={() => void run(row.profile_id, () => manage(row))}>{needsLogin || needsReauthLocal ? <KeyRound size={14} /> : <UploadCloud size={14} />}{needsLogin ? "授权并纳管" : needsReauthLocal ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
         </div>
         {remote && <><div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span title="从启用统计起累计，只计成功续期；首次授权、重新授权和失败重试不计入。">成功续期<b>{refreshCountLabel(remote.refresh_count)}</b>{remote.refresh_count !== undefined && remote.automatic_refresh_count !== undefined && <small>自动 {remote.automatic_refresh_count} 次 · 手动 {Math.max(0, remote.refresh_count - remote.automatic_refresh_count)} 次</small>}<small>启用统计后累计</small></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? "已确认" : "尚未完成适配验收"}</b></span></div>{remote.error && <p className="brokerError">{errors[remote.error] ?? "授权操作未完成"}</p>}</>}
