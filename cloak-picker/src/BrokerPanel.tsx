@@ -46,7 +46,7 @@ function syncLabel(enabled: boolean, synced: number | null, generation: number, 
 function refreshCountLabel(count: number | undefined) {
   return count === undefined ? "服务端尚未统计" : `${count} 次`;
 }
-export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCall; onBusyChange?: (busy: boolean) => void }) {
+export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false }: { call?: AuthCall; onBusyChange?: (busy: boolean) => void; embedded?: boolean }) {
   const [overview, setOverview] = useState<BrokerOverview | null>(null);
   const [endpoint, setEndpoint] = useState("");
   const [adminKey, setAdminKey] = useState("");
@@ -145,9 +145,9 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
   ];
   const disabled = Boolean(busy);
   const brokerConnected = overview?.connected ?? false;
-  return <section className="brokerPanel" aria-label="统一授权续期">
-    <div className="brokerPanelHeader">
-      <div><span className="eyebrow">授权管理中心</span><h2 id="cloak-editor-dialog-title">统一授权续期</h2><p>查看谁负责刷新，以及各端是否收到最新凭据。</p></div>
+  return <section className={`brokerPanel ${embedded ? "brokerPanelEmbedded" : ""}`} aria-label="统一授权续期">
+    <div className={`brokerPanelHeader ${embedded ? "brokerPanelHeaderEmbedded" : ""}`}>
+      <div>{embedded ? <p>查看刷新负责人、授权状态以及 CPA/Cockpit 是否收到最新凭据。</p> : <><span className="eyebrow">授权管理中心</span><h2 id="cloak-editor-dialog-title">统一授权续期</h2><p>查看谁负责刷新，以及各端是否收到最新凭据。</p></>}</div>
       <div className="brokerPanelHeaderActions">
         <button className="secondaryButton" type="button" disabled={disabled} onClick={() => void run("import-json", importJson)}><UploadCloud size={14} />导入/转换 JSON</button>
         <button className="secondaryButton" type="button" disabled={disabled} onClick={() => void run("status", read)}><RefreshCw size={14} />读取状态</button>
@@ -178,6 +178,11 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
       const needsLogin = row.local.state === "missing";
       const needsReauthLocal = row.local.state === "reauth_required";
       const needsReauth = Boolean(remote?.error && ["reauth_required", "recovery_required"].includes(remote.error));
+      // A missing or invalid local grant still needs a fresh browser login,
+      // even if an old policy record says another client owned the previous
+      // grant. The authority guard applies only when handing over a live
+      // credential, not when creating a new OAuth grant.
+      const canAuthorize = canManage || needsLogin || needsReauthLocal;
       const localStatus = needsReauthLocal ? "OAuth 已失效，需要重新授权" : needsLogin ? "尚未连接 OAuth" : "本机授权尚未纳管";
       return <article className="brokerRow" key={row.profile_id}>
         <div className="brokerRowTop"><div className="brokerRowMain"><strong>{row.name}</strong><span>{row.trashed ? "回收站账号" : "浏览器账号"} · {remote ? "已授权 · NoTrace Broker 自动续期" : row.local.authority === "broker" ? "已授权 · 正在确认授权交接" : needsReauthLocal ? localStatus : needsLogin ? `未授权 · ${localStatus}` : `已授权 · ${localStatus}`}</span></div>
@@ -185,7 +190,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { await call("broker_refresh_account", { profileId: row.profile_id }); await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { await call("broker_set_cpa", { profileId: row.profile_id, enabled: !remote.cpa_enabled }); await read(); })}>{remote.cpa_enabled ? "暂停 CPA 同步" : "同步到 CPA"}</button>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => { setPreserveRefreshToken(false); setImportPreview(null); setExportRow(row); setJsonFormat("auth_json"); }}><Download size={14} />导出 JSON</button>
-          </> : <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected || !canManage} onClick={() => void run(row.profile_id, () => manage(row))}>{needsLogin || needsReauthLocal ? <KeyRound size={14} /> : <UploadCloud size={14} />}{needsLogin ? "授权并纳管" : needsReauthLocal ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
+          </> : <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected || !canAuthorize} onClick={() => void run(row.profile_id, () => manage(row))}>{needsLogin || needsReauthLocal ? <KeyRound size={14} /> : <UploadCloud size={14} />}{needsLogin ? "授权并纳管" : needsReauthLocal ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
         </div>
         {remote && <><div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span title="从启用统计起累计，只计成功续期；首次授权、重新授权和失败重试不计入。">成功续期<b>{refreshCountLabel(remote.refresh_count)}</b>{remote.refresh_count !== undefined && remote.automatic_refresh_count !== undefined && <small>自动 {remote.automatic_refresh_count} 次 · 手动 {Math.max(0, remote.refresh_count - remote.automatic_refresh_count)} 次</small>}<small>启用统计后累计</small></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? "已确认" : "尚未完成适配验收"}</b></span></div>{remote.error && <p className="brokerError">{errors[remote.error] ?? "授权操作未完成"}</p>}</>}
       </article>;

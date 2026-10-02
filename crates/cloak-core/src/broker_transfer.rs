@@ -208,6 +208,7 @@ fn format_records(
 
 fn portable_record(record: &JsonCredentialRecord, include_refresh_token: bool) -> Value {
     json!({
+        "name": record.email,
         "id_token": record.id_token,
         "access_token": record.access_token,
         "refresh_token": if include_refresh_token { &record.refresh_token } else { "" },
@@ -406,6 +407,7 @@ mod tests {
         let credential = credential();
         let bytes = format_access_credentials(&[credential], BrokerJsonFormat::Cpa, false).unwrap();
         let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains("\"name\": \"alpha@example.test\""));
         assert!(text.contains("access-only"));
         assert!(text.contains("\"refresh_token\": \"\""));
         assert!(text.contains("notrace_broker"));

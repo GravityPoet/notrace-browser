@@ -18,11 +18,14 @@ NOTRACE_BROKER_ADMIN_KEY=<random service key>
 NOTRACE_BROKER_CPA_KEY=<different random service key>
 NOTRACE_BROKER_COCKPIT_KEY=<different random service key>
 NOTRACE_BROKER_CPA_AUTH_DIR=/opt/cliproxyapi/auths
+NOTRACE_BROKER_CYCLE_SECONDS=900
 ```
 
 Generate keys outside the repository and place the environment file with mode
 `0600`. The account directory is created with mode `0700`; grant files contain
 AES-GCM ciphertext and are written atomically.
+The cycle interval accepts 15–86400 seconds; invalid or missing values fall
+back to 60 seconds.
 
 The server defaults to `127.0.0.1:18455`. A remote NoTrace management client
 must use an HTTPS reverse proxy or a private WireGuard/Tailscale path. Do not
