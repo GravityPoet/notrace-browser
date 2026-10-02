@@ -98,6 +98,10 @@ pub struct BrokerMetadata {
     pub plan_type: Option<String>,
     pub expires_at: u64,
     pub last_refresh_at: u64,
+    #[serde(default)]
+    pub refresh_count: u64,
+    #[serde(default)]
+    pub automatic_refresh_count: u64,
     pub generation: u64,
     pub next_refresh_at: u64,
     pub next_retry_at: Option<u64>,
@@ -141,6 +145,10 @@ struct Grant {
     issued_at: u64,
     last_refresh_at: u64,
     generation: u64,
+    #[serde(default)]
+    refresh_count: u64,
+    #[serde(default)]
+    automatic_refresh_count: u64,
     handoff_id: String,
     #[serde(default)]
     in_flight: bool,
@@ -173,6 +181,8 @@ impl Grant {
             plan_type: self.plan_type.clone(),
             expires_at: self.expires_at,
             last_refresh_at: self.last_refresh_at,
+            refresh_count: self.refresh_count,
+            automatic_refresh_count: self.automatic_refresh_count,
             generation: self.generation,
             next_refresh_at: self.due_at(),
             next_retry_at: self.next_retry_at,
@@ -258,6 +268,8 @@ impl BrokerStore {
                 return Err(BrokerError::InvalidGrant);
             }
             incoming.generation = current.generation + 1;
+            incoming.refresh_count = current.refresh_count;
+            incoming.automatic_refresh_count = current.automatic_refresh_count;
             incoming.cpa_enabled = current.cpa_enabled;
             incoming.cpa_synced_generation = current.cpa_synced_generation;
             incoming.cockpit_synced_generation = current.cockpit_synced_generation;
@@ -305,6 +317,10 @@ impl BrokerStore {
         self.save(&path, &current)?;
         match request_refresh(&self.config, &current) {
             Ok(mut candidate) => {
+                if !force {
+                    candidate.automatic_refresh_count =
+                        current.automatic_refresh_count.saturating_add(1);
+                }
                 candidate.in_flight = false;
                 candidate.error = None;
                 candidate.failures = 0;
@@ -734,6 +750,8 @@ fn parse_grant(key: &str, body: &str) -> BrokerResult<Grant> {
         last_refresh_at: now,
         handoff_id,
         generation: 1,
+        refresh_count: 0,
+        automatic_refresh_count: 0,
         in_flight: false,
         error: None,
         failures: 0,
@@ -835,6 +853,7 @@ fn request_refresh(config: &BrokerConfig, previous: &Grant) -> BrokerResult<Gran
         return Err(BrokerError::Unchanged);
     }
     candidate.generation = previous.generation + 1;
+    candidate.refresh_count = previous.refresh_count.saturating_add(1);
     Ok(candidate)
 }
 fn identity_matches(a: &Grant, b: &Grant) -> BrokerResult<()> {
