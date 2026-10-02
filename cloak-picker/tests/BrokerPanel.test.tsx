@@ -36,8 +36,8 @@ describe("统一授权续期窗口", () => {
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root?.render(createElement(BrokerPanel, { call })));
     await settle();
-    expect(container.textContent).toContain("第 3 代");
-    expect(container.textContent).toContain("已同步 · 第 3 代");
+    expect(container.textContent).toContain("已授权 · NoTrace Broker 自动续期");
+    expect(container.textContent).toContain("已同步");
     expect(container.textContent).toContain("尚未完成适配验收");
     expect(container.textContent).not.toContain("refresh_token");
   });
