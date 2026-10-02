@@ -21,9 +21,10 @@ pub use broker_transfer::{
 };
 mod auth;
 pub use auth::{
-    auth_status, login_account_auth, login_account_auth_with_cancellation, refresh_account_auth,
-    refresh_all_account_auth, remove_account_auth, set_auth_authority, set_auth_auto_refresh,
-    AuthAuthority, AuthRefreshSummary, AuthState, AuthStatus,
+    auth_status, login_account_auth, login_account_auth_with_cancellation,
+    login_account_auth_with_progress, refresh_account_auth, refresh_all_account_auth,
+    remove_account_auth, set_auth_authority, set_auth_auto_refresh, AuthAuthority,
+    AuthLoginProgress, AuthRefreshSummary, AuthState, AuthStatus,
 };
 mod license;
 mod profile_metadata;

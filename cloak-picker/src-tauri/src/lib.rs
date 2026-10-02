@@ -10,7 +10,7 @@ use cloak_core::{
     import_workspace_with_cancellation as core_import_workspace,
     launch_account as core_launch_account, launch_chrome_web_store as core_launch_chrome_web_store,
     list_accounts as core_list_accounts, list_trashed_accounts as core_list_trashed_accounts,
-    login_account_auth_with_cancellation as core_login_account_auth,
+    login_account_auth_with_progress as core_login_account_auth,
     permanently_delete_account as core_permanently_delete_account,
     preview_workspace_import_with_cancellation as core_preview_workspace_import,
     refresh_account_auth as core_refresh_account_auth,
@@ -21,10 +21,10 @@ use cloak_core::{
     set_auth_auto_refresh as core_set_auth_auto_refresh, set_group as core_set_group,
     set_mark as core_set_mark, set_note as core_set_note, set_proxy as core_set_proxy,
     set_region as core_set_region, toggle_locale as core_toggle_locale, Account, AuthAuthority,
-    AuthRefreshSummary, AuthStatus, BrokerJsonImportPreview, BrokerJsonTransferSummary,
-    BrokerMetadata, BrokerOverview, CloakConfig, ForceCloseResult, LaunchOptions, LaunchPlan,
-    LaunchResult, SeatUsage, WorkspaceExportSummary, WorkspaceImportMapping,
-    WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
+    AuthLoginProgress, AuthRefreshSummary, AuthStatus, BrokerJsonImportPreview,
+    BrokerJsonTransferSummary, BrokerMetadata, BrokerOverview, CloakConfig, ForceCloseResult,
+    LaunchOptions, LaunchPlan, LaunchResult, SeatUsage, WorkspaceExportSummary,
+    WorkspaceImportMapping, WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
 };
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -144,22 +144,58 @@ struct WorkspaceCancellationRegistry {
     active: Arc<Mutex<Option<Arc<AtomicBool>>>>,
 }
 
-#[derive(Default)]
-struct AuthCancellationRegistry(Mutex<HashMap<String, Arc<AtomicBool>>>);
+#[derive(Clone, serde::Serialize)]
+struct ActiveAuth {
+    account: String,
+    phase: AuthLoginProgress,
+    started_at: u64,
+    cancelling: bool,
+}
+type AuthOperation = Option<(ActiveAuth, Arc<AtomicBool>)>;
+#[derive(Clone, Default)]
+struct AuthCancellationRegistry(Arc<Mutex<AuthOperation>>);
 
 impl AuthCancellationRegistry {
     fn begin(&self, name: &str) -> Result<Arc<AtomicBool>, String> {
         let mut active = self.0.lock().map_err(|_| "授权状态不可用")?;
-        if active.contains_key(name) {
-            return Err("该账号正在授权，请先完成或取消".to_string());
+        if let Some((status, _)) = active.as_ref() {
+            return Err(format!(
+                "已有授权正在进行：{}；请先完成或取消该授权",
+                status.account
+            ));
         }
         let flag = Arc::new(AtomicBool::new(false));
-        active.insert(name.to_string(), flag.clone());
+        *active = Some((
+            ActiveAuth {
+                account: name.to_string(),
+                phase: AuthLoginProgress::Preparing,
+                started_at: workspace_timestamp(),
+                cancelling: false,
+            },
+            Arc::clone(&flag),
+        ));
         Ok(flag)
     }
+    fn status(&self) -> Result<Option<ActiveAuth>, String> {
+        Ok(self
+            .0
+            .lock()
+            .map_err(|_| "授权状态不可用")?
+            .as_ref()
+            .map(|(status, _)| status.clone()))
+    }
+    fn progress(&self, name: &str, phase: AuthLoginProgress) {
+        if let Ok(mut active) = self.0.lock() {
+            if let Some((status, _)) = active.as_mut().filter(|(status, _)| status.account == name)
+            {
+                status.phase = phase;
+            }
+        }
+    }
     fn cancel(&self, name: &str) -> Result<bool, String> {
-        let active = self.0.lock().map_err(|_| "授权状态不可用")?;
-        if let Some(flag) = active.get(name) {
+        let mut active = self.0.lock().map_err(|_| "授权状态不可用")?;
+        if let Some((status, flag)) = active.as_mut().filter(|(status, _)| status.account == name) {
+            status.cancelling = true;
             flag.store(true, Ordering::Release);
             return Ok(true);
         }
@@ -167,7 +203,12 @@ impl AuthCancellationRegistry {
     }
     fn finish(&self, name: &str) {
         if let Ok(mut active) = self.0.lock() {
-            active.remove(name);
+            if active
+                .as_ref()
+                .is_some_and(|(status, _)| status.account == name)
+            {
+                *active = None;
+            }
         }
     }
 }
@@ -824,12 +865,23 @@ async fn login_account_auth(
 ) -> Result<AuthStatus, String> {
     let flag = registry.begin(&name)?;
     let worker_name = name.clone();
+    let worker_registry = registry.inner().clone();
     let result = run_blocking(move || {
-        core_login_account_auth(&config()?, &worker_name, &flag).map_err(|err| err.to_string())
+        core_login_account_auth(&config()?, &worker_name, &flag, |phase| {
+            worker_registry.progress(&worker_name, phase);
+        })
+        .map_err(|err| err.to_string())
     })
     .await;
     registry.finish(&name);
     result
+}
+
+#[tauri::command]
+fn active_account_auth(
+    registry: State<'_, AuthCancellationRegistry>,
+) -> Result<Option<ActiveAuth>, String> {
+    registry.status()
 }
 
 #[tauri::command]
@@ -1283,6 +1335,7 @@ pub fn run() {
             refresh_account_auth,
             login_account_auth,
             cancel_account_auth,
+            active_account_auth,
             set_auth_auto_refresh,
             set_auth_authority,
             refresh_all_account_auth,
@@ -1325,6 +1378,33 @@ fn focus_main_window_after_launch(_: tauri::AppHandle) {}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn auth_registry_reports_the_actual_account_and_cancellation_until_worker_finishes() {
+        let registry = super::AuthCancellationRegistry::default();
+        let flag = registry.begin("first@example.test").unwrap();
+        assert!(registry
+            .begin("other@example.test")
+            .unwrap_err()
+            .contains("first@example.test"));
+        registry.progress(
+            "first@example.test",
+            super::AuthLoginProgress::WaitingBrowser,
+        );
+        assert!(matches!(
+            registry.status().unwrap().unwrap().phase,
+            super::AuthLoginProgress::WaitingBrowser
+        ));
+        assert!(!registry.cancel("other@example.test").unwrap());
+        assert!(registry.cancel("first@example.test").unwrap());
+        assert!(flag.load(std::sync::atomic::Ordering::Acquire));
+        assert!(registry.status().unwrap().unwrap().cancelling);
+        registry.finish("other@example.test");
+        assert!(registry.begin("other@example.test").is_err());
+        registry.finish("first@example.test");
+        assert!(registry.status().unwrap().is_none());
+        assert!(registry.begin("other@example.test").is_ok());
+    }
+
     use super::*;
 
     #[test]

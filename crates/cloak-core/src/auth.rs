@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use url::Url;
 use zeroize::Zeroizing;
@@ -97,6 +98,12 @@ pub struct AuthRefreshSummary {
 #[serde(rename_all = "snake_case")]
 enum Failure {
     Busy,
+    LoginBusy,
+    CallbackInUse,
+    SeatInUse,
+    SeatStale,
+    LicenseInvalid,
+    LicenseNetwork,
     Cancelled,
     Timeout,
     Service,
@@ -111,6 +118,16 @@ impl Failure {
     fn message(self) -> &'static str {
         match self {
             Self::Busy => "该账号正在授权或刷新，请等待当前操作完成",
+            Self::LoginBusy => "另一个账号正在浏览器授权；请先完成或取消该授权，再授权此账号",
+            Self::CallbackInUse => {
+                "授权回调端口被其他程序占用；请先结束 Codex 或 Cockpit 中未完成的登录，再重试"
+            }
+            Self::SeatInUse => {
+                "浏览器上游席位已占满。请关闭不用的 NoTrace 窗口；若已关闭，请等待上游释放席位后重试"
+            }
+            Self::SeatStale => "浏览器已关闭，但上游席位尚未释放；已等待 30 秒，请稍后重试",
+            Self::LicenseInvalid => "浏览器上游许可证无效、过期或缺失，请检查 CloakBrowser 许可证",
+            Self::LicenseNetwork => "无法连接浏览器上游许可证服务，请检查网络后重试",
             Self::Cancelled => "授权已取消，原有凭证保持不变",
             Self::Timeout => "官方授权服务响应超时，可稍后重试",
             Self::Service => "官方授权服务暂不可用，请检查网络或 Codex CLI",
@@ -653,24 +670,57 @@ fn refresh_with(config: &CloakConfig, name: &str, binary: &Path) -> Result<AuthS
     status_at(&home, name)
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthLoginProgress {
+    Preparing,
+    OpeningBrowser,
+    WaitingBrowser,
+}
+
 pub fn login_account_auth(config: &CloakConfig, name: &str) -> Result<AuthStatus> {
-    login_account_auth_with_cancellation(config, name, &AtomicBool::new(false))
+    login_account_auth_with_cancellation(config, name, &Arc::new(AtomicBool::new(false)))
 }
 pub fn login_account_auth_with_cancellation(
     config: &CloakConfig,
     name: &str,
-    cancel: &AtomicBool,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<AuthStatus> {
+    login_account_auth_with_progress(config, name, cancel, |_| {})
+}
+pub fn login_account_auth_with_progress(
+    config: &CloakConfig,
+    name: &str,
+    cancel: &Arc<AtomicBool>,
+    progress: impl Fn(AuthLoginProgress),
+) -> Result<AuthStatus> {
+    progress(AuthLoginProgress::Preparing);
     login_with(config, name, &resolve_codex_binary()?, cancel, |raw| {
         validate_auth_url(raw)?;
+        progress(AuthLoginProgress::OpeningBrowser);
         let mut options = LaunchOptions::from_env(false);
         options.preflight = crate::PreflightMode::Off;
+        options.cancellation = Some(Arc::clone(cancel));
         let start = Instant::now();
         let plan = crate::build_launch_plan_for_url(config, name, &options, raw)
-            .map_err(|_| Failure::Browser)?;
-        crate::launch_plan(config, plan, &options, start).map_err(|_| Failure::Browser)?;
+            .map_err(browser_failure)?;
+        crate::launch_plan(config, plan, &options, start).map_err(browser_failure)?;
+        progress(AuthLoginProgress::WaitingBrowser);
         Ok(())
     })
+}
+
+fn browser_failure(error: CloakError) -> Failure {
+    match error {
+        CloakError::LicenseSeatInUse | CloakError::LicenseDenied { code: 76, .. } => {
+            Failure::SeatInUse
+        }
+        CloakError::LicenseSeatStale => Failure::SeatStale,
+        CloakError::LicenseDenied { code: 77, .. } => Failure::LicenseInvalid,
+        CloakError::LicenseDenied { code: 78, .. } => Failure::LicenseNetwork,
+        CloakError::LaunchCancelled => Failure::Cancelled,
+        _ => Failure::Browser,
+    }
 }
 fn login_with(
     config: &CloakConfig,
@@ -685,7 +735,11 @@ fn login_with(
             .parent()
             .ok_or(Failure::Credentials)?
             .join(".login.lock"),
-    )?;
+    )
+    .map_err(|error| match error {
+        CloakError::Auth(_) => CloakError::from(Failure::LoginBusy),
+        other => other,
+    })?;
     let _lock = lock(&home.join(".operation.lock"))?;
     let previous = Credentials::read(&home).ok().flatten();
     let pending = home.join(".pending-login");
@@ -840,6 +894,9 @@ fn classify_error(value: &Value) -> Failure {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_ascii_lowercase();
+    if message.contains("address already in use") || message.contains("port 1455") {
+        return Failure::CallbackInUse;
+    }
     if [
         "refresh_token_invalidated",
         "refresh_token_reused",

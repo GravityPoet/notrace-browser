@@ -18,7 +18,9 @@ executable="$APP/Contents/MacOS/$executable_name"
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/cloak-picker-native-e2e.XXXXXX")"
 picker_pid=""
+broker_pid=""
 cleanup() {
+  if [[ -n "$broker_pid" ]]; then kill "$broker_pid" 2>/dev/null || true; wait "$broker_pid" 2>/dev/null || true; fi
   if [[ -n "$picker_pid" ]] && kill -0 "$picker_pid" 2>/dev/null; then
     kill -TERM "$picker_pid" 2>/dev/null || true
     wait "$picker_pid" 2>/dev/null || true
@@ -35,8 +37,12 @@ account_dir="$account_base/native-e2e-account"
 report="$tmp/cloak-picker-native-e2e-report.json"
 log="$tmp/picker.log"
 mkdir -p "$(dirname "$browser")" "$account_dir"
-printf '%s\n' '#!/bin/sh' 'printf "Chromium 145.0.7632.109.2\\n"' > "$browser"
+printf '%s\n' '#!/bin/sh' 'if [ "${1:-}" = "--version" ]; then printf "Chromium 145.0.7632.109.2\n"; else exit 76; fi' > "$browser"
 chmod 700 "$browser"
+# Resolve current to a plain executable for the synthetic launch failure; real
+# browsers still use their ordinary LaunchServices bundle path.
+mv "$browser" "$version_dir/chromium-fixture"
+ln -s "$version_dir/chromium-fixture" "$browser"
 ln -s "$version_dir" "$browser_root/current"
 sha="$(shasum -a 256 "$browser" | awk '{print $1}')"
 printf '%s  %s\n' "$sha" "$browser_root/current/Chromium.app/Contents/MacOS/Chromium" > "$browser_root/current.sha256"
@@ -45,6 +51,44 @@ printf '%s\n' '48152' > "$account_dir/.cloak-seed"
 printf '%s\n' '1700000000000000' > "$account_dir/.cloak-created-at"
 chmod 600 "$account_dir/.cloak-seed" "$account_dir/.cloak-created-at"
 
+# An isolated metadata-only Broker and synthetic OAuth provider exercise the
+# real native click path without using a real account or OpenAI credentials.
+cat > "$tmp/broker-fixture.py" <<'PYFIX'
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b"[]")
+    def log_message(self, *args): pass
+server = HTTPServer(("127.0.0.1", 0), Handler)
+Path(sys.argv[1]).write_text(json.dumps({"endpoint": f"http://127.0.0.1:{server.server_port}", "admin_key": "synthetic-native-e2e-key-000000000000"}))
+server.serve_forever()
+PYFIX
+connection="$(dirname "$account_base")/.notrace-broker-client.json"
+python3 "$tmp/broker-fixture.py" "$connection" >"$tmp/broker.log" 2>&1 &
+broker_pid="$!"
+for attempt in $(seq 1 50); do [[ -s "$connection" ]] && break; sleep 0.1; done
+[[ -s "$connection" ]] || { printf '%s\n' 'fixture broker failed to start' >&2; exit 1; }
+cat > "$tmp/codex-fixture" <<'PYFIX'
+#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    if message.get("method") == "initialize":
+        result = {}
+    elif message.get("method") == "account/login/start":
+        result = {"loginId": "native-e2e", "authUrl": "https://auth.openai.com/oauth/authorize?state=synthetic"}
+    else:
+        continue
+    print(json.dumps({"id": message["id"], "result": result}), flush=True)
+PYFIX
+chmod 700 "$tmp/codex-fixture"
+CLOAK_SKIP_GEO=1 \
+CLOAK_CODEX_BINARY="$tmp/codex-fixture" \
 CLOAK_ACCOUNT_BASE="$account_base" \
 CLOAK_BROWSER_ROOT="$browser_root" \
 CLOAK_EXTENSION_SOURCE="$ROOT/extension/cloak-companion" \
@@ -72,6 +116,8 @@ node -e '
   const fs = require("fs");
   const report = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
   const required = [
+    "renewal-pane-visible-search",
+    "renewal-search-authorize-seat-error",
     "account-tab-aria-controls",
     "account-tab-keyboard-focus",
     "path-ellipsis-copy-source",

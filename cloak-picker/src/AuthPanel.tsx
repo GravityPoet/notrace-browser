@@ -15,6 +15,13 @@ export type AuthStatus = {
   message: string | null;
 };
 
+export type AuthLoginPhase = "preparing" | "opening_browser" | "waiting_browser";
+export type ActiveAuth = { account: string; phase: AuthLoginPhase; started_at: number; cancelling: boolean };
+export const authProgressLabels: Record<AuthLoginPhase, string> = {
+  preparing: "正在准备官方授权…",
+  opening_browser: "正在检查浏览器席位并打开授权页…",
+  waiting_browser: "授权页已打开，请在对应账号浏览器完成登录（最多等待 10 分钟）",
+};
 type Operation = "login_account_auth" | "refresh_account_auth" | "set_auth_auto_refresh";
 export type AuthCall = <T>(command: string, args: Record<string, unknown>) => Promise<T>;
 const demoAuth = new Map<string, AuthStatus>();
@@ -62,6 +69,7 @@ export function AuthPanel({ name, call = nativeCall }: { name: string; call?: Au
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [busy, setBusy] = useState<Operation | null>(null);
   const [error, setError] = useState("");
+  const [loginPhase, setLoginPhase] = useState<AuthLoginPhase>("preparing");
   const [notice, setNotice] = useState("");
   const current = useRef(name);
   current.current = name;
@@ -83,9 +91,20 @@ export function AuthPanel({ name, call = nativeCall }: { name: string; call?: Au
     const timer = window.setInterval(() => void read(), 30_000);
     return () => { cancelled = true; mounted.current = false; window.clearInterval(timer); };
   }, [name, call]);
+  useEffect(() => {
+    if (busy !== "login_account_auth") return;
+    let stopped = false;
+    const timer = window.setInterval(() => {
+      void call<ActiveAuth | null>("active_account_auth", {}).then(active => {
+        if (!stopped && active?.account === name) setLoginPhase(active.phase);
+      }).catch(() => {});
+    }, 1000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [busy, name, call]);
   async function run(operation: Operation) {
     if (inFlight.current) return;
     inFlight.current = true; setBusy(operation); setError(""); setNotice("");
+    setLoginPhase("preparing");
     const target = name;
     try {
       const next = await call<AuthStatus>(operation, {
@@ -125,7 +144,7 @@ export function AuthPanel({ name, call = nativeCall }: { name: string; call?: Au
         <Row label="自动续期" value={visible.auto_refresh ? "已开启 · 到期前 36 小时续期" : "已暂停"} />
       </>}
       <p className="inspectorHint">{connected ? (noTraceOwnsRefresh ? "每天检查，到期前才刷新。回收站账号同样适用。" : `${authorityLabels[visible.authority]}负责刷新，NoTrace 不会并发轮换这条授权链。`) : "连接一次官方授权，即可为这个账号自动续期。已有网页登录可用于完成授权。"}</p>
-      {busy === "login_account_auth" && <p className="inspectorHint" role="status">请在此账号的浏览器中完成 OpenAI 授权；最多等待 10 分钟。</p>}
+      {busy === "login_account_auth" && <p className="inspectorHint" role="status">{authProgressLabels[loginPhase]}</p>}
       {visible?.message && <p className="inspectorHint">{visible.message}</p>}
       {visible?.next_retry_at && <p className="inspectorHint">下次重试：{time(visible.next_retry_at)}</p>}
       {error && <p className="inspectorHint authError" role="alert">{error}</p>}

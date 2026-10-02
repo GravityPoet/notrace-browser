@@ -162,6 +162,32 @@ const NATIVE_E2E_DRIVER: &str = r#"
   }));
   const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
   try {
+    const search = await waitFor(() => document.querySelector('input[aria-label="搜索授权账号"]'), '右侧授权搜索');
+    const scroll = search.closest('.brokerWorkspacePaneScroll');
+    const bounds = scroll.getBoundingClientRect();
+    const searchBounds = search.getBoundingClientRect();
+    if (bounds.height < 150 || searchBounds.bottom > bounds.bottom || searchBounds.top < bounds.top) {
+      throw new Error(`授权面板被裁切：滚动区高度 ${bounds.height}`);
+    }
+    const hit = document.elementFromPoint(searchBounds.x + searchBounds.width / 2, searchBounds.y + searchBounds.height / 2);
+    if (hit !== search) throw new Error('右侧授权搜索被其他元素遮挡');
+    const headings = Array.from(document.querySelectorAll('h1,h2')).filter(e => e.textContent.trim() === '统一授权续期');
+    if (headings.length !== 1) throw new Error('统一授权续期存在重复标题');
+    const firstTool = document.querySelector('.workspaceToolPrimary');
+    if (!firstTool?.textContent.includes('账号详情')) throw new Error('账号详情未移到顶部工具栏');
+    checks.push('renewal-pane-visible-search');
+    await waitFor(() => document.querySelector('.brokerRow'), '真实 IPC 读取授权列表');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(search, 'native-e2e-account');
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await waitFor(() => document.querySelectorAll('.brokerRow').length === 1, '搜索精确账号');
+    const authorize = Array.from(document.querySelectorAll('.brokerRow button')).find(e => e.textContent.trim() === '授权并纳管');
+    if (!authorize || authorize.disabled) throw new Error('搜索结果未提供可点击的授权操作');
+    authorize.click();
+    await waitFor(() => document.querySelector('.brokerRowFeedback[role="alert"]')?.textContent.includes('上游席位已占满'), '浏览器席位错误显示');
+    if (authorize.disabled) await waitFor(() => !authorize.disabled, '授权失败后恢复重试');
+    checks.push('renewal-search-authorize-seat-error');
+    firstTool.click();
     const activeTab = await waitFor(
       () => document.querySelector('#cloak-account-active-tab[aria-selected="true"]'),
       '活跃账号 tab',
@@ -264,7 +290,7 @@ const NATIVE_E2E_DRIVER: &str = r#"
     const visibleTools = Array.from(document.querySelectorAll('.workspaceTool strong'))
       .map((node) => node.textContent?.trim())
       .filter(Boolean);
-    for (const label of ['统一授权续期', '工作区备份', '管理分组', '管理标签']) {
+    for (const label of ['账号详情', '工作区备份', '管理分组', '管理标签']) {
       if (!visibleTools.includes(label)) throw new Error(`首屏工具栏缺少：${label}`);
     }
     checks.push('workspace-tools-visible');
