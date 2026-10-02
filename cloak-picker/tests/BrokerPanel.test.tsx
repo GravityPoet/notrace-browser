@@ -67,6 +67,7 @@ describe("统一授权续期窗口", () => {
     expect(button).toBeTruthy();
     await act(async () => button?.click());
     await settle();
+    expect(container.querySelector('[aria-label="导出 JSON"]')?.classList.contains("brokerJsonCard")).toBe(true);
     expect(container.textContent).toContain("清空 refresh_token（推荐）");
     expect(container.querySelector('input[type="checkbox"]')).toHaveProperty("checked", true);
     expect(container.textContent).toContain("Cockpit Tools");
@@ -100,5 +101,25 @@ describe("统一授权续期窗口", () => {
     await act(async () => secondSave?.click());
     await settle();
     expect(calls.filter(item => item.command === "broker_export_json").at(-1)?.args).toEqual({ profileId: "profile-1", format: "cockpit_tools", includeRefreshToken: true });
+  });
+
+  it("filters the account list into all, authorized, and unauthorized views", async () => {
+    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
+    const base = overview(remote);
+    const unauthorized = { ...base.accounts[0], name: "unmanaged@example.test", profile_id: "profile-2", local: { ...local, account: "unmanaged@example.test", email: "unmanaged@example.test", state: "missing" as const }, remote: null };
+    const data = { ...base, accounts: [base.accounts[0], unauthorized] };
+    const call: AuthCall = async function call<T>(command: string): Promise<T> { if (command === "broker_overview") return data as T; return data as T; };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    expect(container.textContent).toContain("全部 2");
+    expect(container.textContent).toContain("已授权 1");
+    expect(container.textContent).toContain("未授权 1");
+    const unauthorizedTab = [...container.querySelectorAll('[role="tab"]')].find(candidate => candidate.textContent?.includes("未授权"));
+    await act(async () => (unauthorizedTab as HTMLElement | undefined)?.click());
+    await settle();
+    expect(container.textContent).toContain("显示 1 / 2 个账号");
+    expect(container.textContent).toContain("unmanaged@example.test");
+    expect(container.textContent).not.toContain("demo@example.test");
   });
 });
