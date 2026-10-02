@@ -61,14 +61,14 @@ describe("统一授权续期窗口", () => {
     expect(calls).toContain("broker_push_account");
   });
 
-  it("offers only reauthorization when CPA reports a credential save problem", async () => {
+  it("reports a CPA storage error separately from the reauthorization action", async () => {
     const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, automatic_refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: null, cpa_sync_error: "storage", cockpit_synced_generation: null };
     const calls: string[] = [];
     const call: AuthCall = async function call<T>(command: string): Promise<T> { calls.push(command); return overview(remote) as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root?.render(createElement(BrokerPanel, { call })));
     await settle();
-    expect(document.body.textContent).toContain("CPA 凭据保存未完成（可重新授权）");
+    expect(document.body.textContent).toContain("服务器文件读写失败，请检查同步服务");
     const reauthorize = [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.trim() === "重新授权");
     expect(reauthorize).toBeTruthy();
     expect(document.body.textContent).not.toContain("覆盖 CPA");

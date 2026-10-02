@@ -125,7 +125,7 @@ pub fn convert_file(
     if records.is_empty() || records.iter().any(|record| record.access_token.is_empty()) {
         return Err(CloakError::Auth("JSON 中没有可转换的 access_token".into()));
     }
-    let value = format_records(&records, format, include_refresh_token);
+    let value = format_records(&records, format, include_refresh_token)?;
     serde_json::to_vec_pretty(&value)
         .map(|mut bytes| {
             bytes.push(b'\n');
@@ -161,7 +161,7 @@ pub fn format_access_credentials(
             has_refresh_token: include_refresh_token && !credential.refresh_token.is_empty(),
         })
         .collect::<Vec<_>>();
-    let value = format_records(&records, format, include_refresh_token);
+    let value = format_records(&records, format, include_refresh_token)?;
     serde_json::to_vec_pretty(&value)
         .map(|mut bytes| {
             bytes.push(b'\n');
@@ -174,9 +174,17 @@ fn format_records(
     records: &[JsonCredentialRecord],
     format: BrokerJsonFormat,
     include_refresh_token: bool,
-) -> Value {
-    match format {
-        BrokerJsonFormat::CockpitTools | BrokerJsonFormat::Cpa => Value::Array(
+) -> Result<Value> {
+    Ok(match format {
+        BrokerJsonFormat::Cpa => match records {
+            [record] => portable_record(record, include_refresh_token),
+            _ => {
+                return Err(CloakError::Auth(
+                    "CPA 每个 JSON 文件只能包含一个账号，请分别导出".into(),
+                ))
+            }
+        },
+        BrokerJsonFormat::CockpitTools => Value::Array(
             records
                 .iter()
                 .map(|record| portable_record(record, include_refresh_token))
@@ -203,7 +211,7 @@ fn format_records(
             "type": "sub2api-data",
             "version": 1,
         }),
-    }
+    })
 }
 
 fn portable_record(record: &JsonCredentialRecord, include_refresh_token: bool) -> Value {
@@ -406,11 +414,26 @@ mod tests {
     fn exports_access_only_formats_without_refresh_token() {
         let credential = credential();
         let bytes = format_access_credentials(&[credential], BrokerJsonFormat::Cpa, false).unwrap();
+        // CPA decodes each uploaded file as a metadata object, not an array.
+        let metadata: serde_json::Map<String, Value> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(metadata.get("type").and_then(Value::as_str), Some("codex"));
+        assert_eq!(
+            metadata.get("access_token").and_then(Value::as_str),
+            Some("access-only")
+        );
         let text = String::from_utf8(bytes).unwrap();
         assert!(text.contains("\"name\": \"alpha@example.test\""));
         assert!(text.contains("access-only"));
         assert!(text.contains("\"refresh_token\": \"\""));
         assert!(text.contains("notrace_broker"));
+    }
+
+    #[test]
+    fn cpa_export_rejects_multiple_accounts_in_one_auth_file() {
+        let credentials = [credential(), credential()];
+        let error =
+            format_access_credentials(&credentials, BrokerJsonFormat::Cpa, false).unwrap_err();
+        assert!(error.to_string().contains("每个 JSON 文件只能包含一个账号"));
     }
 
     #[test]
