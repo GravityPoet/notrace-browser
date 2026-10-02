@@ -34,6 +34,7 @@ commands.allow = [
   "refresh_account_auth",
   "login_account_auth",
   "cancel_account_auth",
+  "active_account_auth",
   "set_auth_auto_refresh",
   "set_auth_authority",
   "refresh_all_account_auth",

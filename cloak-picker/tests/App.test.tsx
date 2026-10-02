@@ -156,6 +156,7 @@ beforeEach(async () => {
   const firstAccountRow = document.querySelector<HTMLButtonElement>(".accountRow");
   if (!firstAccountRow) throw new Error("account row not found after initial load");
   await click(firstAccountRow);
+  await click(document.querySelector<HTMLButtonElement>(".workspaceToolPrimary")!);
   await settle(60);
   expect(buttonWithText("代理")).toBeTruthy();
   resetMockCommandsForTest();
@@ -212,23 +213,41 @@ describe("Cloak Picker dialog regressions", () => {
   it("keeps workspace tools visible without opening the management menu", () => {
     const toolLabels = Array.from(document.querySelectorAll<HTMLElement>('[aria-label="工作区工具"] .workspaceTool strong'))
       .map((label) => label.textContent?.trim());
-    expect(toolLabels).toEqual(["统一授权续期", "工作区备份", "管理分组", "管理标签"]);
+    expect(toolLabels).toEqual(["账号详情", "工作区备份", "管理分组", "管理标签"]);
     expect(document.querySelector('[aria-label="工作区工具"]')).not.toBeNull();
   });
 
-  it("opens unified renewal in the right work area and keeps account details one tab away", async () => {
+  it("keeps account details in the top tools and opens one searchable unified renewal work area", async () => {
     const toolbar = document.querySelector('[aria-label="工作区工具"]');
     if (!toolbar) throw new Error("workspace toolbar not found");
-    const brokerTool = toolbar.querySelector<HTMLButtonElement>('.workspaceToolPrimary');
-    if (!brokerTool) throw new Error("unified renewal tool not found");
-    await click(brokerTool);
+    const accountTool = toolbar.querySelector<HTMLButtonElement>('.workspaceToolPrimary');
+    if (!accountTool) throw new Error("account details tool not found");
+    await click(accountTool);
+    expect(buttonWithText("代理")).toBeTruthy();
+    await click(buttonWithText("统一授权续期"));
     const brokerPane = document.querySelector('[aria-label="右侧统一授权续期"]');
     expect(brokerPane).not.toBeNull();
-    expect(brokerPane?.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("统一授权续期");
-    const details = brokerPane?.querySelector<HTMLButtonElement>('[role="tab"]:not([aria-selected="true"])');
-    expect(details?.textContent).toContain("账号详情");
-    await click(details as HTMLButtonElement);
-    expect(buttonWithText("代理")).toBeTruthy();
+    expect(brokerPane?.querySelector("h1")?.textContent).toContain("统一授权续期");
+    expect(brokerPane?.querySelector('input[aria-label="搜索授权账号"]')).not.toBeNull();
+    expect(brokerPane?.textContent).not.toContain("统一授权续期统一授权续期");
+  });
+
+  it("keeps renewal open when selecting a left account and authorizes the searched account", async () => {
+    await click(buttonWithText("统一授权续期"));
+    await settle();
+    const left = document.querySelector<HTMLButtonElement>('.accountRow[data-account-name="demo-beta"]')!;
+    await click(left);
+    const panel = document.querySelector('[aria-label="右侧统一授权续期"]')!;
+    const search = panel.querySelector<HTMLInputElement>('input[aria-label="搜索授权账号"]')!;
+    expect(search.value).toBe("demo-beta");
+    expect(panel.querySelectorAll('.brokerRow')).toHaveLength(1);
+    await inputText(search, "demo-alpha@example.test");
+    await click(buttonWithText("授权并纳管", panel));
+    await settle(400);
+    expect(mockCommandCountForTest("login_account_auth")).toBe(1);
+    expect(mockCommandCountForTest("broker_push_account")).toBe(1);
+    expect(panel.textContent).toContain("NoTrace Broker 自动续期");
+    expect(panel.textContent).not.toContain("demo-beta");
   });
 
   it("clears old launch state and delayed denials after closing, then launches again", async () => {

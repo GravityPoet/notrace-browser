@@ -1,5 +1,5 @@
 import { AuthPanel } from "./AuthPanel";
-import { BrokerPanel } from "./BrokerPanel";
+import { BrokerPanel, type BrokerMetadata } from "./BrokerPanel";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import {
   ArchiveRestore,
@@ -254,7 +254,6 @@ type DialogState =
   | { kind: "renameGroup"; groupLabel: string; count: number; value: string; returnToManage?: boolean }
   | { kind: "manage"; section: "groups" | "marks" }
   | { kind: "workspace" }
-  | { kind: "broker" }
   | { kind: "proxy"; account: Account; value: string }
   | { kind: "region"; account: Account; value: string }
   | { kind: "group"; account: Account; value: string }
@@ -350,6 +349,7 @@ const mockPermanentlyDeletedAccounts = new Set<string>();
 let mockChallengeAuditCancelled = false;
 let mockWorkspaceCancellation = false;
 const mockRunningAccounts = new Set<string>();
+const mockBrokerAccounts = new Map<string, BrokerMetadata>();
 let mockCloseSeats: ForceCloseResult["seats"] = { active: 0, limit: 1 };
 
 export function setMockCloseSeatsForTest(seats: ForceCloseResult["seats"]) {
@@ -369,6 +369,7 @@ export function resetMockCommandsForTest() {
   mockChallengeAuditCancelled = false;
   mockWorkspaceCancellation = false;
   mockRunningAccounts.clear();
+  mockBrokerAccounts.clear();
   mockCloseSeats = { active: 0, limit: 1 };
 }
 
@@ -510,6 +511,8 @@ export default function App() {
   const [accountView, setAccountView] = useState<AccountView>("active");
   const [selectedName, setSelectedName] = useState<string>("");
   const [rightPaneMode, setRightPaneMode] = useState<RightPaneMode>("broker");
+  const [brokerBusy, setBrokerBusy] = useState(false);
+  const [brokerFocus, setBrokerFocus] = useState("");
   const [selectedGroup, setSelectedGroup] = useState<string>(allGroupsValue);
   const [accountSearch, setAccountSearch] = useState("");
   const [draggingAccountName, setDraggingAccountName] = useState<string>("");
@@ -767,7 +770,7 @@ export default function App() {
     setCollapsedGroups((current) =>
       current.includes(matchingGroup) ? current.filter((label) => label !== matchingGroup) : current,
     );
-    setRightPaneMode("account");
+    setBrokerFocus(match.name);
     setSelectedName(match.name);
   }
 
@@ -781,7 +784,7 @@ export default function App() {
     setCollapsedGroups((current) =>
       current.includes(matchingGroup) ? current.filter((label) => label !== matchingGroup) : current,
     );
-    setRightPaneMode("account");
+    setBrokerFocus(match.name);
     setSelectedName(match.name);
   }
 
@@ -820,7 +823,7 @@ export default function App() {
       return;
     }
     setAccountSearch("");
-    setRightPaneMode("account");
+    setBrokerFocus(name);
     setSelectedName(name);
   }
 
@@ -1233,7 +1236,7 @@ export default function App() {
       return;
     }
 
-    if (dialog.kind === "manage" || dialog.kind === "workspace" || dialog.kind === "broker") return;
+    if (dialog.kind === "manage" || dialog.kind === "workspace") return;
 
     const value = dialog.value.trim();
     if (dialog.kind === "createGroup") {
@@ -1351,6 +1354,7 @@ export default function App() {
   }
 
   function openBrokerPane() {
+    exitBulkSelection();
     setManageMenuOpen(false);
     setGroupContextMenu(null);
     setAccountContextMenu(null);
@@ -2889,11 +2893,11 @@ export default function App() {
           <button
             className="workspaceTool workspaceToolPrimary"
             type="button"
-            disabled={busy}
-            onClick={openBrokerPane}
+            disabled={busy || brokerBusy || !selected || bulkSelectionMode}
+            onClick={() => setRightPaneMode("account")}
           >
-            <Link2 aria-hidden="true" size={16} />
-            <span><strong>统一授权续期</strong><small>Broker、CPA 与授权状态</small></span>
+            <ShieldCheck aria-hidden="true" size={16} />
+            <span><strong>账号详情</strong><small>当前账号的环境与授权</small></span>
           </button>
           <button
             className="workspaceTool"
@@ -2933,7 +2937,7 @@ export default function App() {
               <button
                 aria-pressed={bulkSelectionMode}
                 className={`sidebarSelectButton ${bulkSelectionMode ? "active" : ""}`}
-                disabled={busy || visibleAccounts.length === 0}
+                disabled={busy || brokerBusy || visibleAccounts.length === 0}
                 type="button"
                 onClick={bulkSelectionMode ? exitBulkSelection : enterBulkSelection}
               >
@@ -2998,15 +3002,6 @@ export default function App() {
                     >
                       <ArchiveRestore aria-hidden="true" size={14} />
                       <span className="contextMenuItemLabel">工作区备份</span>
-                    </button>
-                    <button
-                      className="contextMenuItem"
-                      role="menuitem"
-                      type="button"
-                      onClick={openBrokerPane}
-                    >
-                      <Link2 aria-hidden="true" size={14} />
-                      <span className="contextMenuItemLabel">统一授权续期</span>
                     </button>
                   </div>
                 ) : null}
@@ -3352,7 +3347,7 @@ export default function App() {
           title="左右拖动调整账号列表宽度，双击恢复默认"
         />
 
-        <section className="detail">
+        <section className={`detail ${rightPaneMode === "broker" && !bulkSelectionMode ? "brokerDetail" : ""}`}>
           {bulkSelectionMode ? (
             <>
               <header className="detailHeader">
@@ -3458,19 +3453,11 @@ export default function App() {
                 <div className="brokerWorkspacePaneTitle">
                   <span className="eyebrow">工作区</span>
                   <h1>统一授权续期</h1>
-                  <p>左侧选择账号；这里集中处理授权、续期和下游同步。</p>
-                </div>
-                <div className="rightPaneTabs" role="tablist" aria-label="右侧工作区视图">
-                  <button aria-selected="true" className="rightPaneTab active" role="tab" type="button">
-                    <Link2 aria-hidden="true" size={14} />统一授权续期
-                  </button>
-                  <button aria-selected="false" className="rightPaneTab" disabled={!selected} role="tab" type="button" onClick={() => setRightPaneMode("account")}>
-                    <ShieldCheck aria-hidden="true" size={14} />账号详情
-                  </button>
+                  <p>搜索邮箱，直接授权、续期和同步。</p>
                 </div>
               </header>
               <div className="brokerWorkspacePaneScroll">
-                <BrokerPanel embedded />
+                <BrokerPanel call={call} embedded focusedAccount={brokerFocus} onBusyChange={setBrokerBusy} />
               </div>
             </section>
           ) : selected ? (
@@ -4300,17 +4287,6 @@ function EditorDialog({
           modalRef.current = node;
         }}
       />
-    );
-  }
-
-  if (dialog.kind === "broker") {
-    return (
-      <div className="modalBackdrop">
-        <section aria-labelledby={dialogTitleId} aria-modal="true" className="modal brokerModal" ref={(node) => { modalRef.current = node; }} role="dialog" tabIndex={-1}>
-          <button className="modalClose" type="button" aria-label="关闭" onClick={onClose}><X size={15} /></button>
-          <BrokerPanel />
-        </section>
-      </div>
     );
   }
 
@@ -5878,7 +5854,6 @@ function dialogConfig(
     | { kind: "deleteGroup" }
     | { kind: "manage" }
     | { kind: "workspace" }
-    | { kind: "broker" }
   >,
 ): {
   title: string;
@@ -6660,6 +6635,25 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
         mark_presets: ["迁移标签"],
       },
     } as T;
+  }
+  if (command === "active_account_auth") return null as T;
+  if (command === "broker_overview") return {
+    configured: true, connected: true, endpoint: "http://127.0.0.1:18555", message: null, unmatched: [],
+    accounts: accounts.map(account => ({ name: account.name, profile_id: account.profile_id, trashed: account.trashed,
+      local: { account: account.name, state: "missing", email: null, plan_type: null, expires_at: null,
+        last_refresh_at: null, auto_refresh: false, next_retry_at: null, authority: "no_trace", message: null },
+      remote: mockBrokerAccounts.get(account.name) ?? null,
+    })),
+  } as T;
+  if (command === "broker_push_account") {
+    const account = accounts.find(account => account.name === requestedName)!;
+    const seconds = Math.floor(Date.now() / 1000);
+    const metadata: BrokerMetadata = { key: account.profile_id, email: requestedName, account_id: account.profile_id,
+      plan_type: "plus", expires_at: seconds + 864000, last_refresh_at: seconds, generation: 1,
+      refresh_count: 0, automatic_refresh_count: 0, next_refresh_at: seconds + 734400, next_retry_at: null,
+      error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    mockBrokerAccounts.set(requestedName, metadata);
+    return metadata as T;
   }
   if (command === "list_accounts") return accounts.filter((account) => !account.archived && !account.trashed) as T;
   if (command === "list_trashed_accounts") return accounts.filter((account) => account.trashed || account.archived) as T;

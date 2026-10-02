@@ -374,3 +374,68 @@ fn rejects_links_malformed_credentials_and_non_official_urls() {
         assert!(auth_status(&f.config, &f.name).is_err());
     }
 }
+
+#[test]
+fn login_reports_global_lock_separately_and_recovers_after_release() {
+    let f = Fixture::new();
+    let global = lock(&f.home.parent().unwrap().join(".login.lock")).unwrap();
+    let error = login_with(
+        &f.config,
+        &f.name,
+        Path::new("/must-not-start"),
+        &AtomicBool::new(false),
+        |_| panic!("must not open browser"),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("另一个账号"));
+    assert!(!f.home.join(".pending-login").exists());
+    drop(global);
+    assert!(login_with(
+        &f.config,
+        &f.name,
+        &f.provider("success"),
+        &AtomicBool::new(false),
+        |_| Ok(())
+    )
+    .is_ok());
+}
+
+#[test]
+fn oauth_browser_failures_preserve_seat_reason_without_raw_messages() {
+    let cases = [
+        (CloakError::LicenseSeatInUse, Failure::SeatInUse),
+        (CloakError::LicenseSeatStale, Failure::SeatStale),
+        (
+            CloakError::LicenseDenied {
+                code: 77,
+                message: "secret".into(),
+            },
+            Failure::LicenseInvalid,
+        ),
+        (
+            CloakError::LicenseDenied {
+                code: 78,
+                message: "secret".into(),
+            },
+            Failure::LicenseNetwork,
+        ),
+        (CloakError::LaunchCancelled, Failure::Cancelled),
+    ];
+    for (error, expected) in cases {
+        let failure = browser_failure(error);
+        assert_eq!(failure, expected);
+        assert!(!failure.message().contains("secret"));
+    }
+    let f = Fixture::new();
+    let error = login_with(
+        &f.config,
+        &f.name,
+        &f.provider("success"),
+        &AtomicBool::new(false),
+        |_| Err(Failure::SeatStale),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("席位尚未释放"));
+    assert!(!f.home.join("auth.json").exists());
+    assert!(!f.home.join(".pending-login").exists());
+}
