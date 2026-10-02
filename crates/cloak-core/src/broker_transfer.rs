@@ -94,7 +94,7 @@ pub fn preview_file(path: &Path) -> Result<BrokerJsonImportPreview> {
         })
         .collect::<Vec<_>>();
     let message = if contains_refresh_token {
-        "检测到 refresh_token；转换导出时会清空，不会写入 Broker 或覆盖现有授权链".into()
+        "检测到 refresh_token；默认保留，勾选清空选项才生成 access-only 副本，不会写入 Broker 或覆盖现有授权链".into()
     } else {
         "这是 access-only JSON，可转换为下游格式；不会成为 Broker 主授权".into()
     };

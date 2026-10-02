@@ -52,12 +52,12 @@ refresh-capable credential. The format marker identifies `notrace_broker`
 ownership where the consumer supports it.
 
 JSON import is a validation/conversion flow. It previews recognized accounts
-and can convert them to one of the supported formats. The conversion checkbox
-also defaults to clearing any imported `refresh_token`; opting out preserves it
-in the saved conversion result but never promotes it to Broker ownership and
-never overwrites a production consumer automatically. A browser authorization
-or an explicitly approved Broker handoff remains the source of truth for a
-rotating grant.
+and can convert them to one of the supported formats. For an import, the default
+is to preserve an input `refresh_token`; checking the clear option creates an
+access-only copy. The saved conversion result never promotes an imported token
+to Broker ownership and never overwrites a production consumer automatically.
+A browser authorization or an explicitly approved Broker handoff remains the
+source of truth for a rotating grant.
 
 `POST /v1/admin/accounts/<account>/grant` is the one-time handoff from a local
 NoTrace account. The `cloak auth broker-push` command sends the protected local

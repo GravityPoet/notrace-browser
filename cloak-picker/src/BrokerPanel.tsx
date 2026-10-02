@@ -58,6 +58,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
   const [jsonFormat, setJsonFormat] = useState<BrokerJsonFormat>("cockpit_tools");
   const [importPreview, setImportPreview] = useState<BrokerJsonPreview | null>(null);
   const [preserveRefreshToken, setPreserveRefreshToken] = useState(false);
+  const [clearImportedRefreshToken, setClearImportedRefreshToken] = useState(false);
   const [accountFilter, setAccountFilter] = useState<BrokerAccountFilter>("all");
   const [accountSearch, setAccountSearch] = useState("");
   const [accountSort, setAccountSort] = useState<BrokerAccountSort>("default");
@@ -99,7 +100,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
     const path = await call<string | null>("choose_broker_json_import_path", {});
     if (!path) return;
     const preview = await call<BrokerJsonPreview>("broker_preview_json", { path });
-    if (mounted.current) { setPreserveRefreshToken(false); setExportRow(null); setImportPreview(preview); }
+    if (mounted.current) { setClearImportedRefreshToken(false); setExportRow(null); setImportPreview(preview); }
   }
   async function exportJson(row: BrokerRow) {
     const result = await call<BrokerJsonTransferSummary>("broker_export_json", { profileId: row.profile_id, format: jsonFormat, includeRefreshToken: preserveRefreshToken });
@@ -107,7 +108,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
   }
   async function convertImportedJson() {
     if (!importPreview) return;
-    const result = await call<BrokerJsonTransferSummary>("broker_convert_json", { path: importPreview.path, format: jsonFormat, includeRefreshToken: preserveRefreshToken });
+    const result = await call<BrokerJsonTransferSummary>("broker_convert_json", { path: importPreview.path, format: jsonFormat, includeRefreshToken: !clearImportedRefreshToken });
     if (mounted.current) { setImportPreview(null); setMessage(`已转换为 ${jsonFormats.find((item) => item.value === jsonFormat)?.label ?? "JSON"}（${result.refresh_token_exported ? "包含 refresh_token" : "access-only"}，不会写入 Broker）`); }
   }
   const authorized = useCallback((row: BrokerRow) => Boolean(row.remote) || row.local.state !== "missing", []);
@@ -148,7 +149,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
     <div className="brokerPanelHeader">
       <div><span className="eyebrow">授权管理中心</span><h2 id="cloak-editor-dialog-title">统一授权续期</h2><p>查看谁负责刷新，以及各端是否收到最新凭据。</p></div>
       <div className="brokerPanelHeaderActions">
-        <button className="secondaryButton" type="button" disabled={disabled} onClick={() => void run("import-json", importJson)}><UploadCloud size={14} />导入 JSON</button>
+        <button className="secondaryButton" type="button" disabled={disabled} onClick={() => void run("import-json", importJson)}><UploadCloud size={14} />导入/转换 JSON</button>
         <button className="secondaryButton" type="button" disabled={disabled} onClick={() => void run("status", read)}><RefreshCw size={14} />读取状态</button>
       </div>
     </div>
@@ -201,14 +202,14 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
       </div>
     </div>}
     {importPreview && <div className="brokerJsonOverlay">
-      <div className="brokerJsonCard" role="dialog" aria-modal="true" aria-label="导入 JSON">
-      <div className="brokerJsonCardHeader"><div><strong>导入 JSON</strong><span>{importPreview.account_count} 个账号 · {importPreview.detected_format}</span></div><button className="iconButton" type="button" aria-label="关闭导入 JSON" onClick={() => setImportPreview(null)}>×</button></div>
+      <div className="brokerJsonCard" role="dialog" aria-modal="true" aria-label="JSON 导入与转换">
+      <div className="brokerJsonCardHeader"><div><strong>JSON 导入/转换</strong><span>{importPreview.account_count} 个账号 · {importPreview.detected_format}</span></div><button className="iconButton" type="button" aria-label="关闭 JSON 导入与转换" onClick={() => setImportPreview(null)}>×</button></div>
       <p className="brokerJsonPath" title={importPreview.path}>{importPreview.path}</p>
       <p className={`brokerJsonNotice ${importPreview.contains_refresh_token ? "warning" : ""}`}>{importPreview.message}</p>
       <div className="brokerJsonAccountList">{importPreview.accounts.slice(0, 6).map((account, index) => <span key={`${account.email ?? account.account_id ?? "account"}-${index}`}><FileJson size={13} />{account.email ?? account.account_id ?? `账号 ${index + 1}`}{account.has_refresh_token ? " · 含 refresh_token" : " · access-only"}</span>)}{importPreview.account_count > 6 && <small>还有 {importPreview.account_count - 6} 个账号</small>}</div>
       <label className="brokerJsonField">转换为<select value={jsonFormat} onChange={(event) => setJsonFormat(event.target.value as BrokerJsonFormat)} disabled={disabled}>{jsonFormats.map((format) => <option value={format.value} key={format.value}>{format.label}</option>)}</select></label>
-      <label className="brokerJsonCheckbox"><input type="checkbox" checked={!preserveRefreshToken} onChange={(event) => setPreserveRefreshToken(!event.target.checked)} /><span>清空 refresh_token（推荐）</span></label>
-      {preserveRefreshToken && <p className="brokerJsonNotice warning">取消清空后，输入文件中的真实 refresh_token 会写入转换结果；这可能让下游客户端独立续期。</p>}
+      <label className="brokerJsonCheckbox"><input type="checkbox" checked={clearImportedRefreshToken} onChange={(event) => setClearImportedRefreshToken(event.target.checked)} /><span>清空 refresh_token（生成 access-only 副本）</span></label>
+      <p className={`brokerJsonNotice ${!clearImportedRefreshToken && importPreview.contains_refresh_token ? "warning" : ""}`}>{clearImportedRefreshToken ? "已选择清空：保存的目标文件只含 access token / id token；不会写入 Broker。" : importPreview.contains_refresh_token ? "默认保留输入文件中的真实 refresh_token，用于完整凭据导入/转换；这里只保存目标 JSON，不会自动写入 Broker、CPA 或 Cockpit。" : "输入文件不含 refresh_token，将生成 access-only 目标文件；这里只保存目标 JSON。"}</p>
       <div className="brokerJsonActions"><button className="secondaryButton" type="button" disabled={disabled} onClick={() => setImportPreview(null)}>关闭</button><button className="primaryButton" type="button" disabled={disabled} onClick={() => void run("convert-json", convertImportedJson)}><Download size={14} />转换并保存</button></div>
       </div>
     </div>}
