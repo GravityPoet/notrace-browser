@@ -49,11 +49,12 @@ fn main() -> Result<()> {
         Server::http(args.bind).map_err(|_| anyhow::anyhow!("cannot bind Broker listener"))?,
     );
     let schedule_store = store.clone();
+    let cycle_seconds = cycle_seconds();
     std::thread::spawn(move || loop {
         if schedule_store.run_cycle().is_err() {
             eprintln!("Broker scan encountered a storage error");
         }
-        std::thread::sleep(Duration::from_secs(60));
+        std::thread::sleep(Duration::from_secs(cycle_seconds));
     });
     eprintln!("NoTrace Broker listening on {}", server.server_addr());
     // Bound worker count: neither requests nor OAuth calls create unlimited threads.
@@ -72,6 +73,14 @@ fn main() -> Result<()> {
         let _ = worker.join();
     }
     Ok(())
+}
+
+fn cycle_seconds() -> u64 {
+    std::env::var("NOTRACE_BROKER_CYCLE_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (15..=86_400).contains(value))
+        .unwrap_or(60)
 }
 fn handle(mut request: Request, store: &BrokerStore, keys: &Keys) {
     let method = request.method().as_str().to_string();
@@ -265,5 +274,18 @@ mod tests {
         assert!(constant_eq("synthetic-key", "synthetic-key"));
         assert!(!constant_eq("synthetic-key", "synthetic-key-more"));
         assert!(!constant_eq("synthetic", "synthetic-key"));
+    }
+
+    #[test]
+    fn cycle_interval_rejects_invalid_values_without_panicking() {
+        std::env::remove_var("NOTRACE_BROKER_CYCLE_SECONDS");
+        assert_eq!(cycle_seconds(), 60);
+        std::env::set_var("NOTRACE_BROKER_CYCLE_SECONDS", "900");
+        assert_eq!(cycle_seconds(), 900);
+        std::env::set_var("NOTRACE_BROKER_CYCLE_SECONDS", "5");
+        assert_eq!(cycle_seconds(), 60);
+        std::env::set_var("NOTRACE_BROKER_CYCLE_SECONDS", "bad");
+        assert_eq!(cycle_seconds(), 60);
+        std::env::remove_var("NOTRACE_BROKER_CYCLE_SECONDS");
     }
 }

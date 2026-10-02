@@ -153,6 +153,10 @@ beforeEach(async () => {
     root?.render(createElement(App));
   });
   await settle(240);
+  const firstAccountRow = document.querySelector<HTMLButtonElement>(".accountRow");
+  if (!firstAccountRow) throw new Error("account row not found after initial load");
+  await click(firstAccountRow);
+  await settle(60);
   expect(buttonWithText("代理")).toBeTruthy();
   resetMockCommandsForTest();
 });
@@ -210,6 +214,21 @@ describe("Cloak Picker dialog regressions", () => {
       .map((label) => label.textContent?.trim());
     expect(toolLabels).toEqual(["统一授权续期", "工作区备份", "管理分组", "管理标签"]);
     expect(document.querySelector('[aria-label="工作区工具"]')).not.toBeNull();
+  });
+
+  it("opens unified renewal in the right work area and keeps account details one tab away", async () => {
+    const toolbar = document.querySelector('[aria-label="工作区工具"]');
+    if (!toolbar) throw new Error("workspace toolbar not found");
+    const brokerTool = toolbar.querySelector<HTMLButtonElement>('.workspaceToolPrimary');
+    if (!brokerTool) throw new Error("unified renewal tool not found");
+    await click(brokerTool);
+    const brokerPane = document.querySelector('[aria-label="右侧统一授权续期"]');
+    expect(brokerPane).not.toBeNull();
+    expect(brokerPane?.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("统一授权续期");
+    const details = brokerPane?.querySelector<HTMLButtonElement>('[role="tab"]:not([aria-selected="true"])');
+    expect(details?.textContent).toContain("账号详情");
+    await click(details as HTMLButtonElement);
+    expect(buttonWithText("代理")).toBeTruthy();
   });
 
   it("clears old launch state and delayed denials after closing, then launches again", async () => {

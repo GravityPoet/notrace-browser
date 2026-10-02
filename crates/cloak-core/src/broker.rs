@@ -412,6 +412,7 @@ impl BrokerStore {
         if !grant.cpa_enabled {
             return Ok(grant.metadata());
         }
+        let previous_sync = (grant.cpa_synced_generation, grant.cpa_sync_error);
         let directory = self
             .config
             .cpa_auth_dir
@@ -419,7 +420,7 @@ impl BrokerStore {
             .ok_or(BrokerError::Config)?;
         reject_link(directory)?;
         let result = (|| {
-            let (destination, existing) = cpa_destination(directory, key, &grant)?;
+            let (destination, existing, legacy) = cpa_destination(directory, key, &grant)?;
             if grant.expires_at <= crate::current_epoch_secs() {
                 return Err(BrokerError::ReauthRequired);
             }
@@ -428,6 +429,19 @@ impl BrokerStore {
             // Quota/operator disablement is independent of token updates.
             if let Some(disabled) = existing.as_ref().and_then(|v| v.get("disabled")) {
                 projection["disabled"] = disabled.clone();
+            }
+            if let Some(legacy) = legacy {
+                reject_link(&destination)?;
+                if destination.exists() {
+                    return Err(BrokerError::ConsumerConflict);
+                }
+                fs::rename(&legacy, &destination).map_err(|_| BrokerError::Storage)?;
+                crate::sync_directory(directory).map_err(|_| BrokerError::Storage)?;
+            }
+            // Avoid generating file-watcher reloads when the consumer already
+            // has this exact projection. A missing or changed file is repaired.
+            if existing.as_ref() == Some(&projection) {
+                return Ok(());
             }
             write_cpa_projection_atomic(&destination, &projection.to_string())
                 .map_err(|_| BrokerError::Storage)
@@ -439,22 +453,64 @@ impl BrokerStore {
             }
             Err(error) => grant.cpa_sync_error = Some(error),
         }
-        self.save(&path, &grant)?;
+        if previous_sync != (grant.cpa_synced_generation, grant.cpa_sync_error) {
+            self.save(&path, &grant)?;
+        }
         Ok(grant.metadata())
     }
     /// Cheap local scan; real OAuth requests are due-only and backoff guarded.
     pub fn run_cycle(&self) -> BrokerResult<()> {
-        for meta in self.list()? {
-            if meta.error != Some(BrokerError::ReauthRequired)
-                && meta.error != Some(BrokerError::RecoveryRequired)
-            {
-                let _ = self.refresh(&meta.key, false);
+        let entries =
+            fs::read_dir(self.config.root.join("accounts")).map_err(|_| BrokerError::Storage)?;
+        let mut storage_error = None;
+        for entry in entries {
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(_) => {
+                    storage_error = Some(BrokerError::Storage);
+                    continue;
+                }
+            };
+            if path.extension().and_then(|value| value.to_str()) != Some("grant") {
+                continue;
             }
-            if meta.cpa_enabled {
-                let _ = self.sync_cpa(&meta.key);
+            let grant = match self.load(&path) {
+                Ok(grant) => grant,
+                Err(error) => {
+                    storage_error = Some(error);
+                    continue;
+                }
+            };
+            // refresh recovers a durable response before checking terminal
+            // failures, and never reuses an ambiguous old refresh token.
+            let refresh_result = self.refresh(&grant.key, false);
+            if let Err(error @ (BrokerError::Storage | BrokerError::InputTooLarge)) = refresh_result
+            {
+                storage_error = Some(error);
+            }
+            // Refresh may have promoted a pending response and changed the
+            // generation. Reload before projecting to CPA so this cycle never
+            // writes a stale access token back over a newly rotated grant.
+            let current = match self.load(&path) {
+                Ok(current) => current,
+                Err(error) => {
+                    storage_error = Some(error);
+                    continue;
+                }
+            };
+            if current.cpa_enabled {
+                match self.sync_cpa(&current.key) {
+                    Err(error @ (BrokerError::Storage | BrokerError::InputTooLarge)) => {
+                        storage_error = Some(error);
+                    }
+                    Ok(metadata) if metadata.cpa_sync_error == Some(BrokerError::Storage) => {
+                        storage_error = Some(BrokerError::Storage);
+                    }
+                    _ => {}
+                }
             }
         }
-        Ok(())
+        storage_error.map_or(Ok(()), Err)
     }
     fn path(&self, key: &str) -> BrokerResult<PathBuf> {
         validate_key(key)?;
@@ -566,8 +622,9 @@ fn cpa_destination(
     directory: &Path,
     key: &str,
     grant: &Grant,
-) -> BrokerResult<(PathBuf, Option<Value>)> {
-    let canonical = directory.join(format!("notrace_{}.json", hash_key(key)));
+) -> BrokerResult<(PathBuf, Option<Value>, Option<PathBuf>)> {
+    let canonical = directory.join(format!("{}.json", cpa_file_stem(&grant.email, key)));
+    let legacy_canonical = directory.join(format!("notrace_{}.json", hash_key(key)));
     let mut managed: Option<(PathBuf, Value)> = None;
     for entry in fs::read_dir(directory).map_err(|_| BrokerError::Storage)? {
         let path = entry.map_err(|_| BrokerError::Storage)?.path();
@@ -582,6 +639,9 @@ fn cpa_destination(
         };
         let value: Value = match serde_json::from_slice(&raw) {
             Ok(value) => value,
+            Err(_) if path == canonical || path == legacy_canonical => {
+                return Err(BrokerError::ConsumerConflict);
+            }
             Err(_) => continue,
         };
         let same_identity = cpa_identity_matches(&value, grant);
@@ -605,14 +665,38 @@ fn cpa_destination(
             // an unknown refresh lineage. Never create a duplicate access-only
             // account beside it; the operator must explicitly migrate it.
             return Err(BrokerError::ConsumerConflict);
-        } else if path == canonical {
-            // The canonical NoTrace filename is reserved. An existing file
-            // without our ownership marker may belong to an older migration;
-            // never overwrite it merely because its identity fields are absent.
+        } else if path == canonical || path == legacy_canonical {
+            // Both the email-based name and the previous hash-based name are
+            // reserved. An existing file without our ownership marker may
+            // belong to an older migration; never overwrite it merely because
+            // its identity fields are absent.
             return Err(BrokerError::ConsumerConflict);
         }
     }
-    Ok(managed.map_or((canonical, None), |(path, value)| (path, Some(value))))
+    Ok(
+        managed.map_or((canonical.clone(), None, None), |(path, value)| {
+            if path == canonical {
+                (canonical, Some(value), None)
+            } else {
+                (canonical, Some(value), Some(path))
+            }
+        }),
+    )
+}
+
+fn cpa_file_stem(email: &str, key: &str) -> String {
+    let stem = email
+        .trim()
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '@' | '.' | '+' | '-' | '_')
+        })
+        .collect::<String>();
+    if stem.is_empty() {
+        format!("notrace_{}", hash_key(key))
+    } else {
+        stem
+    }
 }
 
 fn cpa_identity_matches(value: &Value, grant: &Grant) -> bool {

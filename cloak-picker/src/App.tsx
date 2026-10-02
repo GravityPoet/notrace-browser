@@ -392,6 +392,7 @@ export function emitMockStartupErrorForTest(name: string, message: string, attem
 }
 
 type AccountView = "active" | "trash";
+type RightPaneMode = "broker" | "account";
 const allGroupsValue = "__all__";
 const allGroupsLabel = "全部";
 const ungroupedLabel = "未分组";
@@ -508,6 +509,7 @@ export default function App() {
   const [trashedAccounts, setTrashedAccounts] = useState<Account[]>(emptyAccounts);
   const [accountView, setAccountView] = useState<AccountView>("active");
   const [selectedName, setSelectedName] = useState<string>("");
+  const [rightPaneMode, setRightPaneMode] = useState<RightPaneMode>("broker");
   const [selectedGroup, setSelectedGroup] = useState<string>(allGroupsValue);
   const [accountSearch, setAccountSearch] = useState("");
   const [draggingAccountName, setDraggingAccountName] = useState<string>("");
@@ -765,6 +767,7 @@ export default function App() {
     setCollapsedGroups((current) =>
       current.includes(matchingGroup) ? current.filter((label) => label !== matchingGroup) : current,
     );
+    setRightPaneMode("account");
     setSelectedName(match.name);
   }
 
@@ -778,6 +781,7 @@ export default function App() {
     setCollapsedGroups((current) =>
       current.includes(matchingGroup) ? current.filter((label) => label !== matchingGroup) : current,
     );
+    setRightPaneMode("account");
     setSelectedName(match.name);
   }
 
@@ -816,6 +820,7 @@ export default function App() {
       return;
     }
     setAccountSearch("");
+    setRightPaneMode("account");
     setSelectedName(name);
   }
 
@@ -1343,6 +1348,14 @@ export default function App() {
     // dialog opens already showing the previous action's error.
     setDialogError("");
     setDialog(next);
+  }
+
+  function openBrokerPane() {
+    setManageMenuOpen(false);
+    setGroupContextMenu(null);
+    setAccountContextMenu(null);
+    setDialog(null);
+    setRightPaneMode("broker");
   }
 
   async function saveAccountMark(account: Account, rawValue: string, color: MarkColor) {
@@ -2877,7 +2890,7 @@ export default function App() {
             className="workspaceTool workspaceToolPrimary"
             type="button"
             disabled={busy}
-            onClick={(event) => openDialog({ kind: "broker" }, event.currentTarget)}
+            onClick={openBrokerPane}
           >
             <Link2 aria-hidden="true" size={16} />
             <span><strong>统一授权续期</strong><small>Broker、CPA 与授权状态</small></span>
@@ -2990,7 +3003,7 @@ export default function App() {
                       className="contextMenuItem"
                       role="menuitem"
                       type="button"
-                      onClick={() => { setManageMenuOpen(false); openDialog({ kind: "broker" }, manageButtonRef.current); }}
+                      onClick={openBrokerPane}
                     >
                       <Link2 aria-hidden="true" size={14} />
                       <span className="contextMenuItemLabel">统一授权续期</span>
@@ -3439,6 +3452,27 @@ export default function App() {
                 </div>
               </footer>
             </>
+          ) : rightPaneMode === "broker" ? (
+            <section className="brokerWorkspacePane" aria-label="右侧统一授权续期">
+              <header className="brokerWorkspacePaneHeader">
+                <div className="brokerWorkspacePaneTitle">
+                  <span className="eyebrow">工作区</span>
+                  <h1>统一授权续期</h1>
+                  <p>左侧选择账号；这里集中处理授权、续期和下游同步。</p>
+                </div>
+                <div className="rightPaneTabs" role="tablist" aria-label="右侧工作区视图">
+                  <button aria-selected="true" className="rightPaneTab active" role="tab" type="button">
+                    <Link2 aria-hidden="true" size={14} />统一授权续期
+                  </button>
+                  <button aria-selected="false" className="rightPaneTab" disabled={!selected} role="tab" type="button" onClick={() => setRightPaneMode("account")}>
+                    <ShieldCheck aria-hidden="true" size={14} />账号详情
+                  </button>
+                </div>
+              </header>
+              <div className="brokerWorkspacePaneScroll">
+                <BrokerPanel embedded />
+              </div>
+            </section>
           ) : selected ? (
             <>
               <header className="detailHeader">
@@ -3484,6 +3518,10 @@ export default function App() {
                 {selected.trashed ? (
                   <div className="detailHeaderControl">
                     <div className="detailHeaderActions">
+                      <button className="secondaryButton" disabled={busy} type="button" onClick={openBrokerPane}>
+                        <Link2 size={16} />
+                        统一授权续期
+                      </button>
                       <button
                         className="secondaryButton dangerText"
                         disabled={busy}
@@ -3514,6 +3552,10 @@ export default function App() {
                 ) : (
                   <div className="detailHeaderControl">
                     <div className="detailHeaderActions">
+                      <button className="secondaryButton" disabled={busy} type="button" onClick={openBrokerPane}>
+                        <Link2 size={16} />
+                        统一授权续期
+                      </button>
                       <button
                         className="secondaryButton"
                         disabled={busy || forceCloseBusy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "web-store")}

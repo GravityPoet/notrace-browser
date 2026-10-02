@@ -411,9 +411,7 @@ fn cpa_updates_preserve_operator_disabled_state_and_never_write_rt() {
     store.set_cpa_enabled("alpha", true).unwrap();
     let metadata = store.sync_cpa("alpha").unwrap();
     assert_eq!(metadata.cpa_synced_generation, Some(1));
-    let destination = cpa
-        .path()
-        .join(format!("notrace_{}.json", hash_key("alpha")));
+    let destination = cpa.path().join("alpha@example.test.json");
     let mut projection: Value =
         serde_json::from_str(&fs::read_to_string(&destination).unwrap()).unwrap();
     projection["disabled"] = json!(true);
@@ -428,6 +426,37 @@ fn cpa_updates_preserve_operator_disabled_state_and_never_write_rt() {
     assert_eq!(projection["disabled"], true);
     assert_eq!(projection["refresh_token"], "");
     assert_eq!(projection["notrace_generation"], 2);
+}
+
+#[test]
+fn cpa_sync_renames_existing_managed_hash_file_to_email_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let cpa = tempfile::tempdir().unwrap();
+    let config = BrokerConfig {
+        root: dir.path().into(),
+        cpa_auth_dir: Some(cpa.path().into()),
+        proxy_url: None,
+        token_url: TOKEN_URL.into(),
+    };
+    let store = BrokerStore::new(config, [13; 32]).unwrap();
+    let key = "alpha";
+    store
+        .import_grant(
+            key,
+            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+        )
+        .unwrap();
+    store.set_cpa_enabled(key, true).unwrap();
+    store.sync_cpa(key).unwrap();
+    let email_path = cpa.path().join("alpha@example.test.json");
+    let legacy_path = cpa.path().join(format!("notrace_{}.json", hash_key(key)));
+    fs::rename(&email_path, &legacy_path).unwrap();
+
+    let metadata = store.sync_cpa(key).unwrap();
+
+    assert_eq!(metadata.cpa_synced_generation, Some(1));
+    assert!(email_path.exists());
+    assert!(!legacy_path.exists());
 }
 
 #[test]
@@ -460,4 +489,156 @@ fn cpa_sync_refuses_duplicate_same_identity_with_unmanaged_filename() {
         .path()
         .join(format!("notrace_{}.json", hash_key("alpha")))
         .exists());
+}
+
+#[test]
+fn scheduled_cycle_recovers_a_durable_rotation_without_reusing_the_token() {
+    let (_dir, store) = store();
+    store
+        .import_grant(
+            "alpha",
+            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+        )
+        .unwrap();
+    let path = store.path("alpha").unwrap();
+    let mut current = store.load(&path).unwrap();
+    current.in_flight = true;
+    store.save(&path, &current).unwrap();
+    let mut candidate = current.clone();
+    candidate.refresh_token = "rotated".into();
+    candidate.generation += 1;
+    candidate.refresh_count = 1;
+    candidate.in_flight = false;
+    store
+        .save(&path.with_extension("pending"), &candidate)
+        .unwrap();
+
+    store.run_cycle().unwrap();
+
+    let recovered = store.load(&path).unwrap();
+    assert_eq!(recovered.generation, 2);
+    assert_eq!(recovered.refresh_count, 1);
+    assert_eq!(recovered.refresh_token, "rotated");
+    assert!(!path.with_extension("pending").exists());
+}
+
+#[test]
+fn scheduled_cycle_projects_a_recovered_rotation_to_cpa() {
+    let (_dir, mut store) = store();
+    let cpa = tempfile::tempdir().unwrap();
+    store.config.cpa_auth_dir = Some(cpa.path().into());
+    store
+        .import_grant(
+            "alpha",
+            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+        )
+        .unwrap();
+    store.set_cpa_enabled("alpha", true).unwrap();
+    store.sync_cpa("alpha").unwrap();
+    let path = store.path("alpha").unwrap();
+    let mut current = store.load(&path).unwrap();
+    current.in_flight = true;
+    store.save(&path, &current).unwrap();
+    let mut candidate = current.clone();
+    candidate.access_token = jwt(json!({
+        "exp": now() + 7200,
+        "https://api.openai.com/profile": {"email": "alpha@example.test"},
+        "https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}
+    }));
+    candidate.refresh_token = "rotated".into();
+    candidate.generation += 1;
+    candidate.refresh_count = 1;
+    candidate.in_flight = false;
+    store
+        .save(&path.with_extension("pending"), &candidate)
+        .unwrap();
+
+    store.run_cycle().unwrap();
+
+    let projection: Value = serde_json::from_str(
+        &fs::read_to_string(cpa.path().join("alpha@example.test.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(projection["notrace_generation"], 2);
+    assert_eq!(projection["access_token"], candidate.access_token);
+    assert!(projection["refresh_token"].as_str().unwrap().is_empty());
+}
+
+#[test]
+fn scheduled_cycle_keeps_healthy_accounts_running_after_storage_damage() {
+    let (_dir, store) = store();
+    store
+        .import_grant(
+            "alpha",
+            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+        )
+        .unwrap();
+    let path = store.path("alpha").unwrap();
+    let mut candidate = store.load(&path).unwrap();
+    candidate.generation += 1;
+    candidate.refresh_token = "rotated".into();
+    store
+        .save(&path.with_extension("pending"), &candidate)
+        .unwrap();
+    fs::write(store.path("damaged").unwrap(), "damaged encrypted grant").unwrap();
+
+    assert!(matches!(store.run_cycle(), Err(BrokerError::Storage)));
+
+    assert_eq!(store.load(&path).unwrap().generation, 2);
+    assert!(!path.with_extension("pending").exists());
+}
+
+#[test]
+fn scheduled_cycle_does_not_rewrite_unchanged_cpa_credentials() {
+    let (_dir, mut store) = store();
+    let cpa = tempfile::tempdir().unwrap();
+    store.config.cpa_auth_dir = Some(cpa.path().into());
+    store
+        .import_grant(
+            "alpha",
+            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+        )
+        .unwrap();
+    store.set_cpa_enabled("alpha", true).unwrap();
+    store.sync_cpa("alpha").unwrap();
+    let grant_path = store.path("alpha").unwrap();
+    let destination = cpa.path().join("alpha@example.test.json");
+    let original_grant = fs::read(&grant_path).unwrap();
+    let before = fs::metadata(&destination).unwrap().modified().unwrap();
+    thread::sleep(Duration::from_millis(20));
+
+    store.run_cycle().unwrap();
+
+    assert_eq!(
+        fs::metadata(&destination).unwrap().modified().unwrap(),
+        before
+    );
+    assert_eq!(fs::read(&grant_path).unwrap(), original_grant);
+    fs::remove_file(&destination).unwrap();
+    store.run_cycle().unwrap();
+    assert!(destination.exists());
+}
+
+#[test]
+fn cpa_sync_preserves_malformed_reserved_files() {
+    let (_dir, mut store) = store();
+    let cpa = tempfile::tempdir().unwrap();
+    store.config.cpa_auth_dir = Some(cpa.path().into());
+    store
+        .import_grant(
+            "alpha",
+            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+        )
+        .unwrap();
+    store.set_cpa_enabled("alpha", true).unwrap();
+    let destination = cpa.path().join("alpha@example.test.json");
+    fs::write(&destination, "incomplete CPA file").unwrap();
+
+    let metadata = store.sync_cpa("alpha").unwrap();
+
+    assert_eq!(metadata.cpa_sync_error, Some(BrokerError::ConsumerConflict));
+    assert_eq!(
+        fs::read_to_string(destination).unwrap(),
+        "incomplete CPA file"
+    );
 }

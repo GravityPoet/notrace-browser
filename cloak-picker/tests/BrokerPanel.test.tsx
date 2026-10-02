@@ -127,6 +127,31 @@ describe("统一授权续期窗口", () => {
     expect(container.textContent).not.toContain("demo@example.test");
   });
 
+  it("allows a missing grant to start browser authorization after an old external authority record", async () => {
+    const data = {
+      ...overview(),
+      accounts: [{
+        ...overview().accounts[0],
+        local: { ...local, state: "missing" as const, authority: "cpa" as const },
+      }],
+    };
+    const calls: string[] = [];
+    const call: AuthCall = async function call<T>(command: string): Promise<T> {
+      calls.push(command);
+      return data as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    const button = [...container.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("授权并纳管"));
+    expect(button).toBeTruthy();
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    await act(async () => button?.click());
+    await settle();
+    expect(calls).toContain("login_account_auth");
+    expect(calls).toContain("broker_push_account");
+  });
+
   it("preserves an imported refresh token by default and clears it only when selected", async () => {
     const calls: Array<{ command: string; args?: unknown }> = [];
     const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.test", account_id: "acct-1", has_access_token: true, has_refresh_token: true }], contains_refresh_token: true, message: "检测到 refresh_token" };
