@@ -635,6 +635,20 @@ fn cpa_destination(
         let raw = match read_bounded(&path, MAX_BYTES) {
             Ok(value) => value,
             Err(BrokerError::AccountMissing) => continue,
+            // CPA may create root-owned 0600 files through its management UI.
+            // An unrelated unreadable file must not block every Broker account;
+            // preserve the safety check for this account's reserved/obvious
+            // filename so we never overwrite an unknown credential silently.
+            Err(BrokerError::Storage)
+                if path != canonical
+                    && path != legacy_canonical
+                    && !path
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .is_some_and(|value| value.contains(&grant.email)) =>
+            {
+                continue;
+            }
             Err(error) => return Err(error),
         };
         let value: Value = match serde_json::from_slice(&raw) {

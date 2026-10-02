@@ -210,6 +210,37 @@ fn cpa_sync_refuses_unmanaged_existing_file() {
 
 #[cfg(unix)]
 #[test]
+fn cpa_sync_skips_unreadable_unrelated_files() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cpa = tempfile::tempdir().unwrap();
+    let config = BrokerConfig {
+        root: dir.path().into(),
+        cpa_auth_dir: Some(cpa.path().into()),
+        proxy_url: None,
+        token_url: "https://127.0.0.1/unused".into(),
+    };
+    let store = BrokerStore::new(config, [15; 32]).unwrap();
+    store
+        .import_grant(
+            "alpha",
+            &grant_body("alpha@example.test", "acct-1", "refresh-a", now() + 3600),
+        )
+        .unwrap();
+    store.set_cpa_enabled("alpha", true).unwrap();
+    let unrelated = cpa.path().join("manual-other@example.test.json");
+    fs::write(&unrelated, "{\"type\":\"codex\"}").unwrap();
+    fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let metadata = store.sync_cpa("alpha").unwrap();
+
+    assert_eq!(metadata.cpa_sync_error, None);
+    assert!(cpa.path().join("alpha@example.test.json").exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn cpa_projection_write_preserves_external_directory_permissions() {
     let dir = tempfile::tempdir().unwrap();
     fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o750)).unwrap();
