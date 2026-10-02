@@ -31,9 +31,9 @@ const errors: Record<string, string> = {
   reauth_required: "授权已失效，需要重新授权",
   recovery_required: "上次刷新结果不确定，已停止重用旧凭据",
   service_unavailable: "授权服务暂不可用，按计划重试",
-  consumer_conflict: "接收端存在未托管凭据，未覆盖",
+  consumer_conflict: "CPA 有手动凭据，未覆盖",
   identity_mismatch: "账号身份不匹配",
-  storage: "凭据保存未完成，需要检查",
+  storage: "CPA 凭据保存未完成（可重新授权）",
   unchanged: "尚未获得新的凭据",
 };
 function time(value: number | null) {
@@ -124,7 +124,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     await browserLogin(row);
     await call("broker_push_account", { name: row.name });
     await read();
-    if (mounted.current) setMessage("新授权已交给 Broker；下游会在下一代凭据同步后恢复");
+    if (mounted.current) setMessage("已重新授权并获得新的 refresh_token，已交给 Broker；未覆盖 CPA 文件");
   }
   async function cancelAuthorization(name: string) {
     cancelRequested.current = true;
@@ -220,7 +220,6 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       const canManage = ["no_trace", "broker"].includes(row.local.authority);
       const needsLogin = row.local.state === "missing";
       const needsReauthLocal = row.local.state === "reauth_required";
-      const needsReauth = Boolean(remote?.error && ["reauth_required", "recovery_required"].includes(remote.error));
       // A missing or invalid local grant still needs a fresh browser login,
       // even if an old policy record says another client owned the previous
       // grant. The authority guard applies only when handing over a live
@@ -230,7 +229,8 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       const localStatus = needsReauthLocal ? "OAuth 已失效，需要重新授权" : needsLogin ? "尚未连接 OAuth" : "本机授权尚未纳管";
       return <article className="brokerRow" key={row.profile_id}>
         <div className="brokerRowTop"><div className="brokerRowMain"><strong>{row.name}</strong><span>{row.trashed ? "回收站账号" : "浏览器账号"} · {remote ? "已授权 · NoTrace Broker 自动续期" : row.local.authority === "broker" ? "已授权 · 正在确认授权交接" : needsReauthLocal ? localStatus : needsLogin ? `未授权 · ${localStatus}` : `已授权 · ${localStatus}`}</span></div>
-          <div className="brokerRowActions">{remote ? needsReauth ? <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, () => reauthorize(row))}><KeyRound size={14} />重新授权并纳管</button> : <>
+          <div className="brokerRowActions">{remote ? <>
+            <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} title="重新登录并取得新的 refresh_token；不会覆盖 CPA 文件" onClick={() => void run(row.profile_id, () => reauthorize(row))}><KeyRound size={14} />重新授权</button>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { await call("broker_refresh_account", { profileId: row.profile_id }); await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { await call("broker_set_cpa", { profileId: row.profile_id, enabled: !remote.cpa_enabled }); await read(); })}>{remote.cpa_enabled ? "暂停 CPA 同步" : "同步到 CPA"}</button>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => { setPreserveRefreshToken(false); setImportPreview(null); setExportRow(row); setJsonFormat("auth_json"); }}><Download size={14} />导出 JSON</button>
