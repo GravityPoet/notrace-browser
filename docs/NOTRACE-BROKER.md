@@ -31,6 +31,13 @@ The server defaults to `127.0.0.1:18455`. A remote NoTrace management client
 must use an HTTPS reverse proxy or a private WireGuard/Tailscale path. Do not
 expose the plain HTTP listener to the public internet.
 
+Build the Cargo package `cloak-broker` to produce the `notrace-broker` binary.
+The current Ubuntu VPS uses glibc 2.35; use a compatible build base such as the
+cached `rust:1.94.0-bullseye`, not the moving `rust:latest` base. Before replacing
+the service, run the candidate's `--version` on the VPS itself. Back up the old
+binary, replace atomically, and roll back the binary if `/healthz` fails. Do not
+restore an old credential snapshot as part of a binary rollback.
+
 ## API roles
 
 The admin key can list metadata, import an initial grant, and request a due or
@@ -53,6 +60,11 @@ can preserve the real `refresh_token` for a deliberate migration or offline
 backup; the resulting file is local mode `0600` and must be treated as a second
 refresh-capable credential. The format marker identifies `notrace_broker`
 ownership where the consumer supports it.
+
+For the original CPA upload endpoint, select the CPA format: one JSON metadata
+object per account, with `access_token` at the top level. Cockpit's array export
+and official Codex's nested `tokens` shape are different formats. Multi-account
+input cannot be saved as one CPA auth file; export each account separately.
 
 JSON import is a validation/conversion flow. It previews recognized accounts
 and can convert them to one of the supported formats. For an import, the default
