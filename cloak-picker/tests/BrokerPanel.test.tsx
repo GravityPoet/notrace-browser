@@ -56,4 +56,19 @@ describe("统一授权续期窗口", () => {
     expect(calls).toContain("login_account_auth");
     expect(calls).toContain("broker_push_account");
   });
+
+  it("offers access-only JSON export for a Broker-owned grant", async () => {
+    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
+    const call: AuthCall = async function call<T>(command: string): Promise<T> { if (command === "broker_overview") return overview(remote) as T; return overview(remote) as T; };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    const button = [...container.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("导出 JSON"));
+    expect(button).toBeTruthy();
+    await act(async () => button?.click());
+    await settle();
+    expect(container.textContent).toContain("refresh_token 始终为空");
+    expect(container.textContent).toContain("Cockpit Tools");
+    expect(container.textContent).toContain("Sub2API");
+  });
 });

@@ -1,6 +1,8 @@
 use cloak_core::{
     account_is_running as core_account_is_running, auth_status as core_auth_status,
-    broker_overview as core_broker_overview, broker_push_account as core_broker_push_account,
+    broker_convert_json as core_broker_convert_json, broker_export_json as core_broker_export_json,
+    broker_overview as core_broker_overview, broker_preview_json as core_broker_preview_json,
+    broker_push_account as core_broker_push_account,
     broker_refresh_account as core_broker_refresh_account, broker_set_cpa as core_broker_set_cpa,
     build_launch_plan, create_account_with_group as core_create_account_with_group,
     delete_account as core_delete_account,
@@ -19,9 +21,10 @@ use cloak_core::{
     set_auth_auto_refresh as core_set_auth_auto_refresh, set_group as core_set_group,
     set_mark as core_set_mark, set_note as core_set_note, set_proxy as core_set_proxy,
     set_region as core_set_region, toggle_locale as core_toggle_locale, Account, AuthAuthority,
-    AuthRefreshSummary, AuthStatus, BrokerMetadata, BrokerOverview, CloakConfig, ForceCloseResult,
-    LaunchOptions, LaunchPlan, LaunchResult, SeatUsage, WorkspaceExportSummary,
-    WorkspaceImportMapping, WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
+    AuthRefreshSummary, AuthStatus, BrokerJsonImportPreview, BrokerJsonTransferSummary,
+    BrokerMetadata, BrokerOverview, CloakConfig, ForceCloseResult, LaunchOptions, LaunchPlan,
+    LaunchResult, SeatUsage, WorkspaceExportSummary, WorkspaceImportMapping,
+    WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
 };
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -694,6 +697,82 @@ async fn broker_set_cpa(profile_id: String, enabled: bool) -> Result<BrokerMetad
 }
 
 #[tauri::command]
+async fn choose_broker_json_import_path(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    run_blocking(move || {
+        let selected = app
+            .dialog()
+            .file()
+            .add_filter("JSON 文件", &["json"])
+            .blocking_pick_file();
+        selected
+            .map(|path| {
+                path.into_path()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .map_err(|err| format!("无法读取 JSON 文件路径：{err}"))
+            })
+            .transpose()
+    })
+    .await
+}
+
+#[tauri::command]
+async fn broker_preview_json(path: String) -> Result<BrokerJsonImportPreview, String> {
+    run_blocking(move || core_broker_preview_json(Path::new(&path)).map_err(|err| err.to_string()))
+        .await
+}
+
+#[tauri::command]
+async fn broker_export_json(
+    app: tauri::AppHandle,
+    profile_id: String,
+    format: String,
+) -> Result<BrokerJsonTransferSummary, String> {
+    run_blocking(move || {
+        let file_name = format!("notrace-{}-{}.json", profile_id, format);
+        let selected = app
+            .dialog()
+            .file()
+            .add_filter("JSON 文件", &["json"])
+            .set_file_name(file_name)
+            .blocking_save_file();
+        let Some(path) = selected else {
+            return Err("已取消 JSON 导出".to_string());
+        };
+        let path = path
+            .into_path()
+            .map_err(|err| format!("无法读取 JSON 保存路径：{err}"))?;
+        core_broker_export_json(&config()?, &profile_id, &format, &path)
+            .map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn broker_convert_json(
+    app: tauri::AppHandle,
+    path: String,
+    format: String,
+) -> Result<BrokerJsonTransferSummary, String> {
+    run_blocking(move || {
+        let file_name = format!("notrace-converted-{}.json", format);
+        let selected = app
+            .dialog()
+            .file()
+            .add_filter("JSON 文件", &["json"])
+            .set_file_name(file_name)
+            .blocking_save_file();
+        let Some(output) = selected else {
+            return Err("已取消 JSON 转换导出".to_string());
+        };
+        let output = output
+            .into_path()
+            .map_err(|err| format!("无法读取 JSON 保存路径：{err}"))?;
+        core_broker_convert_json(Path::new(&path), &format, &output).map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
 async fn refresh_account_auth(name: String) -> Result<AuthStatus, String> {
     run_blocking(move || {
         core_refresh_account_auth(&config()?, &name).map_err(|err| err.to_string())
@@ -1160,6 +1239,10 @@ pub fn run() {
             broker_push_account,
             broker_refresh_account,
             broker_set_cpa,
+            choose_broker_json_import_path,
+            broker_preview_json,
+            broker_export_json,
+            broker_convert_json,
             refresh_account_auth,
             login_account_auth,
             cancel_account_auth,

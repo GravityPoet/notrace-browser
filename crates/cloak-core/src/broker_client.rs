@@ -1,10 +1,18 @@
 //! Desktop-facing Broker operations. Service keys and credential bodies never
 //! cross the frontend IPC boundary; all returns are metadata only.
-use crate::{AuthStatus, BrokerMetadata, CloakConfig, CloakError, Result};
+use crate::{
+    format_access_credentials, AccessCredential, AuthStatus, BrokerJsonFormat,
+    BrokerJsonImportPreview, BrokerMetadata, CloakConfig, CloakError, Result,
+};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{fs, io::Read, path::PathBuf, time::Duration};
+use std::{
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use zeroize::Zeroizing;
 
 #[derive(Serialize, Deserialize)]
@@ -28,6 +36,13 @@ pub struct BrokerOverview {
     pub message: Option<String>,
     pub accounts: Vec<BrokerAccountRow>,
     pub unmatched: Vec<BrokerMetadata>,
+}
+#[derive(Serialize)]
+pub struct BrokerJsonTransferSummary {
+    pub path: String,
+    pub format: String,
+    pub account_count: usize,
+    pub refresh_token_exported: bool,
 }
 fn connection_path(config: &CloakConfig) -> PathBuf {
     config
@@ -140,6 +155,48 @@ pub fn broker_set_cpa(
         Some(json!({"enabled":enabled})),
     )
 }
+pub fn broker_export_json(
+    config: &CloakConfig,
+    profile_id: &str,
+    format: &str,
+    path: &Path,
+) -> Result<BrokerJsonTransferSummary> {
+    let connection = load(config)?.ok_or_else(|| CloakError::Auth("请先连接 Broker".into()))?;
+    let format = BrokerJsonFormat::parse(format)?;
+    let credential: AccessCredential = request(
+        &connection,
+        "GET",
+        &format!("/v1/admin/accounts/{}/credential", segment(profile_id)?),
+        None,
+    )?;
+    let bytes = format_access_credentials(&[credential], format)?;
+    write_user_export_atomic(path, &bytes)?;
+    Ok(BrokerJsonTransferSummary {
+        path: path.to_string_lossy().into_owned(),
+        format: format.label().into(),
+        account_count: 1,
+        refresh_token_exported: false,
+    })
+}
+pub fn broker_preview_json(path: &Path) -> Result<BrokerJsonImportPreview> {
+    crate::broker_preview_json_file(path)
+}
+pub fn broker_convert_json(
+    path: &Path,
+    format: &str,
+    output_path: &Path,
+) -> Result<BrokerJsonTransferSummary> {
+    let format = BrokerJsonFormat::parse(format)?;
+    let preview = crate::broker_preview_json_file(path)?;
+    let bytes = crate::convert_broker_json_file(path, format)?;
+    write_user_export_atomic(output_path, &bytes)?;
+    Ok(BrokerJsonTransferSummary {
+        path: output_path.to_string_lossy().into_owned(),
+        format: format.label().into(),
+        account_count: preview.account_count,
+        refresh_token_exported: false,
+    })
+}
 fn segment(value: &str) -> Result<String> {
     if !value.is_empty()
         && value
@@ -167,6 +224,49 @@ fn validate_endpoint(endpoint: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn write_user_export_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| CloakError::Auth("导出路径无效".into()))?;
+    if fs::symlink_metadata(parent)
+        .map_err(|_| CloakError::Auth("导出目录不可用".into()))?
+        .file_type()
+        .is_symlink()
+    {
+        return Err(CloakError::Auth("导出目录不能是符号链接".into()));
+    }
+    if fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(CloakError::Auth("导出文件不能是符号链接".into()));
+    }
+    let tmp = path.with_extension(format!(
+        "json.tmp.{}.{}",
+        std::process::id(),
+        rand::random::<u128>()
+    ));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        std::io::Write::write_all(&mut file, bytes)?;
+        file.sync_all()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+        }
+        fs::rename(&tmp, path)?;
+        Ok::<(), std::io::Error>(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result.map_err(|_| CloakError::Auth("导出 JSON 保存失败".into()))
 }
 fn request<T: serde::de::DeserializeOwned>(
     c: &Connection,

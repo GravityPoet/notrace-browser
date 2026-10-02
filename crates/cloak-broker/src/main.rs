@@ -176,6 +176,11 @@ fn route(
         let key = percent_decode_str(encoded)
             .decode_utf8()
             .map_err(|_| BrokerError::Config)?;
+        if method == "GET" && action == "credential" {
+            let _ = store.refresh(&key, false);
+            return serde_json::to_value(store.access_credential(&key)?)
+                .map_err(|_| BrokerError::Storage);
+        }
         let metadata = match (method, action) {
             ("POST", "grant") => store.import_grant(
                 &key,
