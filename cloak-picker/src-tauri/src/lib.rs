@@ -726,6 +726,7 @@ async fn broker_export_json(
     app: tauri::AppHandle,
     profile_id: String,
     format: String,
+    include_refresh_token: bool,
 ) -> Result<BrokerJsonTransferSummary, String> {
     run_blocking(move || {
         let file_name = format!("notrace-{}-{}.json", profile_id, format);
@@ -741,8 +742,14 @@ async fn broker_export_json(
         let path = path
             .into_path()
             .map_err(|err| format!("无法读取 JSON 保存路径：{err}"))?;
-        core_broker_export_json(&config()?, &profile_id, &format, &path)
-            .map_err(|err| err.to_string())
+        core_broker_export_json(
+            &config()?,
+            &profile_id,
+            &format,
+            &path,
+            include_refresh_token,
+        )
+        .map_err(|err| err.to_string())
     })
     .await
 }
@@ -752,6 +759,7 @@ async fn broker_convert_json(
     app: tauri::AppHandle,
     path: String,
     format: String,
+    include_refresh_token: bool,
 ) -> Result<BrokerJsonTransferSummary, String> {
     run_blocking(move || {
         let file_name = format!("notrace-converted-{}.json", format);
@@ -767,7 +775,8 @@ async fn broker_convert_json(
         let output = output
             .into_path()
             .map_err(|err| format!("无法读取 JSON 保存路径：{err}"))?;
-        core_broker_convert_json(Path::new(&path), &format, &output).map_err(|err| err.to_string())
+        core_broker_convert_json(Path::new(&path), &format, &output, include_refresh_token)
+            .map_err(|err| err.to_string())
     })
     .await
 }

@@ -108,7 +108,8 @@ pub struct BrokerMetadata {
     pub cockpit_synced_generation: Option<u64>,
 }
 
-/// Credentials have no Debug implementation. Consumers never receive RT.
+/// Credentials have no Debug implementation. Consumer routes receive access-only;
+/// an explicit local admin export may opt in to the encrypted grant's RT.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AccessCredential {
     #[serde(rename = "type")]
@@ -347,6 +348,24 @@ impl BrokerStore {
             return Err(BrokerError::ReauthRequired);
         }
         Ok(value.projection())
+    }
+    pub fn export_credential(
+        &self,
+        key: &str,
+        include_refresh_token: bool,
+    ) -> BrokerResult<AccessCredential> {
+        let value = self.load(&self.path(key)?)?;
+        if value.expires_at <= crate::current_epoch_secs() {
+            return Err(BrokerError::ReauthRequired);
+        }
+        if matches!(value.error, Some(BrokerError::ReauthRequired)) {
+            return Err(BrokerError::ReauthRequired);
+        }
+        let mut projection = value.projection();
+        if include_refresh_token {
+            projection.refresh_token = value.refresh_token;
+        }
+        Ok(projection)
     }
     pub fn acknowledge_cockpit(&self, key: &str, generation: u64) -> BrokerResult<BrokerMetadata> {
         let path = self.path(key)?;
