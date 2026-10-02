@@ -66,6 +66,7 @@ pub struct JsonCredentialRecord {
     pub account_id: String,
     pub email: String,
     pub expired: String,
+    pub expires_at: Option<u64>,
     pub last_refresh: String,
     pub plan_type: Option<String>,
     pub has_refresh_token: bool,
@@ -143,6 +144,7 @@ pub fn format_access_credentials(
             account_id: credential.account_id.clone(),
             email: credential.email.clone(),
             expired: credential.expired.clone(),
+            expires_at: Some(credential.expires_at),
             last_refresh: credential.last_refresh.clone(),
             plan_type: credential.plan_type.clone(),
             has_refresh_token: false,
@@ -224,16 +226,19 @@ fn sub2api_record(record: &JsonCredentialRecord) -> Value {
     if let Some(plan_type) = &record.plan_type {
         credentials.insert("plan_type".into(), Value::String(plan_type.clone()));
     }
-    json!({
+    let mut item = json!({
         "name": record.email,
         "platform": "openai",
         "type": "oauth",
         "credentials": credentials,
         "concurrency": 3,
         "priority": 50,
-        "expires_at": record.expired,
         "auto_pause_on_expired": true,
-    })
+    });
+    if let Some(expires_at) = record.expires_at {
+        item["expires_at"] = Value::Number(expires_at.into());
+    }
+    item
 }
 
 fn parse_records(raw: &str) -> Result<(BrokerJsonFormat, Vec<JsonCredentialRecord>)> {
@@ -285,6 +290,10 @@ fn parse_record(value: &Value) -> Option<JsonCredentialRecord> {
     let expired = string_field(tokens, "expired")
         .or_else(|| string_field(tokens, "expires_at"))
         .unwrap_or_default();
+    let expires_at = tokens
+        .get("expires_at")
+        .and_then(Value::as_u64)
+        .or_else(|| tokens.get("expired").and_then(Value::as_u64));
     let last_refresh = string_field(tokens, "last_refresh")
         .or_else(|| string_field(value, "last_refresh"))
         .unwrap_or_else(iso_now);
@@ -297,6 +306,7 @@ fn parse_record(value: &Value) -> Option<JsonCredentialRecord> {
         account_id,
         email,
         expired,
+        expires_at,
         last_refresh,
         plan_type,
         has_refresh_token,
