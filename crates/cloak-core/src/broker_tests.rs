@@ -68,6 +68,34 @@ fn encrypted_store_and_access_projection_never_expose_refresh_token() {
 }
 
 #[test]
+fn export_projection_preserves_refresh_token_only_when_requested() {
+    let (_dir, store) = store();
+    store
+        .import_grant(
+            "alpha@example.test",
+            &grant_body(
+                "alpha@example.test",
+                "acct-1",
+                "secret-refresh",
+                now() + 3600,
+            ),
+        )
+        .unwrap();
+    assert!(store
+        .export_credential("alpha@example.test", false)
+        .unwrap()
+        .refresh_token
+        .is_empty());
+    assert_eq!(
+        store
+            .export_credential("alpha@example.test", true)
+            .unwrap()
+            .refresh_token,
+        "secret-refresh"
+    );
+}
+
+#[test]
 fn repeated_handoff_is_idempotent_and_identity_change_is_rejected() {
     let (_dir, store) = store();
     let first = grant_body("alpha@example.test", "acct-1", "refresh-a", now() + 3600);

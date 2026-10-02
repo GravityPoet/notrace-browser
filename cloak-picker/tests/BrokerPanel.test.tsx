@@ -67,8 +67,38 @@ describe("统一授权续期窗口", () => {
     expect(button).toBeTruthy();
     await act(async () => button?.click());
     await settle();
-    expect(container.textContent).toContain("refresh_token 始终为空");
+    expect(container.textContent).toContain("清空 refresh_token（推荐）");
+    expect(container.querySelector('input[type="checkbox"]')).toHaveProperty("checked", true);
     expect(container.textContent).toContain("Cockpit Tools");
     expect(container.textContent).toContain("Sub2API");
+  });
+
+  it("keeps refresh token clearing enabled by default and only preserves it when unchecked", async () => {
+    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
+    const calls: Array<{ command: string; args?: unknown }> = [];
+    const call: AuthCall = async function call<T>(command: string, args?: unknown): Promise<T> {
+      calls.push({ command, args });
+      return overview(remote) as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    const open = [...container.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("导出 JSON"));
+    await act(async () => open?.click());
+    await settle();
+    const checkbox = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    const save = [...container.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("保存 JSON"));
+    await act(async () => save?.click());
+    await settle();
+    expect(calls.find(item => item.command === "broker_export_json")?.args).toEqual({ profileId: "profile-1", format: "cockpit_tools", includeRefreshToken: false });
+    await act(async () => open?.click());
+    await settle();
+    const secondCheckbox = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    await act(async () => secondCheckbox.click());
+    const secondSave = [...container.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("保存 JSON"));
+    await act(async () => secondSave?.click());
+    await settle();
+    expect(calls.filter(item => item.command === "broker_export_json").at(-1)?.args).toEqual({ profileId: "profile-1", format: "cockpit_tools", includeRefreshToken: true });
   });
 });

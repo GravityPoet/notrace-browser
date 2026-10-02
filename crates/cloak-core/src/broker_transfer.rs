@@ -1,8 +1,8 @@
 //! Safe JSON exchange formats for Broker-managed access-only credentials.
 //!
-//! This module deliberately treats imported refresh tokens as metadata only:
-//! they may be detected and reported, but exports always clear them and the
-//! import path never promotes an external file to Broker ownership.
+//! This module defaults to access-only output. An explicit caller choice can
+//! preserve a refresh token in a local export, but the import path never
+//! promotes an external file to Broker ownership.
 use crate::broker::iso_time;
 use crate::{AccessCredential, CloakError, Result};
 use serde::{Deserialize, Serialize};
@@ -69,6 +69,7 @@ pub struct JsonCredentialRecord {
     pub expires_at: Option<u64>,
     pub last_refresh: String,
     pub plan_type: Option<String>,
+    pub refresh_token: String,
     pub has_refresh_token: bool,
 }
 
@@ -107,7 +108,11 @@ pub fn preview_file(path: &Path) -> Result<BrokerJsonImportPreview> {
     })
 }
 
-pub fn convert_file(path: &Path, format: BrokerJsonFormat) -> Result<Vec<u8>> {
+pub fn convert_file(
+    path: &Path,
+    format: BrokerJsonFormat,
+    include_refresh_token: bool,
+) -> Result<Vec<u8>> {
     reject_input_link(path)?;
     let metadata =
         std::fs::metadata(path).map_err(|_| CloakError::Auth("无法读取 JSON 文件".into()))?;
@@ -120,7 +125,7 @@ pub fn convert_file(path: &Path, format: BrokerJsonFormat) -> Result<Vec<u8>> {
     if records.is_empty() || records.iter().any(|record| record.access_token.is_empty()) {
         return Err(CloakError::Auth("JSON 中没有可转换的 access_token".into()));
     }
-    let value = format_records(&records, format);
+    let value = format_records(&records, format, include_refresh_token);
     serde_json::to_vec_pretty(&value)
         .map(|mut bytes| {
             bytes.push(b'\n');
@@ -132,6 +137,7 @@ pub fn convert_file(path: &Path, format: BrokerJsonFormat) -> Result<Vec<u8>> {
 pub fn format_access_credentials(
     credentials: &[AccessCredential],
     format: BrokerJsonFormat,
+    include_refresh_token: bool,
 ) -> Result<Vec<u8>> {
     if credentials.is_empty() {
         return Err(CloakError::Auth("没有可导出的授权".into()));
@@ -147,10 +153,15 @@ pub fn format_access_credentials(
             expires_at: Some(credential.expires_at),
             last_refresh: credential.last_refresh.clone(),
             plan_type: credential.plan_type.clone(),
-            has_refresh_token: false,
+            refresh_token: if include_refresh_token {
+                credential.refresh_token.clone()
+            } else {
+                String::new()
+            },
+            has_refresh_token: include_refresh_token && !credential.refresh_token.is_empty(),
         })
         .collect::<Vec<_>>();
-    let value = format_records(&records, format);
+    let value = format_records(&records, format, include_refresh_token);
     serde_json::to_vec_pretty(&value)
         .map(|mut bytes| {
             bytes.push(b'\n');
@@ -159,13 +170,23 @@ pub fn format_access_credentials(
         .map_err(|_| CloakError::Auth("JSON 导出失败".into()))
 }
 
-fn format_records(records: &[JsonCredentialRecord], format: BrokerJsonFormat) -> Value {
+fn format_records(
+    records: &[JsonCredentialRecord],
+    format: BrokerJsonFormat,
+    include_refresh_token: bool,
+) -> Value {
     match format {
-        BrokerJsonFormat::CockpitTools | BrokerJsonFormat::Cpa => {
-            Value::Array(records.iter().map(portable_record).collect())
-        }
+        BrokerJsonFormat::CockpitTools | BrokerJsonFormat::Cpa => Value::Array(
+            records
+                .iter()
+                .map(|record| portable_record(record, include_refresh_token))
+                .collect(),
+        ),
         BrokerJsonFormat::AuthJson => {
-            let values = records.iter().map(auth_record).collect::<Vec<_>>();
+            let values = records
+                .iter()
+                .map(|record| auth_record(record, include_refresh_token))
+                .collect::<Vec<_>>();
             if values.len() == 1 {
                 values.into_iter().next().unwrap_or(Value::Null)
             } else {
@@ -175,18 +196,21 @@ fn format_records(records: &[JsonCredentialRecord], format: BrokerJsonFormat) ->
         BrokerJsonFormat::Sub2Api => json!({
             "exported_at": iso_now(),
             "proxies": [],
-            "accounts": records.iter().map(sub2api_record).collect::<Vec<_>>(),
+            "accounts": records
+                .iter()
+                .map(|record| sub2api_record(record, include_refresh_token))
+                .collect::<Vec<_>>(),
             "type": "sub2api-data",
             "version": 1,
         }),
     }
 }
 
-fn portable_record(record: &JsonCredentialRecord) -> Value {
+fn portable_record(record: &JsonCredentialRecord, include_refresh_token: bool) -> Value {
     json!({
         "id_token": record.id_token,
         "access_token": record.access_token,
-        "refresh_token": "",
+        "refresh_token": if include_refresh_token { &record.refresh_token } else { "" },
         "account_id": record.account_id,
         "last_refresh": record.last_refresh,
         "email": record.email,
@@ -196,13 +220,13 @@ fn portable_record(record: &JsonCredentialRecord) -> Value {
     })
 }
 
-fn auth_record(record: &JsonCredentialRecord) -> Value {
+fn auth_record(record: &JsonCredentialRecord, include_refresh_token: bool) -> Value {
     json!({
         "OPENAI_API_KEY": null,
         "tokens": {
             "id_token": record.id_token,
             "access_token": record.access_token,
-            "refresh_token": "",
+            "refresh_token": if include_refresh_token { &record.refresh_token } else { "" },
             "account_id": record.account_id,
         },
         "last_refresh": record.last_refresh,
@@ -210,14 +234,27 @@ fn auth_record(record: &JsonCredentialRecord) -> Value {
     })
 }
 
-fn sub2api_record(record: &JsonCredentialRecord) -> Value {
+fn sub2api_record(record: &JsonCredentialRecord, include_refresh_token: bool) -> Value {
     let mut credentials = Map::new();
     credentials.insert(
         "access_token".into(),
         Value::String(record.access_token.clone()),
     );
     credentials.insert("id_token".into(), Value::String(record.id_token.clone()));
-    credentials.insert("refresh_token".into(), Value::String(String::new()));
+    credentials.insert(
+        "refresh_token".into(),
+        Value::String(if include_refresh_token {
+            record.refresh_token.clone()
+        } else {
+            String::new()
+        }),
+    );
+    if include_refresh_token && !record.refresh_token.is_empty() {
+        credentials.insert(
+            "client_id".into(),
+            Value::String("app_EMoamEEZ73f0CkXaXp7hrann".into()),
+        );
+    }
     credentials.insert("email".into(), Value::String(record.email.clone()));
     credentials.insert(
         "chatgpt_account_id".into(),
@@ -298,8 +335,8 @@ fn parse_record(value: &Value) -> Option<JsonCredentialRecord> {
         .or_else(|| string_field(value, "last_refresh"))
         .unwrap_or_else(iso_now);
     let plan_type = string_field(tokens, "plan_type");
-    let has_refresh_token =
-        string_field(tokens, "refresh_token").is_some_and(|value| !value.is_empty());
+    let refresh_token = string_field(tokens, "refresh_token").unwrap_or_default();
+    let has_refresh_token = !refresh_token.is_empty();
     Some(JsonCredentialRecord {
         access_token,
         id_token,
@@ -309,6 +346,7 @@ fn parse_record(value: &Value) -> Option<JsonCredentialRecord> {
         expires_at,
         last_refresh,
         plan_type,
+        refresh_token,
         has_refresh_token,
     })
 }
@@ -366,7 +404,7 @@ mod tests {
     #[test]
     fn exports_access_only_formats_without_refresh_token() {
         let credential = credential();
-        let bytes = format_access_credentials(&[credential], BrokerJsonFormat::Cpa).unwrap();
+        let bytes = format_access_credentials(&[credential], BrokerJsonFormat::Cpa, false).unwrap();
         let text = String::from_utf8(bytes).unwrap();
         assert!(text.contains("access-only"));
         assert!(text.contains("\"refresh_token\": \"\""));
@@ -398,10 +436,24 @@ mod tests {
             r#"[{"type":"codex","access_token":"access","refresh_token":"secret","email":"alpha@example.test","account_id":"acct-1"}]"#,
         )
         .unwrap();
-        let bytes = convert_file(&path, BrokerJsonFormat::AuthJson).unwrap();
+        let bytes = convert_file(&path, BrokerJsonFormat::AuthJson, false).unwrap();
         let text = String::from_utf8(bytes).unwrap();
         assert!(text.contains("\"access_token\": \"access\""));
         assert!(text.contains("\"refresh_token\": \"\""));
         assert!(!text.contains("secret"));
+    }
+
+    #[test]
+    fn preserves_refresh_token_only_when_explicitly_requested() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("input.json");
+        std::fs::write(
+            &path,
+            r#"[{"type":"codex","access_token":"access","refresh_token":"secret","email":"alpha@example.test","account_id":"acct-1"}]"#,
+        )
+        .unwrap();
+        let bytes = convert_file(&path, BrokerJsonFormat::Cpa, true).unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains("\"refresh_token\": \"secret\""));
     }
 }

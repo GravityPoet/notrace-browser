@@ -178,7 +178,12 @@ fn route(
             .map_err(|_| BrokerError::Config)?;
         if method == "GET" && action == "credential" {
             let _ = store.refresh(&key, false);
-            return serde_json::to_value(store.access_credential(&key)?)
+            let include_refresh_token = url.split('?').nth(1).is_some_and(|query| {
+                query
+                    .split('&')
+                    .any(|item| item == "include_refresh_token=1")
+            });
+            return serde_json::to_value(store.export_credential(&key, include_refresh_token)?)
                 .map_err(|_| BrokerError::Storage);
         }
         let metadata = match (method, action) {

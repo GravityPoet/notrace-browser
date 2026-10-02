@@ -160,22 +160,32 @@ pub fn broker_export_json(
     profile_id: &str,
     format: &str,
     path: &Path,
+    include_refresh_token: bool,
 ) -> Result<BrokerJsonTransferSummary> {
     let connection = load(config)?.ok_or_else(|| CloakError::Auth("请先连接 Broker".into()))?;
     let format = BrokerJsonFormat::parse(format)?;
     let credential: AccessCredential = request(
         &connection,
         "GET",
-        &format!("/v1/admin/accounts/{}/credential", segment(profile_id)?),
+        &format!(
+            "/v1/admin/accounts/{}/credential{}",
+            segment(profile_id)?,
+            if include_refresh_token {
+                "?include_refresh_token=1"
+            } else {
+                ""
+            }
+        ),
         None,
     )?;
-    let bytes = format_access_credentials(&[credential], format)?;
+    let refresh_token_exported = include_refresh_token && !credential.refresh_token.is_empty();
+    let bytes = format_access_credentials(&[credential], format, include_refresh_token)?;
     write_user_export_atomic(path, &bytes)?;
     Ok(BrokerJsonTransferSummary {
         path: path.to_string_lossy().into_owned(),
         format: format.label().into(),
         account_count: 1,
-        refresh_token_exported: false,
+        refresh_token_exported,
     })
 }
 pub fn broker_preview_json(path: &Path) -> Result<BrokerJsonImportPreview> {
@@ -185,16 +195,17 @@ pub fn broker_convert_json(
     path: &Path,
     format: &str,
     output_path: &Path,
+    include_refresh_token: bool,
 ) -> Result<BrokerJsonTransferSummary> {
     let format = BrokerJsonFormat::parse(format)?;
     let preview = crate::broker_preview_json_file(path)?;
-    let bytes = crate::convert_broker_json_file(path, format)?;
+    let bytes = crate::convert_broker_json_file(path, format, include_refresh_token)?;
     write_user_export_atomic(output_path, &bytes)?;
     Ok(BrokerJsonTransferSummary {
         path: output_path.to_string_lossy().into_owned(),
         format: format.label().into(),
         account_count: preview.account_count,
-        refresh_token_exported: false,
+        refresh_token_exported: include_refresh_token && preview.contains_refresh_token,
     })
 }
 fn segment(value: &str) -> Result<String> {
