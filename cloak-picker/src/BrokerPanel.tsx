@@ -40,7 +40,7 @@ function time(value: number | null) {
 function syncLabel(enabled: boolean, synced: number | null, generation: number, error: string | null) {
   if (!enabled) return "未启用同步";
   if (error) return errors[error] ?? "同步未完成";
-  return synced === generation ? `已同步 · 第 ${generation} 代` : "等待同步";
+  return synced === generation ? "已同步" : "等待同步";
 }
 export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCall; onBusyChange?: (busy: boolean) => void }) {
   const [overview, setOverview] = useState<BrokerOverview | null>(null);
@@ -175,14 +175,14 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
       const needsReauth = Boolean(remote?.error && ["reauth_required", "recovery_required"].includes(remote.error));
       const localStatus = needsReauthLocal ? "OAuth 已失效，需要重新授权" : needsLogin ? "尚未连接 OAuth" : "本机授权尚未纳管";
       return <article className="brokerRow" key={row.profile_id}>
-        <div className="brokerRowTop"><div className="brokerRowMain"><strong>{row.name}</strong><span>{row.trashed ? "回收站账号" : "浏览器账号"} · {remote ? `已授权 · NoTrace Broker 负责刷新 · 第 ${remote.generation} 代` : row.local.authority === "broker" ? "已授权 · 正在确认授权交接" : needsReauthLocal ? localStatus : needsLogin ? `未授权 · ${localStatus}` : `已授权 · ${localStatus}`}</span></div>
+        <div className="brokerRowTop"><div className="brokerRowMain"><strong>{row.name}</strong><span>{row.trashed ? "回收站账号" : "浏览器账号"} · {remote ? "已授权 · NoTrace Broker 自动续期" : row.local.authority === "broker" ? "已授权 · 正在确认授权交接" : needsReauthLocal ? localStatus : needsLogin ? `未授权 · ${localStatus}` : `已授权 · ${localStatus}`}</span></div>
           <div className="brokerRowActions">{remote ? needsReauth ? <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, () => reauthorize(row))}><KeyRound size={14} />重新授权并纳管</button> : <>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { await call("broker_refresh_account", { profileId: row.profile_id }); await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { await call("broker_set_cpa", { profileId: row.profile_id, enabled: !remote.cpa_enabled }); await read(); })}>{remote.cpa_enabled ? "暂停 CPA 同步" : "同步到 CPA"}</button>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => { setPreserveRefreshToken(false); setImportPreview(null); setExportRow(row); setJsonFormat("cockpit_tools"); }}><Download size={14} />导出 JSON</button>
           </> : <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected || !canManage} onClick={() => void run(row.profile_id, () => manage(row))}>{needsLogin || needsReauthLocal ? <KeyRound size={14} /> : <UploadCloud size={14} />}{needsLogin ? "授权并纳管" : needsReauthLocal ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
         </div>
-        {remote && <><div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? `已确认 · 第 ${remote.generation} 代` : "尚未完成适配验收"}</b></span></div>{remote.error && <p className="brokerError">{errors[remote.error] ?? "授权操作未完成"}</p>}</>}
+        {remote && <><div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? "已确认" : "尚未完成适配验收"}</b></span></div>{remote.error && <p className="brokerError">{errors[remote.error] ?? "授权操作未完成"}</p>}</>}
       </article>;
     })}</div>
     {overview && visibleAccounts.length === 0 && <p className="brokerEmpty">当前筛选没有匹配账号。可以切换“全部”或清空搜索。</p>}
