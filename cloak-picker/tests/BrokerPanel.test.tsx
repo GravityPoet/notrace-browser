@@ -126,4 +126,28 @@ describe("统一授权续期窗口", () => {
     expect(container.textContent).toContain("unmanaged@example.test");
     expect(container.textContent).not.toContain("demo@example.test");
   });
+
+  it("preserves an imported refresh token by default and clears it only when selected", async () => {
+    const calls: Array<{ command: string; args?: unknown }> = [];
+    const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.test", account_id: "acct-1", has_access_token: true, has_refresh_token: true }], contains_refresh_token: true, message: "检测到 refresh_token" };
+    const call: AuthCall = async function call<T>(command: string, args?: unknown): Promise<T> {
+      calls.push({ command, args });
+      if (command === "choose_broker_json_import_path") return "/tmp/input.json" as T;
+      if (command === "broker_preview_json") return preview as T;
+      return overview() as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    const importButton = [...container.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("导入/转换 JSON"));
+    await act(async () => importButton?.click());
+    await settle();
+    expect(container.textContent).toContain("默认保留输入文件中的真实 refresh_token");
+    const checkbox = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    const convert = [...container.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("转换并保存"));
+    await act(async () => convert?.click());
+    await settle();
+    expect(calls.find(item => item.command === "broker_convert_json")?.args).toEqual({ path: "/tmp/input.json", format: "cockpit_tools", includeRefreshToken: true });
+  });
 });
