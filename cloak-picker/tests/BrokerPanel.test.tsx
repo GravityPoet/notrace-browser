@@ -96,7 +96,7 @@ describe("统一授权续期窗口", () => {
     const save = [...container.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("保存 JSON"));
     await act(async () => save?.click());
     await settle();
-    expect(calls.find(item => item.command === "broker_export_json")?.args).toEqual({ profileId: "profile-1", format: "cockpit_tools", includeRefreshToken: false });
+    expect(calls.find(item => item.command === "broker_export_json")?.args).toEqual({ profileId: "profile-1", accountName: "demo@example.test", format: "cockpit_tools", includeRefreshToken: false });
     await act(async () => open?.click());
     await settle();
     const secondCheckbox = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
@@ -104,7 +104,7 @@ describe("统一授权续期窗口", () => {
     const secondSave = [...container.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("保存 JSON"));
     await act(async () => secondSave?.click());
     await settle();
-    expect(calls.filter(item => item.command === "broker_export_json").at(-1)?.args).toEqual({ profileId: "profile-1", format: "cockpit_tools", includeRefreshToken: true });
+    expect(calls.filter(item => item.command === "broker_export_json").at(-1)?.args).toEqual({ profileId: "profile-1", accountName: "demo@example.test", format: "cockpit_tools", includeRefreshToken: true });
   });
 
   it("filters the account list into all, authorized, and unauthorized views", async () => {
