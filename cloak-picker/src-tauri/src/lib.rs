@@ -725,11 +725,12 @@ async fn broker_preview_json(path: String) -> Result<BrokerJsonImportPreview, St
 async fn broker_export_json(
     app: tauri::AppHandle,
     profile_id: String,
+    account_name: String,
     format: String,
     include_refresh_token: bool,
 ) -> Result<BrokerJsonTransferSummary, String> {
     run_blocking(move || {
-        let file_name = format!("notrace-{}-{}.json", profile_id, format);
+        let file_name = safe_json_component(&account_name);
         let selected = app
             .dialog()
             .file()
@@ -752,6 +753,33 @@ async fn broker_export_json(
         .map_err(|err| err.to_string())
     })
     .await
+}
+
+fn safe_json_component(value: &str) -> String {
+    let mut result = value
+        .trim()
+        .chars()
+        .take(160)
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '@' | '.' | '_' | '-' | '+')
+            {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    while result.starts_with('.') || result.starts_with('_') {
+        result.remove(0);
+    }
+    while result.ends_with('.') || result.ends_with('_') {
+        result.pop();
+    }
+    if result.is_empty() {
+        "account".into()
+    } else {
+        result
+    }
 }
 
 #[tauri::command]
@@ -1488,5 +1516,14 @@ mod tests {
             installed
         );
         assert_eq!(resolve_node_binary(&[]), PathBuf::from("node"));
+    }
+
+    #[test]
+    fn export_json_file_name_uses_only_the_account_name_without_extension() {
+        assert_eq!(
+            safe_json_component("barkley@example.com"),
+            "barkley@example.com"
+        );
+        assert_eq!(safe_json_component("../unsafe/account"), "unsafe_account");
     }
 }

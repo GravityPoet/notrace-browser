@@ -103,7 +103,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange }: { call?: AuthCa
     if (mounted.current) { setClearImportedRefreshToken(false); setExportRow(null); setImportPreview(preview); }
   }
   async function exportJson(row: BrokerRow) {
-    const result = await call<BrokerJsonTransferSummary>("broker_export_json", { profileId: row.profile_id, format: jsonFormat, includeRefreshToken: preserveRefreshToken });
+    const result = await call<BrokerJsonTransferSummary>("broker_export_json", { profileId: row.profile_id, accountName: row.name, format: jsonFormat, includeRefreshToken: preserveRefreshToken });
     if (mounted.current) { setExportRow(null); setMessage(`${row.name} 的 ${jsonFormats.find((item) => item.value === jsonFormat)?.label ?? "JSON"} 已保存（${result.refresh_token_exported ? "包含 refresh_token" : "access-only"}）`); }
   }
   async function convertImportedJson() {
