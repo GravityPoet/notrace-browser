@@ -247,7 +247,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       <div className="brokerJsonCard" role="dialog" aria-modal="true" aria-label="导出 JSON">
       <div className="brokerJsonCardHeader"><div><strong>导出 JSON</strong><span>{exportRow.name}</span></div><button className="iconButton" type="button" aria-label="关闭导出 JSON" onClick={() => setExportRow(null)}>×</button></div>
       <label className="brokerJsonField">导出格式<select value={jsonFormat} onChange={(event) => setJsonFormat(event.target.value as BrokerJsonFormat)} disabled={disabled}>{jsonFormats.map((format) => <option value={format.value} key={format.value}>{format.label}</option>)}</select></label>
-      {jsonFormat === "auth_json" && <p className="inspectorHint">适用于官方 Codex；上传到 CPA 时，请选择“CPA”格式。</p>}
+      {jsonFormat === "auth_json" && <p className="brokerJsonHint">适用于官方 Codex；上传到 CPA 时，请选择“CPA”格式。</p>}
       <label className="brokerJsonCheckbox"><input type="checkbox" checked={!preserveRefreshToken} onChange={(event) => setPreserveRefreshToken(!event.target.checked)} /><span>清空 refresh_token（推荐）</span></label>
       <p className={`brokerJsonNotice ${preserveRefreshToken ? "warning" : ""}`}>{preserveRefreshToken ? "取消清空后，真实 refresh_token 会写入导出文件；导入 Cockpit/CPA 后可能产生第二个刷新者，仅用于明确迁移或离线备份。" : "默认只导出 access token / id token；refresh_token 为空，由 NoTrace Broker 继续负责续期。"}</p>
       <div className="brokerJsonActions"><button className="secondaryButton" type="button" disabled={disabled} onClick={() => setExportRow(null)}>取消</button><button className="primaryButton" type="button" disabled={disabled} onClick={() => void run("export-json", () => exportJson(exportRow))}><Download size={14} />保存 JSON</button></div>
