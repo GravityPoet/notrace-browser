@@ -54,6 +54,7 @@ chmod 600 "$account_dir/.cloak-seed" "$account_dir/.cloak-created-at"
 printf '%s\n' '48153' > "$sync_account_dir/.cloak-seed"
 printf '%s\n' '1690000000000000' > "$sync_account_dir/.cloak-created-at"
 chmod 600 "$sync_account_dir/.cloak-seed" "$sync_account_dir/.cloak-created-at"
+touch "$sync_account_dir/.cloak-trashed"
 
 # An isolated metadata-only Broker and synthetic OAuth provider exercise the
 # real native click path without using a real account or OpenAI credentials.
@@ -144,6 +145,7 @@ node -e '
   const required = [
     "renewal-pane-visible-search",
     "renewal-search-authorize-seat-error",
+    "renewal-header-active-and-trash-launch",
     "cpa-sync-pending-retry-success",
     "account-tab-aria-controls",
     "account-tab-keyboard-focus",
