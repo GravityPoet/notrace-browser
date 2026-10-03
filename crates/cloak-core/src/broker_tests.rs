@@ -297,6 +297,49 @@ fn reauthorization_preserves_refresh_count_without_incrementing_it() {
 }
 
 #[test]
+fn reauthorization_waits_for_explicit_cpa_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let cpa = tempfile::tempdir().unwrap();
+    let store = BrokerStore::new(
+        BrokerConfig {
+            root: dir.path().into(),
+            cpa_auth_dir: Some(cpa.path().into()),
+            proxy_url: None,
+            token_url: "https://127.0.0.1/unused".into(),
+        },
+        [19; 32],
+    )
+    .unwrap();
+    let initial = grant_body("alpha@example.test", "acct-1", "initial", now() + 3600);
+    store.import_grant("alpha", &initial).unwrap();
+    store.set_cpa_enabled("alpha", true).unwrap();
+    store.sync_cpa("alpha").unwrap();
+    let destination = cpa.path().join("alpha@example.test.json");
+    let original = fs::read(&destination).unwrap();
+
+    let replacement = grant_body("alpha@example.test", "acct-1", "replacement", now() + 7200);
+    let metadata = store.import_grant("alpha", &replacement).unwrap();
+    assert!(!metadata.cpa_enabled);
+    assert_eq!(metadata.cpa_synced_generation, Some(1));
+    assert_eq!(metadata.generation, 2);
+    store.run_cycle().unwrap();
+    assert_eq!(fs::read(&destination).unwrap(), original);
+
+    store.set_cpa_enabled("alpha", true).unwrap();
+    let synced = store.sync_cpa("alpha").unwrap();
+    assert_eq!(synced.cpa_synced_generation, Some(2));
+    let projection: Value = serde_json::from_slice(&fs::read(&destination).unwrap()).unwrap();
+    assert_eq!(projection["notrace_generation"], 2);
+    assert_eq!(projection["refresh_token"], "");
+    assert_ne!(fs::read(&destination).unwrap(), original);
+
+    // A lost handoff response retried after synchronization must not pause it again.
+    let retry = store.import_grant("alpha", &replacement).unwrap();
+    assert!(retry.cpa_enabled);
+    assert_eq!(retry.cpa_synced_generation, Some(2));
+}
+
+#[test]
 fn durable_pending_rotation_is_recovered_without_an_oauth_request() {
     let (_dir, store) = store();
     store

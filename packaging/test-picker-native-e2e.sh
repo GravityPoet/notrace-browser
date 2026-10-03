@@ -34,9 +34,10 @@ version_dir="$browser_root/chromium-145.0.7632.109.2"
 browser="$version_dir/Chromium.app/Contents/MacOS/Chromium"
 account_base="$tmp/accounts/native-e2e-profile-root-with-a-deliberately-long-path-for-layout-verification/segment-one-for-real-webview-overflow/segment-two-for-real-webview-overflow/segment-three-for-real-webview-overflow"
 account_dir="$account_base/native-e2e-account"
+sync_account_dir="$account_base/native-e2e-sync-account"
 report="$tmp/cloak-picker-native-e2e-report.json"
 log="$tmp/picker.log"
-mkdir -p "$(dirname "$browser")" "$account_dir"
+mkdir -p "$(dirname "$browser")" "$account_dir" "$sync_account_dir"
 printf '%s\n' '#!/bin/sh' 'if [ "${1:-}" = "--version" ]; then printf "Chromium 145.0.7632.109.2\n"; else exit 76; fi' > "$browser"
 chmod 700 "$browser"
 # Resolve current to a plain executable for the synthetic launch failure; real
@@ -50,26 +51,51 @@ chmod 600 "$browser_root/current.sha256"
 printf '%s\n' '48152' > "$account_dir/.cloak-seed"
 printf '%s\n' '1700000000000000' > "$account_dir/.cloak-created-at"
 chmod 600 "$account_dir/.cloak-seed" "$account_dir/.cloak-created-at"
+printf '%s\n' '48153' > "$sync_account_dir/.cloak-seed"
+printf '%s\n' '1690000000000000' > "$sync_account_dir/.cloak-created-at"
+chmod 600 "$sync_account_dir/.cloak-seed" "$sync_account_dir/.cloak-created-at"
 
 # An isolated metadata-only Broker and synthetic OAuth provider exercise the
 # real native click path without using a real account or OpenAI credentials.
 cat > "$tmp/broker-fixture.py" <<'PYFIX'
-import json, sys
+import json, sys, time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
+    attempts = 0
+    metadata = {"key": "", "email": "native-e2e-sync-account", "account_id": "synthetic-account", "plan_type": "plus", "expires_at": 1900000000, "last_refresh_at": 1899000000, "generation": 2, "refresh_count": 0, "automatic_refresh_count": 0, "next_refresh_at": 1899900000, "next_retry_at": None, "error": None, "cpa_enabled": False, "cpa_synced_generation": 1, "cpa_sync_error": None, "cockpit_synced_generation": None}
+    def do_GET(self) -> None:
+        profile = Path(sys.argv[2]) / ".cloak-profile.json"
+        rows = []
+        if profile.exists():
+            Handler.metadata["key"] = json.loads(profile.read_text())["profile_id"]
+            rows = [Handler.metadata]
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(b"[]")
-    def log_message(self, *args): pass
+        self.wfile.write(json.dumps(rows).encode())
+    def do_POST(self) -> None:
+        settings = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+        if not self.path.endswith("/cpa") or settings.get("enabled") is not True:
+            self.send_error(400)
+            return
+        Handler.attempts += 1
+        Handler.metadata["cpa_enabled"] = True
+        Handler.metadata["cpa_sync_error"] = "storage" if Handler.attempts == 1 else None
+        if Handler.attempts > 1:
+            Handler.metadata["cpa_synced_generation"] = Handler.metadata["generation"]
+        time.sleep(0.2)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(Handler.metadata).encode())
+    def log_message(self, *args) -> None: pass
 server = HTTPServer(("127.0.0.1", 0), Handler)
 Path(sys.argv[1]).write_text(json.dumps({"endpoint": f"http://127.0.0.1:{server.server_port}", "admin_key": "synthetic-native-e2e-key-000000000000"}))
 server.serve_forever()
 PYFIX
 connection="$(dirname "$account_base")/.notrace-broker-client.json"
-python3 "$tmp/broker-fixture.py" "$connection" >"$tmp/broker.log" 2>&1 &
+python3 "$tmp/broker-fixture.py" "$connection" "$sync_account_dir" >"$tmp/broker.log" 2>&1 &
 broker_pid="$!"
 for attempt in $(seq 1 50); do [[ -s "$connection" ]] && break; sleep 0.1; done
 [[ -s "$connection" ]] || { printf '%s\n' 'fixture broker failed to start' >&2; exit 1; }
@@ -118,6 +144,7 @@ node -e '
   const required = [
     "renewal-pane-visible-search",
     "renewal-search-authorize-seat-error",
+    "cpa-sync-pending-retry-success",
     "account-tab-aria-controls",
     "account-tab-keyboard-focus",
     "path-ellipsis-copy-source",

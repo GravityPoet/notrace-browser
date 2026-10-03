@@ -1,7 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import { BrokerPanel, type BrokerOverview } from "../src/BrokerPanel";
+import { BrokerPanel, type BrokerMetadata, type BrokerOverview } from "../src/BrokerPanel";
 import type { AuthCall } from "../src/AuthPanel";
 
 declare global { var IS_REACT_ACT_ENVIRONMENT: boolean; }
@@ -59,6 +59,74 @@ describe("统一授权续期窗口", () => {
     await settle();
     expect(calls).toContain("login_account_auth");
     expect(calls).toContain("broker_push_account");
+  });
+
+  it("returns a reauthorized account to explicit CPA synchronization", async () => {
+    let remote: BrokerMetadata = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 1, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 1, cpa_sync_error: null, cockpit_synced_generation: null };
+    const cpaCalls: Array<Record<string, unknown> | undefined> = [];
+    const call: AuthCall = async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+      if (command === "broker_push_account") remote = { ...remote, generation: 2, cpa_enabled: false };
+      if (command === "broker_set_cpa") {
+        cpaCalls.push(args);
+        remote = { ...remote, cpa_enabled: true, cpa_synced_generation: remote.generation };
+        return remote as T;
+      }
+      return overview(remote) as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    const button = (label: string) => [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.trim() === label);
+    expect(button("暂停 CPA 同步")).toBeTruthy();
+    await act(async () => button("重新授权")?.click());
+    await settle();
+    expect(document.body.textContent).toContain("待同步新凭据");
+    expect(button("同步到 CPA")).toBeTruthy();
+    expect(button("暂停 CPA 同步")).toBeUndefined();
+    expect(cpaCalls).toHaveLength(0);
+    await act(async () => button("同步到 CPA")?.click());
+    await settle();
+    expect(cpaCalls).toEqual([{ profileId: "profile-1", enabled: true }]);
+    expect(button("暂停 CPA 同步")).toBeTruthy();
+    expect(document.body.textContent).toContain("已同步");
+  });
+
+  it("retries failed synchronization and only offers pause after success", async () => {
+    let remote: BrokerMetadata = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 2, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 1, cpa_sync_error: null, cockpit_synced_generation: null };
+    const cpaCalls: Array<Record<string, unknown> | undefined> = [];
+    let completeRetry: ((result: BrokerMetadata) => void) | undefined;
+    const call: AuthCall = async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+      if (command === "broker_set_cpa") {
+        cpaCalls.push(args);
+        if (cpaCalls.length === 1) {
+          remote = { ...remote, cpa_sync_error: "storage" };
+          return remote as T;
+        }
+        return new Promise<BrokerMetadata>(resolve => { completeRetry = resolve; }) as Promise<T>;
+      }
+      return overview(remote) as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    const button = (label: string) => [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.trim() === label);
+    expect(button("同步到 CPA")).toBeTruthy();
+    await act(async () => button("同步到 CPA")?.click());
+    await settle();
+    expect(document.querySelector('.brokerRowFeedback[role="alert"]')?.textContent).toContain("服务器文件读写失败");
+    expect(button("重试同步")).toBeTruthy();
+    expect(button("暂停 CPA 同步")).toBeUndefined();
+    await act(async () => button("重试同步")?.click());
+    await settle();
+    expect(button("同步中…")).toHaveProperty("disabled", true);
+    await act(async () => {
+      remote = { ...remote, cpa_sync_error: null, cpa_synced_generation: 2 };
+      completeRetry?.(remote);
+    });
+    await settle();
+    expect(cpaCalls).toEqual([{ profileId: "profile-1", enabled: true }, { profileId: "profile-1", enabled: true }]);
+    expect(button("暂停 CPA 同步")).toBeTruthy();
+    expect(document.querySelector('.brokerRowFeedback[role="alert"]')).toBeNull();
   });
 
   it("reports a CPA storage error separately from the reauthorization action", async () => {
