@@ -195,7 +195,11 @@ const NATIVE_E2E_DRIVER: &str = r#"
     }, '新授权等待手动同步');
     const syncButton = (label) => Array.from(syncRow.querySelectorAll('button')).find(e => e.textContent.trim() === label);
     if (syncButton('暂停 CPA 同步')) throw new Error('新授权误显示为正在自动同步');
-    syncButton('同步到 CPA').click();
+    const readyToSync = await waitFor(() => {
+      const button = syncButton('同步到 CPA');
+      return button && !button.disabled ? button : null;
+    }, '授权结束后恢复同步入口');
+    readyToSync.click();
     await waitFor(() => syncButton('同步中…')?.disabled, '显示同步进度');
     const retry = await waitFor(() => syncButton('重试同步'), '同步失败提供重试');
     if (!syncRow.querySelector('[role="alert"]')?.textContent.includes('服务器文件读写失败')) {

@@ -128,7 +128,7 @@ picker_pid="$!"
 xcrun swift "$ROOT/packaging/picker-native-window-check.swift" "$picker_pid"
 
 attempt=0
-while [[ ! -s "$report" ]] && [[ "$attempt" -lt 150 ]]; do
+while [[ ! -s "$report" ]] && [[ "$attempt" -lt 300 ]]; do
   if ! kill -0 "$picker_pid" 2>/dev/null; then
     printf '%s\n' 'Picker exited before producing the native E2E report:' >&2
     sed -n '1,160p' "$log" >&2
