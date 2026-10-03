@@ -213,6 +213,44 @@ describe("统一授权续期窗口", () => {
     expect(document.body.textContent).not.toContain("demo@example.test");
   });
 
+  it("moves an invalidated Broker grant to unauthorized with a historical red state", async () => {
+    const valid = { key: "profile-1", email: "valid@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 1, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const invalid = { ...valid, key: "profile-2", email: "invalid@example.test", account_id: "acct-2", error: "reauth_required" as const };
+    const base = overview(valid);
+    const data = { ...base, accounts: [{ ...base.accounts[0], name: valid.email, profile_id: valid.key, local: { ...local, account: valid.email, email: valid.email }, remote: valid }, { ...base.accounts[0], name: invalid.email, profile_id: invalid.key, local: { ...local, account: invalid.email, email: invalid.email }, remote: invalid }] };
+    const call: AuthCall = async function call<T>(command: string): Promise<T> { return command === "broker_overview" ? data as T : data as T; };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    expect(document.body.textContent).toContain("全部 2");
+    expect(document.body.textContent).toContain("已授权 1");
+    expect(document.body.textContent).toContain("未授权 1");
+    expect(document.body.textContent).toContain("曾授权失效 1");
+    const invalidRow = [...document.querySelectorAll<HTMLElement>(".brokerRow")].find(row => row.textContent?.includes("invalid@example.test"));
+    expect(invalidRow?.textContent).toContain("未授权 · 曾授权 · 授权已失效");
+    expect(invalidRow?.querySelector(".brokerAuthStatus-reauth_required")).toBeTruthy();
+    expect(invalidRow?.textContent).toContain("点击“重新授权”获取新的授权链");
+    expect(invalidRow?.querySelector('button:disabled')?.textContent).toContain("需重新授权");
+    const authorizedTab = [...document.querySelectorAll('[role="tab"]')].find(candidate => candidate.textContent?.includes("已授权"));
+    await act(async () => (authorizedTab as HTMLButtonElement | undefined)?.click());
+    await settle();
+    expect(document.body.textContent).not.toContain("invalid@example.test");
+    expect(document.body.textContent).toContain("valid@example.test");
+  });
+
+  it("keeps temporary Broker failures authorized and explains the warning", async () => {
+    const remote = { key: "profile-1", email: "temporary@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: 1_899_900_000, error: "service_unavailable" as const, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const data = { ...overview(remote), accounts: [{ ...overview(remote).accounts[0], name: remote.email, profile_id: remote.key, local: { ...local, account: remote.email, email: remote.email }, remote }] };
+    const call: AuthCall = async function call<T>(): Promise<T> { return data as T; };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    expect(document.body.textContent).toContain("已授权 1");
+    expect(document.body.textContent).toContain("授权服务暂不可用，按计划重试");
+    expect(document.querySelector(".brokerAuthStatus-authorized")).toBeTruthy();
+    expect(document.querySelector(".brokerAuthStatus-reauth_required")).toBeNull();
+  });
+
   it("searches an account in the renewal pane and exposes direct authorization", async () => {
     const base = overview();
     const unauthorized = {

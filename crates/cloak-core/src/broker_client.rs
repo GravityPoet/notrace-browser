@@ -305,11 +305,26 @@ fn request<T: serde::de::DeserializeOwned>(
         .send()
         .map_err(|_| CloakError::Auth("无法连接 Broker".into()))?;
     if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let mut upstream = String::new();
+        let _ = response.take(16 * 1024).read_to_string(&mut upstream);
+        let code = serde_json::from_str::<Value>(&upstream)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            });
         return Err(CloakError::Auth(
-            match response.status().as_u16() {
-                401 | 403 => "Broker 管理密钥无效",
-                409 => "授权或同步状态需要检查，请查看账号详情",
-                423 => "账号正在授权或刷新",
+            match (status, code.as_deref()) {
+                (401, _) | (403, _) => "Broker 管理密钥无效",
+                (409, Some("reauth_required")) => "授权已失效，需要重新授权",
+                (409, Some("recovery_required")) => "授权链状态不确定，需要重新授权",
+                (409, Some("service_unavailable")) => "授权服务暂不可用，稍后重试",
+                (409, Some("consumer_conflict")) => "CPA 存在未托管凭据，未覆盖",
+                (409, _) => "授权或同步状态需要检查，请查看账号详情",
+                (423, _) => "账号正在授权或刷新",
                 _ => "Broker 操作未完成",
             }
             .into(),
