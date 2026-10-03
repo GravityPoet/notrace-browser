@@ -100,3 +100,11 @@ CPA synchronization is opt-in per account and refuses to overwrite an existing
 unmanaged auth file. Cockpit still requires its external-managed account mode
 before it can consume these projections safely; the Broker does not modify
 Cockpit's account database automatically.
+
+Each new browser authorization pauses that account's CPA synchronization in
+the same locked write that saves the grant. The previous CPA file remains in
+place until the user clicks "同步到 CPA". A successful sync enables automatic
+projection of later renewals. Failed or pending synchronization offers an
+explicit retry instead of showing a pause button solely because the switch
+is enabled. An idempotent retry of the same handoff preserves its current
+settings, and normal OAuth renewals preserve the enabled sync policy.

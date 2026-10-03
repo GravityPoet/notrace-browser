@@ -270,7 +270,9 @@ impl BrokerStore {
             incoming.generation = current.generation + 1;
             incoming.refresh_count = current.refresh_count;
             incoming.automatic_refresh_count = current.automatic_refresh_count;
-            incoming.cpa_enabled = current.cpa_enabled;
+            // A new browser grant waits for explicit CPA synchronization. This
+            // is committed under the grant lock, before a scheduler can see it.
+            incoming.cpa_enabled = false;
             incoming.cpa_synced_generation = current.cpa_synced_generation;
             incoming.cockpit_synced_generation = current.cockpit_synced_generation;
         }

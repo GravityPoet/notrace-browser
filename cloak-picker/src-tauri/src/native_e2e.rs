@@ -187,6 +187,27 @@ const NATIVE_E2E_DRIVER: &str = r#"
     await waitFor(() => document.querySelector('.brokerRowFeedback[role="alert"]')?.textContent.includes('上游席位已占满'), '浏览器席位错误显示');
     if (authorize.disabled) await waitFor(() => !authorize.disabled, '授权失败后恢复重试');
     checks.push('renewal-search-authorize-seat-error');
+    setter.call(search, 'native-e2e-sync-account');
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    const syncRow = await waitFor(() => {
+      const rows = document.querySelectorAll('.brokerRow');
+      return rows.length === 1 && rows[0].textContent.includes('待同步新凭据') ? rows[0] : null;
+    }, '新授权等待手动同步');
+    const syncButton = (label) => Array.from(syncRow.querySelectorAll('button')).find(e => e.textContent.trim() === label);
+    if (syncButton('暂停 CPA 同步')) throw new Error('新授权误显示为正在自动同步');
+    syncButton('同步到 CPA').click();
+    await waitFor(() => syncButton('同步中…')?.disabled, '显示同步进度');
+    const retry = await waitFor(() => syncButton('重试同步'), '同步失败提供重试');
+    if (!syncRow.querySelector('[role="alert"]')?.textContent.includes('服务器文件读写失败')) {
+      throw new Error('同步失败没有展示具体原因');
+    }
+    await waitFor(() => !retry.disabled, '同步失败恢复操作');
+    retry.click();
+    await waitFor(() => syncButton('暂停 CPA 同步') && Array.from(syncRow.querySelectorAll('.brokerStatus > span')).some(e => e.textContent === 'CPA已同步'), '重试成功后开启自动同步');
+    if (syncRow.querySelector('[role="alert"]')) throw new Error('同步成功后仍显示旧错误');
+    checks.push('cpa-sync-pending-retry-success');
+    setter.call(search, 'native-e2e-account');
+    search.dispatchEvent(new Event('input', { bubbles: true }));
     firstTool.click();
     const activeTab = await waitFor(
       () => document.querySelector('#cloak-account-active-tab[aria-selected="true"]'),

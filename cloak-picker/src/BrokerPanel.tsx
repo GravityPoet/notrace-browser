@@ -40,7 +40,7 @@ function time(value: number | null) {
   return value ? new Date(value * 1000).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
 }
 function syncLabel(enabled: boolean, synced: number | null, generation: number, error: string | null) {
-  if (!enabled) return "未启用同步";
+  if (!enabled) return synced === generation ? "已暂停自动同步" : "待同步新凭据";
   if (error) return errors[error] ?? "同步未完成";
   return synced === generation ? "已同步" : "等待同步";
 }
@@ -53,6 +53,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   const [adminKey, setAdminKey] = useState("");
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState("");
+  const [cpaAction, setCpaAction] = useState<{ profileId: string; enabled: boolean; pending: boolean } | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [errorTarget, setErrorTarget] = useState("");
@@ -124,7 +125,26 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     await browserLogin(row);
     await call("broker_push_account", { name: row.name });
     await read();
-    if (mounted.current) setMessage("重新授权成功，新凭据已保存到 Broker");
+    if (mounted.current) {
+      setCpaAction(current => current?.profileId === row.profile_id ? null : current);
+      setMessage("重新授权成功，新凭据已保存；请点击“同步到 CPA”更新凭据");
+    }
+  }
+  async function updateCpa(row: BrokerRow, enabled: boolean) {
+    setCpaAction({ profileId: row.profile_id, enabled, pending: true });
+    try {
+      const result = await call<BrokerMetadata>("broker_set_cpa", { profileId: row.profile_id, enabled });
+      await read();
+      if (enabled && result.cpa_sync_error) throw new Error(errors[result.cpa_sync_error] ?? "CPA 同步未完成");
+      if (enabled && result.cpa_synced_generation !== result.generation) throw new Error("CPA 尚未收到最新凭据，请重试同步");
+      if (mounted.current) {
+        setCpaAction(null);
+        setMessage(enabled ? "最新凭据已同步到 CPA，后续续期将自动同步" : "已暂停 CPA 自动同步");
+      }
+    } catch (caught) {
+      if (mounted.current) setCpaAction(enabled ? { profileId: row.profile_id, enabled, pending: false } : null);
+      throw caught;
+    }
   }
   async function cancelAuthorization(name: string) {
     cancelRequested.current = true;
@@ -226,13 +246,16 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       // credential, not when creating a new OAuth grant.
       const canAuthorize = canManage || needsLogin || needsReauthLocal;
       const rowBusy = busy === row.profile_id;
+      const cpaSynced = remote?.cpa_enabled && !remote.cpa_sync_error && remote.cpa_synced_generation === remote.generation;
+      const rowCpaAction = cpaAction?.profileId === row.profile_id ? cpaAction : null;
+      const cpaButtonLabel = rowCpaAction?.pending ? rowCpaAction.enabled ? "同步中…" : "暂停中…" : cpaSynced ? "暂停 CPA 同步" : remote?.cpa_sync_error || rowCpaAction ? "重试同步" : "同步到 CPA";
       const localStatus = needsReauthLocal ? "OAuth 已失效，需要重新授权" : needsLogin ? "尚未连接 OAuth" : "本机授权尚未纳管";
       return <article className="brokerRow" key={row.profile_id}>
         <div className="brokerRowTop"><div className="brokerRowMain"><strong>{row.name}</strong><span>{row.trashed ? "回收站账号" : "浏览器账号"} · {remote ? "已授权 · NoTrace Broker 自动续期" : row.local.authority === "broker" ? "已授权 · 正在确认授权交接" : needsReauthLocal ? localStatus : needsLogin ? `未授权 · ${localStatus}` : `已授权 · ${localStatus}`}</span></div>
           <div className="brokerRowActions">{remote ? <>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} title="打开此账号的登录环境，重新取得授权凭据" onClick={() => void run(row.profile_id, () => reauthorize(row))}><KeyRound size={14} />重新授权</button>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { await call("broker_refresh_account", { profileId: row.profile_id }); await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>
-            <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { await call("broker_set_cpa", { profileId: row.profile_id, enabled: !remote.cpa_enabled }); await read(); })}>{remote.cpa_enabled ? "暂停 CPA 同步" : "同步到 CPA"}</button>
+            <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, () => updateCpa(row, !cpaSynced))}>{cpaButtonLabel}</button>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => { setPreserveRefreshToken(false); setImportPreview(null); setExportRow(row); setJsonFormat("auth_json"); }}><Download size={14} />导出 JSON</button>
           </> : <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected || !canAuthorize} onClick={() => void run(row.profile_id, () => manage(row))}>{rowBusy ? <Loader2 className="spin" size={14} /> : needsLogin || needsReauthLocal ? <KeyRound size={14} /> : <UploadCloud size={14} />}{rowBusy ? "授权处理中…" : needsLogin ? "授权并纳管" : needsReauthLocal ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
         </div>
