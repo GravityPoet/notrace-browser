@@ -2753,6 +2753,24 @@ export default function App() {
             ? `${launchStatus.target === "web-store" ? "商店" : "已启动"} · ${launchStatus.result?.diagnostics.launch_ms ?? 0} ms`
             : `已启动：${middleTruncate(launchStatus.accountName, 34)}`
     : "";
+  const selectedBrowserLaunchPending = launchStatusIsPending && launchStatus?.target === "chatgpt";
+  const selectedLaunchButton = selected ? (
+    <button
+      className="launchButton"
+      disabled={busy || forceCloseBusy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "chatgpt")}
+      title={runtimeLaunchBlocked ? plan?.runtime.message : selected.trashed ? `临时启动 ${selected.name}，保持回收站状态` : `启动 ${selected.name}`}
+      onClick={() => void (selectedBrowserLaunchPending ? cancelLaunch(selected) : launchAccount(selected))}
+    >
+      {selectedBrowserLaunchPending ? <X size={16} /> : <Play size={16} />}
+      {selectedBrowserLaunchPending ? "取消" : selected.trashed ? "临时启动" : "启动"}
+    </button>
+  ) : null;
+  const launchStatusIndicator = launchStatus && launchStatusLabel ? (
+    <span className={`launchStatus ${launchStatus.phase === "failed" ? "failed" : launchStatus.phase === "opened" ? "current" : launchStatus.phase === "cancelled" ? "cancelled" : "pending"}`}>
+      {["checking", "starting", "cancelling"].includes(launchStatus.phase) ? <Loader2 className="spin" size={12} /> : null}
+      {launchStatusLabel}
+    </span>
+  ) : null;
   const challengeVersionResult = challengeAudit?.result?.results.find((item) => item.name === "version-consistency");
   const challengeTurnstileResult = challengeAudit?.result?.results.find((item) => item.name === "cloudflare-turnstile-test");
   const challengeAuditLabel = challengeAudit?.phase === "running"
@@ -3453,8 +3471,10 @@ export default function App() {
                 <div className="brokerWorkspacePaneTitle">
                   <span className="eyebrow">工作区</span>
                   <h1>统一授权续期</h1>
-                  <p>搜索邮箱，直接授权、续期和同步。</p>
+                  <p>{selected ? `当前账号：${selected.name}` : "搜索邮箱，直接授权、续期和同步。"}</p>
+                  {launchStatusIndicator}
                 </div>
+                <div className="brokerWorkspaceLaunch">{selectedLaunchButton}</div>
               </header>
               <div className="brokerWorkspacePaneScroll">
                 <BrokerPanel call={call} embedded focusedAccount={brokerFocus} onBusyChange={setBrokerBusy} />
@@ -3495,12 +3515,7 @@ export default function App() {
                       {webStoreStatusLabel}
                     </span>
                   ) : null}
-                  {launchStatus && launchStatusLabel ? (
-                    <span className={`launchStatus ${launchStatus.phase === "failed" ? "failed" : launchStatus.phase === "opened" ? "current" : launchStatus.phase === "cancelled" ? "cancelled" : "pending"}`}>
-                      {["checking", "starting", "cancelling"].includes(launchStatus.phase) ? <Loader2 className="spin" size={12} /> : null}
-                      {launchStatusLabel}
-                    </span>
-                  ) : null}
+                  {launchStatusIndicator}
                 </div>
                 {selected.trashed ? (
                   <div className="detailHeaderControl">
@@ -3521,19 +3536,7 @@ export default function App() {
                         <ArchiveRestore size={16} />
                         恢复
                       </button>
-                      <button
-                        className="launchButton"
-                        disabled={busy || forceCloseBusy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "chatgpt")}
-                        title={runtimeLaunchBlocked ? plan?.runtime.message : "启动账号但保持回收站状态"}
-                        onClick={() => void (
-                          launchStatusIsPending && launchStatus?.target === "chatgpt"
-                            ? cancelLaunch(selected)
-                            : launchAccount(selected)
-                        )}
-                      >
-                        {launchStatusIsPending && launchStatus?.target === "chatgpt" ? <X size={16} /> : <Play size={16} />}
-                        {launchStatusIsPending && launchStatus?.target === "chatgpt" ? "取消" : "临时启动"}
-                      </button>
+                      {selectedLaunchButton}
                     </div>
                   </div>
                 ) : (
@@ -3556,19 +3559,7 @@ export default function App() {
                         {launchStatusIsPending && launchStatus?.target === "web-store" ? <X size={16} /> : <Store size={16} />}
                         {launchStatusIsPending && launchStatus?.target === "web-store" ? "取消" : "商店"}
                       </button>
-                      <button
-                        className="launchButton"
-                        disabled={busy || forceCloseBusy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "chatgpt")}
-                        title={runtimeLaunchBlocked ? plan?.runtime.message : "启动账号"}
-                        onClick={() => void (
-                          launchStatusIsPending && launchStatus?.target === "chatgpt"
-                            ? cancelLaunch(selected)
-                            : launchAccount(selected)
-                        )}
-                      >
-                        {launchStatusIsPending && launchStatus?.target === "chatgpt" ? <X size={16} /> : <Play size={16} />}
-                        {launchStatusIsPending && launchStatus?.target === "chatgpt" ? "取消" : "启动"}
-                      </button>
+                      {selectedLaunchButton}
                     </div>
                   </div>
                 )}

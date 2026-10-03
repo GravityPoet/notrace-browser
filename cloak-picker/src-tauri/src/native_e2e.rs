@@ -206,6 +206,34 @@ const NATIVE_E2E_DRIVER: &str = r#"
     await waitFor(() => syncButton('暂停 CPA 同步') && Array.from(syncRow.querySelectorAll('.brokerStatus > span')).some(e => e.textContent === 'CPA已同步'), '重试成功后开启自动同步');
     if (syncRow.querySelector('[role="alert"]')) throw new Error('同步成功后仍显示旧错误');
     checks.push('cpa-sync-pending-retry-success');
+    const verifyHeaderLaunch = async (name, temporary) => {
+      const row = await waitFor(() => document.querySelector(`.accountRow[data-account-name="${name}"]`), '左侧启动账号');
+      row.click();
+      const header = document.querySelector('.brokerWorkspacePaneHeader');
+      const label = temporary ? '临时启动' : '启动';
+      const button = await waitFor(() => {
+        const candidate = header?.querySelector('.launchButton');
+        return header?.textContent.includes(`当前账号：${name}`) && candidate?.textContent.trim() === label && !candidate.disabled ? candidate : null;
+      }, '右上角直接启动入口');
+      const bounds = button.getBoundingClientRect();
+      const headerBounds = header.getBoundingClientRect();
+      const hit = document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+      if (bounds.right > headerBounds.right || headerBounds.right - bounds.right > 30 || bounds.top < headerBounds.top || bounds.bottom > headerBounds.bottom || !button.contains(hit)) {
+        throw new Error('右上角启动按钮被裁切、折叠或遮挡');
+      }
+      button.click();
+      await waitFor(() => header.querySelector('.launchStatus')?.textContent.trim() === '启动失败，可重试', '真实启动命令反馈');
+      if (temporary) {
+        const trashed = await invoke('list_trashed_accounts');
+        if (!trashed.some(account => account.name === name)) throw new Error('临时启动恢复了回收站账号');
+      }
+    };
+    await verifyHeaderLaunch('native-e2e-account', false);
+    document.querySelector('#cloak-account-trash-tab').click();
+    await verifyHeaderLaunch('native-e2e-sync-account', true);
+    checks.push('renewal-header-active-and-trash-launch');
+    document.querySelector('#cloak-account-active-tab').click();
+    await waitFor(() => document.querySelector('.accountRow[data-account-name="native-e2e-account"]'), '恢复活跃列表').then(row => row.click());
     setter.call(search, 'native-e2e-account');
     search.dispatchEvent(new Event('input', { bubbles: true }));
     firstTool.click();

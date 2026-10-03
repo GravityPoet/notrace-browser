@@ -1555,7 +1555,16 @@ summary:focus-visible {
   margin: 2px 0 0;
   color: var(--muted);
   font-size: 11px;
+  overflow-wrap: anywhere;
 }
+
+.brokerWorkspaceLaunch {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.brokerWorkspaceLaunch .launchButton { white-space: nowrap; }
 
 .rightPaneTabs {
   display: inline-flex;
@@ -3782,8 +3791,8 @@ button:disabled {
   }
 
   .brokerWorkspacePaneHeader {
-    align-items: stretch;
-    flex-direction: column;
+    align-items: flex-start;
+    flex-direction: row;
     gap: 9px;
   }
 

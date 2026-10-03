@@ -247,7 +247,43 @@ describe("Cloak Picker dialog regressions", () => {
     expect(mockCommandCountForTest("login_account_auth")).toBe(1);
     expect(mockCommandCountForTest("broker_push_account")).toBe(1);
     expect(panel.textContent).toContain("NoTrace Broker 自动续期");
-    expect(panel.textContent).not.toContain("demo-beta");
+    expect(panel.querySelector('.brokerRows')?.textContent).not.toContain("demo-beta");
+  });
+
+  it("launches the selected left account from the visible renewal header", async () => {
+    await click(buttonWithText("统一授权续期"));
+    await click(accountRow("demo-beta"));
+    await settle(160);
+    const panel = document.querySelector('[aria-label="右侧统一授权续期"]')!;
+    const header = panel.querySelector('.brokerWorkspacePaneHeader')!;
+    const launch = buttonWithText("启动", header);
+    expect(header.textContent).toContain("当前账号：demo-beta");
+    expect(launch.closest("details")).toBeNull();
+    expect(launch.title).toContain("demo-beta");
+    await click(launch);
+    await settle(300);
+    expect(mockCommandCountForTest("launch_account")).toBe(1);
+    expect(header.querySelector('.launchStatus')?.textContent).toContain("已启动");
+    expect(header.querySelector('.launchStatus')?.textContent).not.toContain("demo-alpha");
+    expect(document.querySelector('[aria-label="右侧统一授权续期"]')).not.toBeNull();
+  });
+
+  it("temporarily launches the selected trash account from the renewal header", async () => {
+    await click(buttonWithText("统一授权续期"));
+    await click(buttonWithText("回收站"));
+    await settle(120);
+    await click(accountRow("demo-gamma"));
+    await settle(160);
+    const header = document.querySelector('.brokerWorkspacePaneHeader')!;
+    const launch = buttonWithText("临时启动", header);
+    expect(header.textContent).toContain("当前账号：demo-gamma");
+    expect(launch.closest("details")).toBeNull();
+    await click(launch);
+    await settle(300);
+    expect(mockCommandCountForTest("launch_account")).toBe(1);
+    expect(mockCommandCountForTest("restore_account")).toBe(0);
+    expect(document.querySelector('#cloak-account-trash-tab[aria-selected="true"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="右侧统一授权续期"]')).not.toBeNull();
   });
 
   it("clears old launch state and delayed denials after closing, then launches again", async () => {
