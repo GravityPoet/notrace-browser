@@ -125,7 +125,15 @@ CLOAK_REPO_ROOT="$ROOT" \
   "$executable" >"$log" 2>&1 &
 picker_pid="$!"
 
-xcrun swift "$ROOT/packaging/picker-native-window-check.swift" "$picker_pid"
+if ! xcrun swift "$ROOT/packaging/picker-native-window-check.swift" "$picker_pid"; then
+  if kill -0 "$picker_pid" 2>/dev/null; then
+    printf '%s\n' 'Picker is running but has no visible native window.' >&2
+  else
+    printf '%s\n' 'Picker exited before its native window became visible.' >&2
+  fi
+  sed -n '1,100p' "$log" >&2
+  exit 1
+fi
 
 attempt=0
 while [[ ! -s "$report" ]] && [[ "$attempt" -lt 300 ]]; do
