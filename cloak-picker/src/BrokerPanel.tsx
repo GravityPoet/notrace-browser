@@ -20,6 +20,7 @@ type BrokerJsonPreviewAccount = { email: string | null; account_id: string | nul
 type BrokerJsonPreview = { path: string; detected_format: string; account_count: number; accounts: BrokerJsonPreviewAccount[]; contains_refresh_token: boolean; message: string };
 type BrokerAccountFilter = "all" | "authorized" | "unauthorized";
 type BrokerAccountSort = "default" | "recent" | "expiry" | "name";
+type BrokerAuthorizationState = "authorized" | "never_authorized" | "reauth_required";
 const nativeCall: AuthCall = (command, args) => invoke(command, args);
 const jsonFormats: Array<{ value: BrokerJsonFormat; label: string }> = [
   { value: "auth_json", label: "官方 auth.json" },
@@ -46,6 +47,20 @@ function syncLabel(enabled: boolean, synced: number | null, generation: number, 
 }
 function refreshCountLabel(count: number | undefined) {
   return count === undefined ? "服务端尚未统计" : `${count} 次`;
+}
+function authorizationState(row: BrokerRow): BrokerAuthorizationState {
+  if (row.remote) {
+    return row.remote.error === "reauth_required" || row.remote.error === "recovery_required"
+      ? "reauth_required"
+      : "authorized";
+  }
+  if (row.local.state === "missing") return "never_authorized";
+  return row.local.state === "reauth_required" ? "reauth_required" : "authorized";
+}
+function authorizationFailureLabel(remote: BrokerMetadata): string {
+  if (remote.error === "reauth_required") return "授权已失效，需要重新授权";
+  if (remote.error === "recovery_required") return "授权链状态不确定，需要重新授权";
+  return "授权已失效，需要重新授权";
 }
 export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false, focusedAccount = "" }: { call?: AuthCall; onBusyChange?: (busy: boolean) => void; embedded?: boolean; focusedAccount?: string }) {
   const [overview, setOverview] = useState<BrokerOverview | null>(null);
@@ -170,19 +185,26 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     const result = await call<BrokerJsonTransferSummary>("broker_convert_json", { path: importPreview.path, format: jsonFormat, includeRefreshToken: !clearImportedRefreshToken });
     if (mounted.current) { setImportPreview(null); setMessage(`已转换为 ${jsonFormats.find((item) => item.value === jsonFormat)?.label ?? "JSON"}（${result.refresh_token_exported ? "包含 refresh_token" : "access-only"}，不会写入 Broker）`); }
   }
-  const authorized = useCallback((row: BrokerRow) => Boolean(row.remote) || row.local.state !== "missing", []);
+  const authorized = useCallback((row: BrokerRow) => authorizationState(row) === "authorized", []);
   const authorizationTime = useCallback((row: BrokerRow) => row.remote?.last_refresh_at ?? row.local.last_refresh_at ?? 0, []);
   const expiryTime = useCallback((row: BrokerRow) => row.remote?.expires_at ?? row.local.expires_at ?? 0, []);
   const accountCounts = useMemo(() => {
     const accounts = overview?.accounts ?? [];
     const authorizedCount = accounts.filter(authorized).length;
-    return { all: accounts.length, authorized: authorizedCount, unauthorized: accounts.length - authorizedCount };
+    const reauthCount = accounts.filter((row) => authorizationState(row) === "reauth_required").length;
+    return {
+      all: accounts.length,
+      authorized: authorizedCount,
+      unauthorized: accounts.length - authorizedCount,
+      reauth: reauthCount,
+      never: accounts.length - authorizedCount - reauthCount,
+    };
   }, [authorized, overview?.accounts]);
   const visibleAccounts = useMemo(() => {
     const query = accountSearch.trim().toLocaleLowerCase();
     const rows = (overview?.accounts ?? []).filter((row) => {
-      if (accountFilter === "authorized" && !authorized(row)) return false;
-      if (accountFilter === "unauthorized" && authorized(row)) return false;
+      if (accountFilter === "authorized" && authorizationState(row) !== "authorized") return false;
+      if (accountFilter === "unauthorized" && authorizationState(row) === "authorized") return false;
       if (!query) return true;
       return [row.name, row.local.email, row.remote?.email].filter(Boolean).some((value) => value!.toLocaleLowerCase().includes(query));
     });
@@ -228,6 +250,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       <div className="brokerFilterTabs" role="tablist" aria-label="授权状态筛选">
         {filterLabels.map((filter) => <button key={filter.value} className={`brokerFilterTab ${accountFilter === filter.value ? "active" : ""}`} disabled={!overview} type="button" role="tab" aria-selected={accountFilter === filter.value} onClick={() => setAccountFilter(filter.value)}>{filter.label}</button>)}
       </div>
+      {overview && <p className="brokerFilterSummary"><span className="brokerFilterSummaryItem"><span className="brokerAuthDot brokerAuthDot-authorized" aria-hidden="true" />可正常续期 {accountCounts.authorized}</span><span className="brokerFilterSummaryItem brokerFilterSummaryItemDanger"><span className="brokerAuthDot brokerAuthDot-reauth_required" aria-hidden="true" />曾授权失效 {accountCounts.reauth}</span><span className="brokerFilterSummaryItem"><span className="brokerAuthDot brokerAuthDot-never_authorized" aria-hidden="true" />从未授权 {accountCounts.never}</span></p>}
       <div className="brokerListControls">
         <label className="brokerSearch"><Search aria-hidden="true" size={14} /><span className="visuallyHidden">搜索授权账号</span><input type="search" aria-label="搜索授权账号" placeholder="搜索邮箱后直接授权" value={accountSearch} onChange={(event) => setAccountSearch(event.target.value)} /></label>
         <label className="brokerSort"><ArrowDownUp aria-hidden="true" size={14} /><span className="visuallyHidden">排序方式</span><select aria-label="排序方式" value={accountSort} onChange={(event) => setAccountSort(event.target.value as BrokerAccountSort)}><option value="default">默认顺序</option><option value="recent">最近授权/续期</option><option value="expiry">访问凭据到期</option><option value="name">账号名称</option></select></label>
@@ -237,6 +260,8 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     {visibleLogin && !visibleAccounts.some(row => row.name === visibleLogin.name) && activity}
     <div className="brokerRows">{visibleAccounts.map(row => {
       const remote = row.remote;
+      const accountState = authorizationState(row);
+      const historicalAuthorization = accountState === "reauth_required";
       const canManage = ["no_trace", "broker"].includes(row.local.authority);
       const needsLogin = row.local.state === "missing";
       const needsReauthLocal = row.local.state === "reauth_required";
@@ -248,20 +273,34 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       const rowBusy = busy === row.profile_id;
       const cpaSynced = remote?.cpa_enabled && !remote.cpa_sync_error && remote.cpa_synced_generation === remote.generation;
       const rowCpaAction = cpaAction?.profileId === row.profile_id ? cpaAction : null;
-      const cpaButtonLabel = rowCpaAction?.pending ? rowCpaAction.enabled ? "同步中…" : "暂停中…" : cpaSynced ? "暂停 CPA 同步" : remote?.cpa_sync_error || rowCpaAction ? "重试同步" : "同步到 CPA";
-      const localStatus = needsReauthLocal ? "OAuth 已失效，需要重新授权" : needsLogin ? "尚未连接 OAuth" : "本机授权尚未纳管";
-      return <article className="brokerRow" key={row.profile_id}>
-        <div className="brokerRowTop"><div className="brokerRowMain"><strong>{row.name}</strong><span>{row.trashed ? "回收站账号" : "浏览器账号"} · {remote ? "已授权 · NoTrace Broker 自动续期" : row.local.authority === "broker" ? "已授权 · 正在确认授权交接" : needsReauthLocal ? localStatus : needsLogin ? `未授权 · ${localStatus}` : `已授权 · ${localStatus}`}</span></div>
+      const cpaButtonLabel = rowCpaAction?.pending
+        ? rowCpaAction.enabled ? "同步中…" : "暂停中…"
+        : historicalAuthorization
+          ? remote?.cpa_enabled ? "暂停 CPA 同步" : "需重新授权"
+          : cpaSynced ? "暂停 CPA 同步" : remote?.cpa_sync_error || rowCpaAction ? "重试同步" : "同步到 CPA";
+      const localStatus = needsReauthLocal ? "曾授权 · OAuth 已失效，需要重新授权" : needsLogin ? "尚未连接 OAuth" : "本机授权尚未纳管";
+      const accountStatusLabel = historicalAuthorization
+        ? `未授权 · 曾授权 · ${remote ? authorizationFailureLabel(remote) : "OAuth 已失效，需要重新授权"}`
+        : remote
+          ? "已授权 · NoTrace Broker 自动续期"
+          : row.local.authority === "broker"
+            ? "已授权 · 正在确认授权交接"
+            : needsLogin
+              ? `未授权 · ${localStatus}`
+              : `已授权 · ${localStatus}`;
+      return <article className={`brokerRow ${historicalAuthorization ? "brokerRowHistorical" : ""}`} key={row.profile_id}>
+        <div className="brokerRowTop"><div className="brokerRowMain"><strong>{row.name}</strong><span className={`brokerAuthStatus brokerAuthStatus-${accountState}`}><span className="brokerAuthDot" aria-hidden="true" />{row.trashed ? "回收站账号" : "浏览器账号"} · {accountStatusLabel}</span></div>
           <div className="brokerRowActions">{remote ? <>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} title="打开此账号的登录环境，重新取得授权凭据" onClick={() => void run(row.profile_id, () => reauthorize(row))}><KeyRound size={14} />重新授权</button>
-            <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { await call("broker_refresh_account", { profileId: row.profile_id }); await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>
-            <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, () => updateCpa(row, !cpaSynced))}>{cpaButtonLabel}</button>
+            {!historicalAuthorization && <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { try { await call("broker_refresh_account", { profileId: row.profile_id }); } catch (caught) { await read(); throw caught; } await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>}
+            <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected || (historicalAuthorization && !remote.cpa_enabled)} onClick={() => void run(row.profile_id, () => updateCpa(row, historicalAuthorization ? false : !cpaSynced))}>{cpaButtonLabel}</button>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => { setPreserveRefreshToken(false); setImportPreview(null); setExportRow(row); setJsonFormat("auth_json"); }}><Download size={14} />导出 JSON</button>
           </> : <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected || !canAuthorize} onClick={() => void run(row.profile_id, () => manage(row))}>{rowBusy ? <Loader2 className="spin" size={14} /> : needsLogin || needsReauthLocal ? <KeyRound size={14} /> : <UploadCloud size={14} />}{rowBusy ? "授权处理中…" : needsLogin ? "授权并纳管" : needsReauthLocal ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
         </div>
         {visibleLogin?.name === row.name && activity}
         {error && errorTarget === row.profile_id && <div className="brokerRowFeedback error" role="alert"><strong>操作未完成</strong><p>{error}</p><span>请按上方原因处理后，重新点击此账号的操作按钮。</span></div>}
-        {remote && <><div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span title="从启用统计起累计，只计成功续期；首次授权、重新授权和失败重试不计入。">成功续期<b>{refreshCountLabel(remote.refresh_count)}</b>{remote.refresh_count !== undefined && remote.automatic_refresh_count !== undefined && <small>自动 {remote.automatic_refresh_count} 次 · 手动 {Math.max(0, remote.refresh_count - remote.automatic_refresh_count)} 次</small>}<small>启用统计后累计</small></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? "已确认" : "尚未完成适配验收"}</b></span></div>{remote.error && <p className="brokerError">{errors[remote.error] ?? "授权操作未完成"}</p>}</>}
+        {historicalAuthorization && <div className="brokerRowFeedback error" role="status"><strong>{remote?.error === "reauth_required" ? "授权已失效" : "授权链需要重新授权"}</strong><p>{remote?.error === "reauth_required" ? "refresh_token 已失效，当前账号已移入“未授权”。" : "上次刷新结果无法安全确认，当前账号已移入“未授权”。"}</p><span>点击“重新授权”获取新的授权链。</span></div>}
+        {remote && <><div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span title="从启用统计起累计，只计成功续期；首次授权、重新授权和失败重试不计入。">成功续期<b>{refreshCountLabel(remote.refresh_count)}</b>{remote.refresh_count !== undefined && remote.automatic_refresh_count !== undefined && <small>自动 {remote.automatic_refresh_count} 次 · 手动 {Math.max(0, remote.refresh_count - remote.automatic_refresh_count)} 次</small>}<small>启用统计后累计</small></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? "已确认" : "尚未完成适配验收"}</b></span></div>{remote.error && !historicalAuthorization && <p className="brokerError brokerTransientError">{errors[remote.error] ?? "授权操作未完成"}</p>}</>}
       </article>;
     })}</div>
     {overview && visibleAccounts.length === 0 && <p className="brokerEmpty">当前筛选没有匹配账号。可以切换“全部”或清空搜索。</p>}

@@ -3606,6 +3606,9 @@ button:disabled {
 .brokerFilterTab { min-height: 30px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); padding: 0 11px; font-size: 12px; font-weight: 650; cursor: pointer; }
 .brokerFilterTab:hover { color: var(--text); background: var(--surface); }
 .brokerFilterTab.active { background: var(--panel); color: var(--accent); box-shadow: 0 1px 3px rgba(14, 20, 26, 0.1); }
+.brokerFilterSummary { display: flex; flex-wrap: wrap; gap: 10px 14px; margin: -2px 0 0; color: var(--muted); font-size: 11px; }
+.brokerFilterSummaryItem { display: inline-flex; align-items: center; gap: 5px; }
+.brokerFilterSummaryItemDanger { color: var(--danger); }
 .brokerListControls { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .brokerSearch, .brokerSort { display: flex; align-items: center; gap: 7px; min-height: 34px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface-2); color: var(--muted); padding: 0 9px; }
 .brokerSearch { flex: 1 1 auto; min-width: 180px; }
@@ -3616,9 +3619,16 @@ button:disabled {
 .brokerListSummary { margin: 0; color: var(--muted); font-size: 11px; }
 .brokerEmpty { margin: 14px 0; border: 1px dashed var(--border-strong); border-radius: 10px; color: var(--muted); padding: 22px; text-align: center; font-size: 12px; }
 .brokerRow { display: grid; gap: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 14px; }
+.brokerRowHistorical { border-color: rgba(217, 45, 32, 0.28); background: linear-gradient(180deg, rgba(217, 45, 32, 0.035), var(--panel)); }
 .brokerRowTop { display: flex; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
 .brokerRowMain { display: grid; gap: 6px; min-width: 0; }
 .brokerRowMain strong { overflow-wrap: anywhere; font-size: 13px; }
+.brokerAuthStatus { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+.brokerAuthStatus-reauth_required { color: var(--danger); font-weight: 650; }
+.brokerAuthDot { display: inline-block; width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--soft); }
+.brokerAuthDot-authorized { background: #16a34a; }
+.brokerAuthDot-reauth_required { background: var(--danger); }
+.brokerAuthDot-never_authorized { background: var(--soft); }
 .brokerRowActions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .brokerRowBusyActions { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .brokerRowBusyLabel { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); font-size: 11px; font-weight: 650; }
@@ -3637,6 +3647,7 @@ button:disabled {
 .brokerStatus span { display: grid; gap: 4px; }
 .brokerStatus b { color: var(--text); font-weight: 500; }
 .brokerError { color: var(--danger); font-size: 12px; margin: 0; }
+.brokerTransientError { color: #8a4b08; }
 .brokerJsonOverlay { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 24px; background: rgba(15, 23, 30, 0.24); backdrop-filter: blur(6px); }
 .brokerJsonCard { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; width: min(520px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow: auto; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--panel); padding: 20px; box-shadow: 0 24px 72px rgba(14, 20, 26, 0.24); }
 .brokerJsonCard > * { min-width: 0; }
