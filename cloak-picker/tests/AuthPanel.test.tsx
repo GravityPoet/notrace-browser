@@ -42,6 +42,32 @@ afterEach(() => {
 });
 
 describe("ChatGPT authorization panel", () => {
+  for (const state of ["missing", "expired"] as const) {
+    it(`routes a Broker-owned ${state} local cache to unified renewal without offering another login`, async () => {
+      const calls: string[] = [];
+      let opened = 0;
+      const data = { ...status("broker"), state, expires_at: state === "missing" ? null : 1 };
+      const call: AuthCall = async function call<T>(command: string): Promise<T> {
+        calls.push(command);
+        return data as T;
+      };
+      container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+      await act(async () => root?.render(createElement(AuthPanel, { name: data.account, call, onOpenBroker: () => { opened++; } })));
+      await settle();
+      expect(container.textContent).toContain("统一续期托管");
+      expect(container.textContent).not.toContain("未连接");
+      expect(container.textContent).not.toContain("已到期");
+      expect(container.textContent).not.toContain("凭证到期");
+      expect(container.textContent).not.toContain("连接官方账号");
+      expect(container.textContent).not.toContain("重新连接");
+      const open = container.querySelector<HTMLButtonElement>("button")!;
+      expect(open.textContent).toBe("查看统一授权续期");
+      await act(async () => open.click());
+      expect(opened).toBe(1);
+      expect(calls).toEqual(["auth_status"]);
+    });
+  }
+
   it("does not offer a second refresh writer for an external authority", async () => {
     const calls: string[] = [];
     const call: AuthCall = async function call<T>(command: string): Promise<T> {
@@ -51,7 +77,7 @@ describe("ChatGPT authorization panel", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    await act(async () => root?.render(createElement(AuthPanel, { name: "demo@example.test", call })));
+    await act(async () => root?.render(createElement(AuthPanel, { name: "demo@example.test", call, onOpenBroker: () => {} })));
     await settle();
 
     expect(container.textContent).toContain("Cockpit");
@@ -69,7 +95,7 @@ describe("ChatGPT authorization panel", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    await act(async () => root?.render(createElement(AuthPanel, { name: "demo@example.test", call })));
+    await act(async () => root?.render(createElement(AuthPanel, { name: "demo@example.test", call, onOpenBroker: () => {} })));
     await settle();
 
     const refresh = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("立即刷新"));

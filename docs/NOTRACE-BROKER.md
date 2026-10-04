@@ -75,6 +75,9 @@ Broker connectivity are checked before freezing local refresh; the operation
 lock remains held through the handoff. Tokens are sent directly to Broker for
 encrypted storage and are never returned to the frontend or copied into the
 local OAuth cache. Import closes the dialog and locates the managed account.
+Account details show the registered Broker owner and route all authorization
+actions to unified renewal; an absent or expired local cache is not presented
+as the current Broker grant's authorization state.
 An uncertain reply keeps local refresh frozen and permits an idempotent retry
 of the same file. Import does not test or rotate the refresh token; use
 “立即刷新” to check provider acceptance separately.

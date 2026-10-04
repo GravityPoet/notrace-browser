@@ -3619,7 +3619,7 @@ export default function App() {
                     <InfoRow copyable label="账号目录" value={selected.profile_path} mono />
                   </InspectorGroup>
 
-                  <AuthPanel key={selected.profile_id} name={selected.name} />
+                  <AuthPanel key={selected.profile_id} name={selected.name} onOpenBroker={() => { setBrokerFocus(selected.name); openBrokerPane(); }} />
 
                   <InspectorGroup title="网络">
                     <InfoRow icon={<Tag size={15} />} label="区域" value={selected.region ?? "未设置"} />
