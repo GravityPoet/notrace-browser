@@ -238,6 +238,29 @@ describe("统一授权续期窗口", () => {
     expect(document.body.textContent).toContain("valid@example.test");
   });
 
+  it("provides a clickable historical-invalidated shortcut with the exact accounts", async () => {
+    const valid = { key: "profile-1", email: "valid@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 1, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const invalid = { ...valid, key: "profile-2", email: "invalid@example.test", account_id: "acct-2", error: "reauth_required" as const };
+    const otherInvalid = { ...valid, key: "profile-3", email: "other-invalid@example.test", account_id: "acct-3", error: "recovery_required" as const };
+    const base = overview(valid);
+    const rows = [valid, invalid, otherInvalid].map((remote) => ({ ...base.accounts[0], name: remote.email, profile_id: remote.key, local: { ...local, account: remote.email, email: remote.email }, remote }));
+    const call: AuthCall = async function call<T>(): Promise<T> { return { ...base, accounts: rows } as T; };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, focusedAccount: "valid@example.test" })));
+    await settle();
+    const shortcut = document.querySelector<HTMLButtonElement>(".brokerIssueFilter");
+    expect(shortcut?.textContent).toContain("曾授权失效 2");
+    await act(async () => shortcut?.click());
+    await settle();
+    expect(document.body.textContent).toContain("显示 2 / 3 个账号 · 仅显示曾授权失效账号");
+    expect(Array.from(document.querySelectorAll(".brokerRowMain strong"), (element) => element.textContent)).toEqual(["invalid@example.test", "other-invalid@example.test"]);
+    expect(document.querySelector<HTMLInputElement>('input[aria-label="搜索授权账号"]')?.value).toBe("");
+    expect(shortcut?.getAttribute("aria-pressed")).toBe("true");
+    await act(async () => shortcut?.click());
+    await settle();
+    expect(document.body.textContent).toContain("显示 3 / 3 个账号");
+  });
+
   it("keeps temporary Broker failures authorized and explains the warning", async () => {
     const remote = { key: "profile-1", email: "temporary@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: 1_899_900_000, error: "service_unavailable" as const, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
     const data = { ...overview(remote), accounts: [{ ...overview(remote).accounts[0], name: remote.email, profile_id: remote.key, local: { ...local, account: remote.email, email: remote.email }, remote }] };
