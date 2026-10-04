@@ -44,6 +44,20 @@ fn store() -> (TempDir, BrokerStore) {
 }
 
 #[test]
+fn broker_key_parser_preserves_hex_values_and_rejects_invalid_inputs() {
+    assert_eq!(parse_key(&"af".repeat(32)).unwrap(), [0xaf; 32]);
+    assert_eq!(parse_key(&"AF".repeat(32)).unwrap(), [0xaf; 32]);
+    for input in [
+        "0".repeat(63),
+        "0".repeat(65),
+        "gg".repeat(32),
+        "é".repeat(32),
+    ] {
+        assert!(matches!(parse_key(&input), Err(BrokerError::Config)));
+    }
+}
+
+#[test]
 fn encrypted_store_and_access_projection_never_expose_refresh_token() {
     let (_dir, store) = store();
     let body = grant_body(
