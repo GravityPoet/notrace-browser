@@ -65,7 +65,7 @@ function time(seconds: number | null) {
 function Row({ label, value }: { label: string; value: string }) {
   return <div className="infoRow"><span className="infoLabel">{label}</span><span className="infoValue">{value}</span></div>;
 }
-export function AuthPanel({ name, call = nativeCall }: { name: string; call?: AuthCall }) {
+export function AuthPanel({ name, call = nativeCall, onOpenBroker }: { name: string; call?: AuthCall; onOpenBroker: () => void }) {
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [busy, setBusy] = useState<Operation | null>(null);
   const [error, setError] = useState("");
@@ -129,12 +129,14 @@ export function AuthPanel({ name, call = nativeCall }: { name: string; call?: Au
     catch { setError("取消授权失败，请重试"); }
   }
   const visible = status?.account === name ? status : null;
-  const connected = visible?.expires_at != null;
+  const brokerManaged = visible?.authority === "broker";
+  const connected = visible?.expires_at != null && !brokerManaged;
   const noTraceOwnsRefresh = visible?.authority === "no_trace";
   return <section className="inspectorGroup authPanel" aria-label="ChatGPT 授权" data-account={name}>
     <h2>ChatGPT 授权</h2>
     <div>
-      <Row label="状态" value={busy === "login_account_auth" ? "等待浏览器授权" : busy === "refresh_account_auth" ? "正在刷新" : visible ? labels[visible.state] : "读取中"} />
+      <Row label="状态" value={brokerManaged ? "统一续期托管" : busy === "login_account_auth" ? "等待浏览器授权" : busy === "refresh_account_auth" ? "正在刷新" : visible ? labels[visible.state] : "读取中"} />
+      {brokerManaged && <Row label="刷新管理" value="统一授权续期" />}
       {connected && <>
         <Row label="账号" value={visible.email ?? "无邮箱信息"} />
         <Row label="订阅" value={visible.plan_type ?? "未知"} />
@@ -143,13 +145,14 @@ export function AuthPanel({ name, call = nativeCall }: { name: string; call?: Au
         <Row label="刷新权威" value={authorityLabels[visible.authority]} />
         <Row label="自动续期" value={visible.auto_refresh ? "已开启 · 到期前 36 小时续期" : "已暂停"} />
       </>}
-      <p className="inspectorHint">{connected ? (noTraceOwnsRefresh ? "每天检查，到期前才刷新。回收站账号同样适用。" : `${authorityLabels[visible.authority]}负责刷新，NoTrace 不会并发轮换这条授权链。`) : "连接一次官方授权，即可为这个账号自动续期。已有网页登录可用于完成授权。"}</p>
+      <p className="inspectorHint">{brokerManaged ? "授权状态、重新授权、刷新凭据和 CPA 同步，请在统一授权续期中查看和操作。" : connected ? (noTraceOwnsRefresh ? "每天检查，到期前才刷新。回收站账号同样适用。" : `${authorityLabels[visible.authority]}负责刷新，NoTrace 不会并发轮换这条授权链。`) : "连接一次官方授权，即可为这个账号自动续期。已有网页登录可用于完成授权。"}</p>
       {busy === "login_account_auth" && <p className="inspectorHint" role="status">{authProgressLabels[loginPhase]}</p>}
-      {visible?.message && <p className="inspectorHint">{visible.message}</p>}
-      {visible?.next_retry_at && <p className="inspectorHint">下次重试：{time(visible.next_retry_at)}</p>}
+      {visible?.message && !brokerManaged && <p className="inspectorHint">{visible.message}</p>}
+      {visible?.next_retry_at && !brokerManaged && <p className="inspectorHint">下次重试：{time(visible.next_retry_at)}</p>}
       {error && <p className="inspectorHint authError" role="alert">{error}</p>}
       {notice && <p className="inspectorHint" role="status">{notice}</p>}
       <div className="authActions">
+        {brokerManaged ? <button className="secondaryButton" type="button" onClick={onOpenBroker}>查看统一授权续期</button> : <>
         <button className="secondaryButton" type="button" disabled={Boolean(busy)} onClick={() => void run("login_account_auth")}>
           {busy === "login_account_auth" ? <Loader2 size={14} className="spin" /> : <KeyRound size={14} />}
           {connected ? "重新连接" : "连接官方账号"}
@@ -159,6 +162,7 @@ export function AuthPanel({ name, call = nativeCall }: { name: string; call?: Au
           {noTraceOwnsRefresh && <button className="secondaryButton" type="button" disabled={Boolean(busy)} onClick={() => void run("set_auth_auto_refresh")}>{visible?.auto_refresh ? "暂停续期" : "开启续期"}</button>}
         </>}
         {busy === "login_account_auth" && <button className="secondaryButton" type="button" onClick={() => void cancel()}>取消授权</button>}
+        </>}
       </div>
     </div>
   </section>;
