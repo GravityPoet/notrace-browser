@@ -18,7 +18,7 @@ type BrokerJsonFormat = "cockpit_tools" | "auth_json" | "cpa" | "sub2api";
 type BrokerJsonTransferSummary = { path: string; format: string; account_count: number; refresh_token_exported: boolean };
 type BrokerJsonPreviewAccount = { email: string | null; account_id: string | null; has_access_token: boolean; has_refresh_token: boolean };
 type BrokerJsonPreview = { path: string; detected_format: string; account_count: number; accounts: BrokerJsonPreviewAccount[]; contains_refresh_token: boolean; message: string };
-type BrokerAccountFilter = "all" | "authorized" | "unauthorized";
+type BrokerAccountFilter = "all" | "authorized" | "unauthorized" | "reauth_required";
 type BrokerAccountSort = "default" | "recent" | "expiry" | "name";
 type BrokerAuthorizationState = "authorized" | "never_authorized" | "reauth_required";
 const nativeCall: AuthCall = (command, args) => invoke(command, args);
@@ -205,6 +205,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     const rows = (overview?.accounts ?? []).filter((row) => {
       if (accountFilter === "authorized" && authorizationState(row) !== "authorized") return false;
       if (accountFilter === "unauthorized" && authorizationState(row) === "authorized") return false;
+      if (accountFilter === "reauth_required" && authorizationState(row) !== "reauth_required") return false;
       if (!query) return true;
       return [row.name, row.local.email, row.remote?.email].filter(Boolean).some((value) => value!.toLocaleLowerCase().includes(query));
     });
@@ -248,14 +249,17 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     {!overview && !error && <p className="inspectorHint">正在读取授权状态…</p>}
     <div className="brokerListToolbar" aria-label="授权账号筛选与排序" aria-busy={!overview}>
       <div className="brokerFilterTabs" role="tablist" aria-label="授权状态筛选">
-        {filterLabels.map((filter) => <button key={filter.value} className={`brokerFilterTab ${accountFilter === filter.value ? "active" : ""}`} disabled={!overview} type="button" role="tab" aria-selected={accountFilter === filter.value} onClick={() => setAccountFilter(filter.value)}>{filter.label}</button>)}
+        {filterLabels.map((filter) => {
+          const parentActive = accountFilter === "reauth_required" && filter.value === "unauthorized";
+          return <button key={filter.value} className={`brokerFilterTab ${accountFilter === filter.value || parentActive ? "active" : ""}`} disabled={!overview} type="button" role="tab" aria-selected={accountFilter === filter.value || parentActive} onClick={() => setAccountFilter(filter.value)}>{filter.label}</button>;
+        })}
       </div>
-      {overview && <p className="brokerFilterSummary"><span className="brokerFilterSummaryItem"><span className="brokerAuthDot brokerAuthDot-authorized" aria-hidden="true" />可正常续期 {accountCounts.authorized}</span><span className="brokerFilterSummaryItem brokerFilterSummaryItemDanger"><span className="brokerAuthDot brokerAuthDot-reauth_required" aria-hidden="true" />曾授权失效 {accountCounts.reauth}</span><span className="brokerFilterSummaryItem"><span className="brokerAuthDot brokerAuthDot-never_authorized" aria-hidden="true" />从未授权 {accountCounts.never}</span></p>}
+      {overview && <div className="brokerFilterSummary"><span className="brokerFilterSummaryItem"><span className="brokerAuthDot brokerAuthDot-authorized" aria-hidden="true" />可正常续期 {accountCounts.authorized}</span><button className={`brokerFilterSummaryItem brokerFilterSummaryItemDanger brokerIssueFilter ${accountFilter === "reauth_required" ? "active" : ""}`} type="button" aria-pressed={accountFilter === "reauth_required"} disabled={accountCounts.reauth === 0} onClick={() => { setAccountSearch(""); setAccountFilter(accountFilter === "reauth_required" ? "all" : "reauth_required"); }}><span className="brokerAuthDot brokerAuthDot-reauth_required" aria-hidden="true" />曾授权失效 {accountCounts.reauth}</button><span className="brokerFilterSummaryItem"><span className="brokerAuthDot brokerAuthDot-never_authorized" aria-hidden="true" />从未授权 {accountCounts.never}</span></div>}
       <div className="brokerListControls">
         <label className="brokerSearch"><Search aria-hidden="true" size={14} /><span className="visuallyHidden">搜索授权账号</span><input type="search" aria-label="搜索授权账号" placeholder="搜索邮箱后直接授权" value={accountSearch} onChange={(event) => setAccountSearch(event.target.value)} /></label>
         <label className="brokerSort"><ArrowDownUp aria-hidden="true" size={14} /><span className="visuallyHidden">排序方式</span><select aria-label="排序方式" value={accountSort} onChange={(event) => setAccountSort(event.target.value as BrokerAccountSort)}><option value="default">默认顺序</option><option value="recent">最近授权/续期</option><option value="expiry">访问凭据到期</option><option value="name">账号名称</option></select></label>
       </div>
-      <p className="brokerListSummary">{overview ? `显示 ${visibleAccounts.length} / ${accountCounts.all} 个账号${accountSearch.trim() ? ` · 搜索“${accountSearch.trim()}”` : ""}` : error ? "授权状态读取失败，请点击“读取状态”重试" : "正在读取授权状态…"}</p>
+      <p className="brokerListSummary">{overview ? `显示 ${visibleAccounts.length} / ${accountCounts.all} 个账号${accountFilter === "reauth_required" ? " · 仅显示曾授权失效账号" : accountSearch.trim() ? ` · 搜索“${accountSearch.trim()}”` : ""}` : error ? "授权状态读取失败，请点击“读取状态”重试" : "正在读取授权状态…"}</p>
     </div>
     {visibleLogin && !visibleAccounts.some(row => row.name === visibleLogin.name) && activity}
     <div className="brokerRows">{visibleAccounts.map(row => {

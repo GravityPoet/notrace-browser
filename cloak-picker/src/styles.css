@@ -3609,6 +3609,9 @@ button:disabled {
 .brokerFilterSummary { display: flex; flex-wrap: wrap; gap: 10px 14px; margin: -2px 0 0; color: var(--muted); font-size: 11px; }
 .brokerFilterSummaryItem { display: inline-flex; align-items: center; gap: 5px; }
 .brokerFilterSummaryItemDanger { color: var(--danger); }
+.brokerIssueFilter { border: 0; border-radius: 6px; background: transparent; padding: 2px 5px; font: inherit; cursor: pointer; }
+.brokerIssueFilter:hover, .brokerIssueFilter.active { background: var(--danger-soft); }
+.brokerIssueFilter:disabled { cursor: default; opacity: 0.55; }
 .brokerListControls { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .brokerSearch, .brokerSort { display: flex; align-items: center; gap: 7px; min-height: 34px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface-2); color: var(--muted); padding: 0 9px; }
 .brokerSearch { flex: 1 1 auto; min-width: 180px; }
