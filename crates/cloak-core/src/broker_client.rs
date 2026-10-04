@@ -44,6 +44,13 @@ pub struct BrokerJsonTransferSummary {
     pub account_count: usize,
     pub refresh_token_exported: bool,
 }
+#[derive(Serialize)]
+pub struct BrokerJsonImportSummary {
+    pub email: String,
+    pub account_id: String,
+    pub profile_id: String,
+    pub generation: u64,
+}
 fn connection_path(config: &CloakConfig) -> PathBuf {
     config
         .account_base
@@ -208,6 +215,128 @@ pub fn broker_convert_json(
         refresh_token_exported: include_refresh_token && preview.contains_refresh_token,
     })
 }
+
+/// Import one complete credential from a local JSON file and make Broker the
+/// sole refresh owner for the matching NoTrace account.
+pub fn broker_import_json(
+    config: &CloakConfig,
+    path: &Path,
+    email: &str,
+    account_id: &str,
+) -> Result<BrokerJsonImportSummary> {
+    let records = crate::broker_transfer::import_records(path)?;
+    let requested_email = email.trim();
+    let matches = records
+        .iter()
+        .filter(|record| {
+            (!requested_email.is_empty() && record.email.eq_ignore_ascii_case(requested_email))
+                && record.account_id == account_id
+        })
+        .collect::<Vec<_>>();
+    let record = match matches.as_slice() {
+        [record] => *record,
+        [] => {
+            return Err(CloakError::Auth(
+                "导入文件与预览账号不一致，请重新选择 JSON".into(),
+            ))
+        }
+        _ => {
+            return Err(CloakError::Auth(
+                "JSON 中该账号有多份凭据，请只保留要导入的一份".into(),
+            ))
+        }
+    };
+    let body = crate::broker_transfer::broker_grant_body(record)?;
+    let identity = crate::broker::validate_import_grant("file-import", &body)
+        .map_err(|error| CloakError::Auth(error.to_string()))?;
+    if !identity.email.eq_ignore_ascii_case(&record.email)
+        || identity.account_id != record.account_id
+    {
+        return Err(CloakError::Auth(
+            "JSON 账号信息与凭据身份不匹配，未导入".into(),
+        ));
+    }
+    let connection = load(config)?.ok_or_else(|| CloakError::Auth("请先连接 Broker".into()))?;
+    let remote: Vec<BrokerMetadata> = request(&connection, "GET", "/v1/admin/accounts", None)?;
+    let mut accounts = crate::list_accounts(config)?;
+    accounts.extend(crate::list_trashed_accounts(config)?);
+    let mut candidates = Vec::new();
+    for account in &accounts {
+        let local = crate::auth_status(config, &account.name)?;
+        let grant = remote.iter().find(|value| value.key == account.profile_id);
+        if account.name.eq_ignore_ascii_case(&identity.email)
+            || local
+                .email
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(&identity.email))
+            || grant.is_some_and(|value| {
+                value.account_id == identity.account_id
+                    && value.email.eq_ignore_ascii_case(&identity.email)
+            })
+        {
+            candidates.push(account);
+        }
+    }
+    let account = match candidates.as_slice() {
+        [account] => *account,
+        [] => {
+            return Err(CloakError::Auth(format!(
+                "NoTrace 中找不到 {}，请先创建同名账号环境",
+                identity.email
+            )))
+        }
+        _ => {
+            return Err(CloakError::Auth(
+                "多个 NoTrace 环境使用此邮箱，请先整理账号绑定后再导入".into(),
+            ))
+        }
+    };
+    if remote.iter().any(|value| {
+        value.key == account.profile_id
+            && (value.account_id != identity.account_id
+                || !value.email.eq_ignore_ascii_case(&identity.email))
+    }) {
+        return Err(CloakError::Auth(
+            "此环境已绑定另一个授权账号，未覆盖".into(),
+        ));
+    }
+    let target = format!("/v1/admin/accounts/{}/grant", segment(&account.profile_id)?);
+    let metadata: BrokerMetadata =
+        crate::auth::with_imported_broker_handoff(config, &account.name, || {
+            let metadata: BrokerMetadata = request(
+                &connection,
+                "POST",
+                &target,
+                Some(
+                    serde_json::from_str(&body)
+                        .map_err(|_| CloakError::Auth("授权 JSON 无效".into()))?,
+                ),
+            )?;
+            if metadata.key != account.profile_id
+                || metadata.account_id != identity.account_id
+                || !metadata.email.eq_ignore_ascii_case(&identity.email)
+            {
+                return Err(CloakError::Auth(
+                    "Broker 未确认对应账号的授权，刷新保持暂停，请重新读取状态".into(),
+                ));
+            }
+            if let Some(error) = metadata.error.filter(|error| {
+                matches!(
+                    error,
+                    crate::BrokerError::ReauthRequired | crate::BrokerError::RecoveryRequired
+                )
+            }) {
+                return Err(CloakError::Auth(error.to_string()));
+            }
+            Ok(metadata)
+        })?;
+    Ok(BrokerJsonImportSummary {
+        email: metadata.email,
+        account_id: metadata.account_id,
+        profile_id: account.profile_id.clone(),
+        generation: metadata.generation,
+    })
+}
 fn segment(value: &str) -> Result<String> {
     if !value.is_empty()
         && value
@@ -318,6 +447,8 @@ fn request<T: serde::de::DeserializeOwned>(
             });
         return Err(CloakError::Auth(
             match (status, code.as_deref()) {
+                (400, Some("identity_mismatch")) => "授权账号身份不匹配，未导入",
+                (400, Some("invalid_grant")) => "授权文件无效或访问凭据已过期，请重新授权",
                 (401, _) | (403, _) => "Broker 管理密钥无效",
                 (409, Some("reauth_required")) => "授权已失效，需要重新授权",
                 (409, Some("recovery_required")) => "授权链状态不确定，需要重新授权",

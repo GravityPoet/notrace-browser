@@ -29,6 +29,7 @@ commands.allow = [
   "broker_set_cpa",
   "choose_broker_json_import_path",
   "broker_preview_json",
+  "broker_import_json",
   "broker_export_json",
   "broker_convert_json",
   "refresh_account_auth",

@@ -69,6 +69,168 @@ fn encrypted_store_and_access_projection_never_expose_refresh_token() {
     assert!(!fs::read_to_string(path).unwrap().contains("secret-refresh"));
 }
 
+/// Local-only HTTP boundary for the desktop import path. Uses the real
+/// encrypted BrokerStore; no OpenAI endpoint or production credential is used.
+fn desktop_import_server(
+    store: BrokerStore,
+    requests: usize,
+) -> (String, thread::JoinHandle<Vec<String>>) {
+    use std::io::{BufRead, BufReader};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let task = thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut paths = Vec::new();
+        while paths.len() < requests && std::time::Instant::now() < deadline {
+            let (mut stream, _) = match listener.accept() {
+                Ok(value) => value,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(error) => panic!("synthetic server accept failed: {error}"),
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let path = line.split_whitespace().nth(1).unwrap().to_owned();
+            let mut length = 0;
+            loop {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            drop(reader);
+            let value = if path.ends_with("/grant") {
+                let key = path
+                    .strip_prefix("/v1/admin/accounts/")
+                    .unwrap()
+                    .strip_suffix("/grant")
+                    .unwrap();
+                serde_json::to_value(
+                    store
+                        .import_grant(key, std::str::from_utf8(&body).unwrap())
+                        .unwrap(),
+                )
+                .unwrap()
+            } else {
+                assert_eq!(path, "/v1/admin/accounts");
+                serde_json::to_value(store.list().unwrap()).unwrap()
+            };
+            paths.push(path);
+            let body = value.to_string();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        }
+        assert_eq!(paths.len(), requests);
+        paths
+    });
+    (endpoint, task)
+}
+
+#[test]
+fn desktop_json_import_binds_a_trashed_account_and_preserves_cpa_until_explicit_sync() {
+    let (_dir, store) = store();
+    let local = tempfile::tempdir().unwrap();
+    let config = crate::CloakConfig {
+        repo_root: local.path().into(),
+        account_base: local.path().join("Accounts"),
+        extension_source: local.path().join("extension"),
+        cloakbrowser_root: local.path().join("browser"),
+    };
+    let account = crate::create_account(&config, "alpha@example.test").unwrap();
+    crate::set_account_trashed(&config, &account.name, true).unwrap();
+    let path = local.path().join("import.json");
+    let original = grant_body(
+        &account.name,
+        "acct-1",
+        "synthetic-import-refresh",
+        now() + 86400,
+    );
+    fs::write(&path, &original).unwrap();
+    let (endpoint, server) = desktop_import_server(store.clone(), 5);
+    crate::write_secret_atomic(
+        &local.path().join(".notrace-broker-client.json"),
+        &json!({"endpoint": endpoint, "admin_key": "synthetic-import-key-000000000000"})
+            .to_string(),
+    )
+    .unwrap();
+    let result = crate::broker_import_json(&config, &path, &account.name, "acct-1").unwrap();
+    assert_eq!(result.profile_id, account.profile_id);
+    assert_eq!(result.email, account.name);
+    let repeated = crate::broker_import_json(&config, &path, &account.name, "acct-1").unwrap();
+    assert_eq!(repeated.generation, result.generation);
+    let overview = crate::broker_overview(&config).unwrap();
+    assert!(overview.unmatched.is_empty());
+    assert!(overview.accounts[0].trashed);
+    assert!(!overview.accounts[0].remote.as_ref().unwrap().cpa_enabled);
+    assert_eq!(
+        overview.accounts[0].local.authority,
+        crate::AuthAuthority::Broker
+    );
+    assert!(!overview.accounts[0].local.auto_refresh);
+    assert!(!local
+        .path()
+        .join(".notrace-oauth")
+        .join(&account.profile_id)
+        .join("auth.json")
+        .exists());
+    assert_eq!(fs::read_to_string(path).unwrap(), original);
+    assert!(crate::refresh_account_auth(&config, &account.name).is_err());
+    assert!(store
+        .access_credential(&account.profile_id)
+        .unwrap()
+        .refresh_token
+        .is_empty());
+    assert!(!serde_json::to_string(&result)
+        .unwrap()
+        .contains("synthetic-import-refresh"));
+    let paths = server.join().unwrap();
+    assert!(paths
+        .iter()
+        .all(|path| !path.ends_with("/cpa") && !path.ends_with("/refresh")));
+}
+
+#[test]
+fn desktop_file_import_rejects_identity_mismatch_before_any_state_change() {
+    let local = tempfile::tempdir().unwrap();
+    let config = crate::CloakConfig {
+        repo_root: local.path().into(),
+        account_base: local.path().join("Accounts"),
+        extension_source: local.path().join("extension"),
+        cloakbrowser_root: local.path().join("browser"),
+    };
+    let account = crate::create_account(&config, "alpha@example.test").unwrap();
+    let mut value: Value = serde_json::from_str(&grant_body(
+        &account.name,
+        "acct-1",
+        "synthetic-refresh",
+        now() + 3600,
+    ))
+    .unwrap();
+    value["tokens"]["id_token"] = Value::String(jwt(
+        json!({"email": "wrong@example.test", "https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}}),
+    ));
+    let path = local.path().join("import.json");
+    fs::write(&path, value.to_string()).unwrap();
+    assert!(crate::broker_import_json(&config, &path, "wrong@example.test", "acct-1").is_err());
+    assert!(!local.path().join(".notrace-oauth").exists());
+    let expiry = grant_body(&account.name, "acct-1", "synthetic-refresh", now() - 1);
+    fs::write(&path, expiry).unwrap();
+    assert!(crate::broker_import_json(&config, &path, &account.name, "acct-1").is_err());
+    assert!(!local.path().join(".notrace-oauth").exists());
+}
+
 #[test]
 fn export_projection_preserves_refresh_token_only_when_requested() {
     let (_dir, store) = store();

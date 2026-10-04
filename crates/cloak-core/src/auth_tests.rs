@@ -180,6 +180,36 @@ fn broker_handoff_freezes_refresh_before_sending_even_if_reply_is_lost() {
 }
 
 #[test]
+fn file_import_locks_and_freezes_refresh_without_caching_imported_tokens() {
+    let f = Fixture::new();
+    f.seed(now() + 3600);
+    let original = fs::read(f.home.join("auth.json")).unwrap();
+    with_imported_broker_handoff(&f.config, &f.name, || {
+        assert_eq!(policy(&f.home).unwrap().authority, AuthAuthority::Broker);
+        assert!(!policy(&f.home).unwrap().enabled);
+        assert!(lock(&f.home.join(".operation.lock")).is_err());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(original, fs::read(f.home.join("auth.json")).unwrap());
+    assert!(refresh_with(&f.config, &f.name, Path::new("/must-not-start")).is_err());
+}
+
+#[test]
+fn file_import_keeps_refresh_frozen_when_acceptance_is_uncertain() {
+    let f = Fixture::new();
+    f.seed(now() + 3600);
+    assert!(
+        with_imported_broker_handoff(&f.config, &f.name, || -> Result<()> {
+            Err(CloakError::Auth("synthetic lost reply".into()))
+        })
+        .is_err()
+    );
+    assert_eq!(policy(&f.home).unwrap().authority, AuthAuthority::Broker);
+    assert!(!policy(&f.home).unwrap().enabled);
+}
+
+#[test]
 fn trashed_account_keeps_authorization_binding_and_refresh_policy() {
     let f = Fixture::new();
     f.seed(now() + 60);

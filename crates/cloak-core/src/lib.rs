@@ -10,9 +10,9 @@ pub use broker::{
     push_local_grant, AccessCredential, BrokerConfig, BrokerError, BrokerMetadata, BrokerStore,
 };
 pub use broker_client::{
-    broker_convert_json, broker_export_json, broker_overview, broker_preview_json,
-    broker_push_account, broker_refresh_account, broker_set_cpa, save_broker_connection,
-    BrokerJsonTransferSummary, BrokerOverview,
+    broker_convert_json, broker_export_json, broker_import_json, broker_overview,
+    broker_preview_json, broker_push_account, broker_refresh_account, broker_set_cpa,
+    save_broker_connection, BrokerJsonImportSummary, BrokerJsonTransferSummary, BrokerOverview,
 };
 pub use broker_transfer::{
     convert_file as convert_broker_json_file, format_access_credentials,
