@@ -16,7 +16,8 @@ type BrokerRow = { name: string; profile_id: string; trashed: boolean; local: Au
 export type BrokerOverview = { configured: boolean; endpoint: string | null; connected: boolean; message: string | null; accounts: BrokerRow[]; unmatched: BrokerMetadata[] };
 type BrokerJsonFormat = "cockpit_tools" | "auth_json" | "cpa" | "sub2api";
 type BrokerJsonTransferSummary = { path: string; format: string; account_count: number; refresh_token_exported: boolean };
-type BrokerJsonPreviewAccount = { email: string | null; account_id: string | null; has_access_token: boolean; has_refresh_token: boolean };
+type BrokerJsonImportSummary = { email: string; account_id: string; profile_id: string; generation: number };
+type BrokerJsonPreviewAccount = { email: string | null; account_id: string | null; has_access_token: boolean; has_id_token: boolean; has_refresh_token: boolean };
 type BrokerJsonPreview = { path: string; detected_format: string; account_count: number; accounts: BrokerJsonPreviewAccount[]; contains_refresh_token: boolean; message: string };
 type BrokerAccountFilter = "all" | "authorized" | "unauthorized" | "reauth_required";
 type BrokerAccountSort = "default" | "recent" | "expiry" | "name";
@@ -78,6 +79,8 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   const [exportRow, setExportRow] = useState<BrokerRow | null>(null);
   const [jsonFormat, setJsonFormat] = useState<BrokerJsonFormat>("auth_json");
   const [importPreview, setImportPreview] = useState<BrokerJsonPreview | null>(null);
+  const [importMode, setImportMode] = useState<"manage" | "convert">("manage");
+  const [importAccountIndex, setImportAccountIndex] = useState(0);
   const [preserveRefreshToken, setPreserveRefreshToken] = useState(false);
   const [clearImportedRefreshToken, setClearImportedRefreshToken] = useState(false);
   const [accountFilter, setAccountFilter] = useState<BrokerAccountFilter>("all");
@@ -174,7 +177,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     const path = await call<string | null>("choose_broker_json_import_path", {});
     if (!path) return;
     const preview = await call<BrokerJsonPreview>("broker_preview_json", { path });
-    if (mounted.current) { setClearImportedRefreshToken(false); setExportRow(null); setImportPreview(preview); }
+    if (mounted.current) { setClearImportedRefreshToken(false); setImportMode("manage"); setImportAccountIndex(0); setJsonFormat("auth_json"); setExportRow(null); setImportPreview(preview); }
   }
   async function exportJson(row: BrokerRow) {
     const result = await call<BrokerJsonTransferSummary>("broker_export_json", { profileId: row.profile_id, accountName: row.name, format: jsonFormat, includeRefreshToken: preserveRefreshToken });
@@ -184,6 +187,25 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     if (!importPreview) return;
     const result = await call<BrokerJsonTransferSummary>("broker_convert_json", { path: importPreview.path, format: jsonFormat, includeRefreshToken: !clearImportedRefreshToken });
     if (mounted.current) { setImportPreview(null); setMessage(`已转换为 ${jsonFormats.find((item) => item.value === jsonFormat)?.label ?? "JSON"}（${result.refresh_token_exported ? "包含 refresh_token" : "access-only"}，不会写入 Broker）`); }
+  }
+  async function importAndManageJson() {
+    const account = importPreview?.accounts[importAccountIndex];
+    if (!importPreview || !account?.email || !account.account_id) return;
+    let result: BrokerJsonImportSummary;
+    try {
+      result = await call<BrokerJsonImportSummary>("broker_import_json", { path: importPreview.path, email: account.email, accountId: account.account_id });
+    } catch (caught) {
+      try { await read(); } catch { /* Keep the actionable import error in the dialog. */ }
+      throw caught;
+    }
+    if (mounted.current) {
+      setImportPreview(null);
+      setAccountFilter("all");
+      setAccountSearch(result.email);
+      setCpaAction(current => current?.profileId === result.profile_id ? null : current);
+      setMessage(`${result.email} 已导入并纳管；请点击“同步到 CPA”更新凭据`);
+    }
+    try { await read(); } catch { if (mounted.current) setError("导入并纳管已完成，列表读取失败；请点击“读取状态”重试"); }
   }
   const authorized = useCallback((row: BrokerRow) => authorizationState(row) === "authorized", []);
   const authorizationTime = useCallback((row: BrokerRow) => row.remote?.last_refresh_at ?? row.local.last_refresh_at ?? 0, []);
@@ -230,6 +252,18 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   const loginLabel = visibleLogin ? visibleLogin.cancelling ? "正在取消授权…" : visibleLogin.phase === "handoff" ? "授权成功，正在交给 Broker…" : authProgressLabels[visibleLogin.phase] : "";
   const activity = visibleLogin && (<div className="brokerRowFeedback" role="status"><strong>{visibleLogin.name}</strong><p><Loader2 className="spin" size={14} /> {loginLabel}</p>{visibleLogin.phase !== "handoff" && <button className="secondaryButton" type="button" disabled={visibleLogin.cancelling} onClick={() => void cancelAuthorization(visibleLogin.name)}>取消授权</button>}</div>);
   const brokerConnected = overview?.connected ?? false;
+  const importAccount = importPreview?.accounts[importAccountIndex];
+  const importEmail = importAccount?.email?.toLocaleLowerCase() ?? "";
+  const importTargets = (overview?.accounts ?? []).filter(row => Boolean(importEmail) && (
+    row.name.toLocaleLowerCase() === importEmail
+    || row.local.email?.toLocaleLowerCase() === importEmail
+    || (row.remote?.account_id === importAccount?.account_id && row.remote?.email.toLocaleLowerCase() === importEmail)
+  ));
+  const importBlockedReason = !brokerConnected ? "请先连接统一续期服务，再导入并纳管。"
+    : !importAccount?.has_refresh_token ? "此账号缺少 refresh_token，不能纳管；可以选择“仅转换文件”保存使用副本。"
+    : !importAccount.has_access_token || !importAccount.has_id_token || !importAccount.email || !importAccount.account_id ? "授权文件缺少完整的账号身份或凭据，请使用完整 auth.json。"
+    : importTargets.length === 0 ? `NoTrace 中找不到 ${importAccount.email}，请先新建同名账号环境。`
+    : importTargets.length > 1 ? "多个 NoTrace 环境使用此邮箱，请先整理账号绑定后再导入。" : "";
   return <section className={`brokerPanel ${embedded ? "brokerPanelEmbedded" : ""}`} aria-label="统一授权续期">
     <div className={`brokerPanelHeader ${embedded ? "brokerPanelHeaderEmbedded" : ""}`}>
       <div>{embedded ? null : <><span className="eyebrow">授权管理中心</span><h2 id="cloak-editor-dialog-title">统一授权续期</h2><p>查看谁负责刷新，以及各端是否收到最新凭据。</p></>}</div>
@@ -244,7 +278,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       <button className="primaryButton" type="button" disabled={!endpoint || !adminKey || disabled} onClick={() => void run("connect", connect)}>{busy === "connect" ? <Loader2 className="spin" size={14} /> : <Link2 size={14} />}连接</button>
     </div>}
     {overview?.message && <p className="inspectorHint">{overview.message}</p>}
-    {error && !overview?.accounts.some(row => row.profile_id === errorTarget) && <p className="brokerError" role="alert">{error}</p>}
+    {error && !importPreview && !overview?.accounts.some(row => row.profile_id === errorTarget) && <p className="brokerError" role="alert">{error}</p>}
     {message && <p className="inspectorHint" role="status">{message}</p>}
     {!overview && !error && <p className="inspectorHint">正在读取授权状态…</p>}
     <div className="brokerListToolbar" aria-label="授权账号筛选与排序" aria-busy={!overview}>
@@ -321,14 +355,23 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     </div>, document.body)}
     {importPreview && createPortal(<div className="brokerJsonOverlay">
       <div className="brokerJsonCard" role="dialog" aria-modal="true" aria-label="JSON 导入与转换">
-      <div className="brokerJsonCardHeader"><div><strong>JSON 导入/转换</strong><span>{importPreview.account_count} 个账号 · {importPreview.detected_format}</span></div><button className="iconButton" type="button" aria-label="关闭 JSON 导入与转换" onClick={() => setImportPreview(null)}>×</button></div>
+      <div className="brokerJsonCardHeader"><div><strong>导入授权 JSON</strong><span>{importPreview.account_count} 个账号 · {importPreview.detected_format}</span></div><button className="iconButton" type="button" disabled={disabled} aria-label="关闭 JSON 导入与转换" onClick={() => setImportPreview(null)}>×</button></div>
       <p className="brokerJsonPath" title={importPreview.path}>{importPreview.path}</p>
-      <p className={`brokerJsonNotice ${importPreview.contains_refresh_token ? "warning" : ""}`}>{importPreview.message}</p>
+      <div className="brokerFilterTabs brokerJsonMode" role="group" aria-label="JSON 处理方式"><button className={`brokerFilterTab ${importMode === "manage" ? "active" : ""}`} type="button" aria-pressed={importMode === "manage"} disabled={disabled} onClick={() => { setImportMode("manage"); setError(""); }}>导入并纳管</button><button className={`brokerFilterTab ${importMode === "convert" ? "active" : ""}`} type="button" aria-pressed={importMode === "convert"} disabled={disabled} onClick={() => { setImportMode("convert"); setError(""); }}>仅转换文件</button></div>
+      {importMode === "manage" && <>
+        {importPreview.account_count > 1 && <label className="brokerJsonField">选择要纳管的账号<select aria-label="选择要纳管的账号" value={importAccountIndex} disabled={disabled} onChange={event => { setImportAccountIndex(Number(event.target.value)); setError(""); }}>{importPreview.accounts.map((account, index) => <option key={index} value={index}>{account.email ?? account.account_id ?? `账号 ${index + 1}`}</option>)}</select></label>}
+        <div className="brokerJsonImportAccount"><strong>{importAccount?.email ?? importAccount?.account_id ?? "无法识别账号"}</strong><span>{importTargets.length === 1 ? `绑定环境：${importTargets[0].name}${importTargets[0].trashed ? "（回收站）" : ""}` : "等待匹配账号环境"}</span></div>
+        <p className={`brokerJsonNotice ${importBlockedReason ? "warning" : ""}`}>{importBlockedReason || `完整凭据将保存到统一续期服务，保留 refresh_token。${importTargets[0]?.remote ? "将更新此账号的授权凭据；" : "导入后无需再打开浏览器授权；"}CPA 同步由你手动点击。`}</p>
+        {!importBlockedReason && <p className="brokerJsonHint">纳管后由统一续期服务负责刷新，请停用原工具对同一份凭据的自动刷新。</p>}
+      </>}
+      {importMode === "convert" && <>
       <div className="brokerJsonAccountList">{importPreview.accounts.slice(0, 6).map((account, index) => <span key={`${account.email ?? account.account_id ?? "account"}-${index}`}><FileJson size={13} />{account.email ?? account.account_id ?? `账号 ${index + 1}`}{account.has_refresh_token ? " · 含 refresh_token" : " · access-only"}</span>)}{importPreview.account_count > 6 && <small>还有 {importPreview.account_count - 6} 个账号</small>}</div>
       <label className="brokerJsonField">转换为<select value={jsonFormat} onChange={(event) => setJsonFormat(event.target.value as BrokerJsonFormat)} disabled={disabled}>{jsonFormats.map((format) => <option value={format.value} key={format.value}>{format.label}</option>)}</select></label>
       <label className="brokerJsonCheckbox"><input type="checkbox" checked={clearImportedRefreshToken} onChange={(event) => setClearImportedRefreshToken(event.target.checked)} /><span>清空 refresh_token（生成 access-only 副本）</span></label>
       <p className={`brokerJsonNotice ${!clearImportedRefreshToken && importPreview.contains_refresh_token ? "warning" : ""}`}>{clearImportedRefreshToken ? "已选择清空：保存的目标文件只含 access token / id token；不会写入 Broker。" : importPreview.contains_refresh_token ? "默认保留输入文件中的真实 refresh_token，用于完整凭据导入/转换；这里只保存目标 JSON，不会自动写入 Broker、CPA 或 Cockpit。" : "输入文件不含 refresh_token，将生成 access-only 目标文件；这里只保存目标 JSON。"}</p>
-      <div className="brokerJsonActions"><button className="secondaryButton" type="button" disabled={disabled} onClick={() => setImportPreview(null)}>关闭</button><button className="primaryButton" type="button" disabled={disabled} onClick={() => void run("convert-json", convertImportedJson)}><Download size={14} />转换并保存</button></div>
+      </>}
+      {error && <p className="brokerRowFeedback error" role="alert">{error}</p>}
+      <div className="brokerJsonActions"><button className="secondaryButton" type="button" disabled={disabled} onClick={() => setImportPreview(null)}>关闭</button>{importMode === "manage" ? <button className="primaryButton" type="button" disabled={disabled || Boolean(importBlockedReason)} onClick={() => void run("manage-json", importAndManageJson)}>{busy === "manage-json" ? <Loader2 className="spin" size={14} /> : <UploadCloud size={14} />}{busy === "manage-json" ? "正在导入并纳管…" : "确认导入并纳管"}</button> : <button className="primaryButton" type="button" disabled={disabled} onClick={() => void run("convert-json", convertImportedJson)}><Download size={14} />转换并保存</button>}</div>
       </div>
     </div>, document.body)}
   </section>;

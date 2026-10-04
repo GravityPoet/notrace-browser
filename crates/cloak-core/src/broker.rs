@@ -806,6 +806,22 @@ pub fn push_local_grant(
     })
 }
 
+/// Decode metadata for a local file import before mutating any refresh policy.
+/// This checks consistency, not the provider's acceptance of a refresh token.
+pub(crate) fn validate_import_grant(key: &str, body: &str) -> BrokerResult<BrokerMetadata> {
+    let grant = parse_grant(key, body)?;
+    let access = claims(&grant.access_token).ok_or(BrokerError::InvalidGrant)?;
+    let identity = claims(&grant.id_token).ok_or(BrokerError::InvalidGrant)?;
+    for claim in [&access, &identity] {
+        if claim_email(claim).is_some_and(|email| !email.eq_ignore_ascii_case(&grant.email))
+            || claim_account(claim).is_some_and(|account| account != grant.account_id)
+        {
+            return Err(BrokerError::IdentityMismatch);
+        }
+    }
+    Ok(grant.metadata())
+}
+
 fn parse_grant(key: &str, body: &str) -> BrokerResult<Grant> {
     if body.len() as u64 > MAX_BYTES {
         return Err(BrokerError::InputTooLarge);
@@ -1043,7 +1059,7 @@ fn field(v: &Value, k: &str) -> Option<String> {
         .filter(|s| !s.trim().is_empty())
         .map(ToOwned::to_owned)
 }
-fn claims(t: &str) -> Option<Value> {
+pub(crate) fn claims(t: &str) -> Option<Value> {
     let mut p = t.split('.');
     p.next()?;
     let payload = p.next()?;
@@ -1053,18 +1069,18 @@ fn claims(t: &str) -> Option<Value> {
     }
     serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?).ok()
 }
-fn claim_email(v: &Value) -> Option<String> {
+pub(crate) fn claim_email(v: &Value) -> Option<String> {
     v.pointer("/https:~1~1api.openai.com~1profile/email")
         .and_then(Value::as_str)
         .or_else(|| v.get("email").and_then(Value::as_str))
         .map(ToOwned::to_owned)
 }
-fn claim_account(v: &Value) -> Option<String> {
+pub(crate) fn claim_account(v: &Value) -> Option<String> {
     v.pointer("/https:~1~1api.openai.com~1auth/chatgpt_account_id")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
 }
-fn claim_plan(v: &Value) -> Option<String> {
+pub(crate) fn claim_plan(v: &Value) -> Option<String> {
     v.pointer("/https:~1~1api.openai.com~1auth/chatgpt_plan_type")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)

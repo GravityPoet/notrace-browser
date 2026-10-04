@@ -1,7 +1,8 @@
 use cloak_core::{
     account_is_running as core_account_is_running, auth_status as core_auth_status,
     broker_convert_json as core_broker_convert_json, broker_export_json as core_broker_export_json,
-    broker_overview as core_broker_overview, broker_preview_json as core_broker_preview_json,
+    broker_import_json as core_broker_import_json, broker_overview as core_broker_overview,
+    broker_preview_json as core_broker_preview_json,
     broker_push_account as core_broker_push_account,
     broker_refresh_account as core_broker_refresh_account, broker_set_cpa as core_broker_set_cpa,
     build_launch_plan, create_account_with_group as core_create_account_with_group,
@@ -22,9 +23,10 @@ use cloak_core::{
     set_mark as core_set_mark, set_note as core_set_note, set_proxy as core_set_proxy,
     set_region as core_set_region, toggle_locale as core_toggle_locale, Account, AuthAuthority,
     AuthLoginProgress, AuthRefreshSummary, AuthStatus, BrokerJsonImportPreview,
-    BrokerJsonTransferSummary, BrokerMetadata, BrokerOverview, CloakConfig, ForceCloseResult,
-    LaunchOptions, LaunchPlan, LaunchResult, SeatUsage, WorkspaceExportSummary,
-    WorkspaceImportMapping, WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
+    BrokerJsonImportSummary, BrokerJsonTransferSummary, BrokerMetadata, BrokerOverview,
+    CloakConfig, ForceCloseResult, LaunchOptions, LaunchPlan, LaunchResult, SeatUsage,
+    WorkspaceExportSummary, WorkspaceImportMapping, WorkspaceImportPreview, WorkspaceImportSummary,
+    WorkspacePickerState,
 };
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -763,6 +765,19 @@ async fn broker_preview_json(path: String) -> Result<BrokerJsonImportPreview, St
 }
 
 #[tauri::command]
+async fn broker_import_json(
+    path: String,
+    email: String,
+    account_id: String,
+) -> Result<BrokerJsonImportSummary, String> {
+    run_blocking(move || {
+        core_broker_import_json(&config()?, Path::new(&path), &email, &account_id)
+            .map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
 async fn broker_export_json(
     app: tauri::AppHandle,
     profile_id: String,
@@ -1330,6 +1345,7 @@ pub fn run() {
             broker_set_cpa,
             choose_broker_json_import_path,
             broker_preview_json,
+            broker_import_json,
             broker_export_json,
             broker_convert_json,
             refresh_account_auth,

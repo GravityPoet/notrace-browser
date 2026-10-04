@@ -66,13 +66,24 @@ object per account, with `access_token` at the top level. Cockpit's array export
 and official Codex's nested `tokens` shape are different formats. Multi-account
 input cannot be saved as one CPA auth file; export each account separately.
 
-JSON import is a validation/conversion flow. It previews recognized accounts
-and can convert them to one of the supported formats. For an import, the default
-is to preserve an input `refresh_token`; checking the clear option creates an
-access-only copy. The saved conversion result never promotes an imported token
-to Broker ownership and never overwrites a production consumer automatically.
-A browser authorization or an explicitly approved Broker handoff remains the
-source of truth for a rotating grant.
+JSON import defaults to **导入并纳管**. A complete credential must include
+`access_token`, `id_token`, and `refresh_token`. Email and account identity are
+also extracted from the JWT claims so official `auth.json` files can be matched
+to an existing NoTrace account, including an account in the recycle bin. For a
+multi-account file, select one account to import at a time. Account identity and
+Broker connectivity are checked before freezing local refresh; the operation
+lock remains held through the handoff. Tokens are sent directly to Broker for
+encrypted storage and are never returned to the frontend or copied into the
+local OAuth cache. Import closes the dialog and locates the managed account.
+An uncertain reply keeps local refresh frozen and permits an idempotent retry
+of the same file. Import does not test or rotate the refresh token; use
+“立即刷新” to check provider acceptance separately.
+
+**仅转换文件** retains the existing format-conversion flow. It preserves an
+input `refresh_token` by default; checking the clear option creates an
+access-only copy. Only this mode has the clearing option and a save dialog.
+Conversion never writes to Broker, CPA, or Cockpit. Importing into Broker also
+leaves consumer credentials untouched until explicit synchronization.
 
 `POST /v1/admin/accounts/<account>/grant` is the one-time handoff from a local
 NoTrace account. The `cloak auth broker-push` command sends the protected local
@@ -101,7 +112,7 @@ unmanaged auth file. Cockpit still requires its external-managed account mode
 before it can consume these projections safely; the Broker does not modify
 Cockpit's account database automatically.
 
-Each new browser authorization pauses that account's CPA synchronization in
+Each new authorization, including a file import, pauses that account's CPA synchronization in
 the same locked write that saves the grant. The previous CPA file remains in
 place until the user clicks "同步到 CPA". A successful sync enables automatic
 projection of later renewals. Failed or pending synchronization offers an

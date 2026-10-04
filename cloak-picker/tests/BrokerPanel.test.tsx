@@ -338,7 +338,7 @@ describe("统一授权续期窗口", () => {
 
   it("preserves an imported refresh token by default and clears it only when selected", async () => {
     const calls: Array<{ command: string; args?: unknown }> = [];
-    const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.test", account_id: "acct-1", has_access_token: true, has_refresh_token: true }], contains_refresh_token: true, message: "检测到 refresh_token" };
+    const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.test", account_id: "acct-1", has_access_token: true, has_id_token: true, has_refresh_token: true }], contains_refresh_token: true, message: "检测到 refresh_token" };
     const call: AuthCall = async function call<T>(command: string, args?: unknown): Promise<T> {
       calls.push({ command, args });
       if (command === "choose_broker_json_import_path") return "/tmp/input.json" as T;
@@ -351,6 +351,8 @@ describe("统一授权续期窗口", () => {
     const importButton = [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("导入/转换 JSON"));
     await act(async () => importButton?.click());
     await settle();
+    await act(async () => [...document.querySelectorAll("button")].find(candidate => candidate.textContent === "仅转换文件")?.click());
+    await settle();
     expect(document.body.textContent).toContain("默认保留输入文件中的真实 refresh_token");
     const checkbox = document.querySelector('input[type="checkbox"]') as HTMLInputElement;
     expect(checkbox.checked).toBe(false);
@@ -358,6 +360,94 @@ describe("统一授权续期窗口", () => {
     await act(async () => convert?.click());
     await settle();
     expect(calls.find(item => item.command === "broker_convert_json")?.args).toEqual({ path: "/tmp/input.json", format: "auth_json", includeRefreshToken: true });
+    await act(async () => importButton?.click());
+    await settle();
+    await act(async () => [...document.querySelectorAll("button")].find(candidate => candidate.textContent === "仅转换文件")?.click());
+    await settle();
+    await act(async () => (document.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
+    await act(async () => [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("转换并保存"))?.click());
+    await settle();
+    expect(calls.filter(item => item.command === "broker_convert_json").at(-1)?.args).toEqual({ path: "/tmp/input.json", format: "auth_json", includeRefreshToken: false });
+    expect(calls.some(item => item.command === "broker_import_json")).toBe(false);
+  });
+
+  it("imports a complete file into Broker and immediately reveals the managed account without a browser login or CPA sync", async () => {
+    const calls: Array<{ command: string; args?: unknown }> = [];
+    const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.test", account_id: "acct-1", has_access_token: true, has_id_token: true, has_refresh_token: true }], contains_refresh_token: true, message: "检测到 refresh_token" };
+    let remote: BrokerMetadata | null = null;
+    const call: AuthCall = async function call<T>(command: string, args?: unknown): Promise<T> {
+      calls.push({ command, args });
+      if (command === "active_account_auth") return null as T;
+      if (command === "choose_broker_json_import_path") return preview.path as T;
+      if (command === "broker_preview_json") return preview as T;
+      if (command === "broker_import_json") {
+        remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 1, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+        return { email: remote.email, account_id: remote.account_id, profile_id: remote.key, generation: remote.generation } as T;
+      }
+      return { ...overview(remote), accounts: [{ ...overview(remote).accounts[0], local: { ...local, state: "missing" } }] } as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, focusedAccount: "other@example.test" })));
+    await settle();
+    await act(async () => [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("导入/转换 JSON"))?.click());
+    await settle();
+    expect(document.querySelector('[aria-label="JSON 处理方式"] [aria-pressed="true"]')?.textContent).toBe("导入并纳管");
+    expect(document.querySelector('input[type="checkbox"]')).toBeNull();
+    const importButton = [...document.querySelectorAll("button")].find(candidate => candidate.textContent === "确认导入并纳管")!;
+    expect(importButton.disabled).toBe(false);
+    await act(async () => importButton.click());
+    await settle();
+    expect(calls.find(item => item.command === "broker_import_json")?.args).toEqual({ path: preview.path, email: "demo@example.test", accountId: "acct-1" });
+    expect(calls.some(item => ["broker_convert_json", "login_account_auth", "broker_set_cpa"].includes(item.command))).toBe(false);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector<HTMLInputElement>('[aria-label="搜索授权账号"]')?.value).toBe("demo@example.test");
+    expect(document.body.textContent).toContain("已导入并纳管");
+    expect(document.body.textContent).toContain("已授权 · NoTrace Broker 自动续期");
+    expect(document.body.textContent).toContain("同步到 CPA");
+  });
+
+  it("keeps import errors visible inside the dialog and allows retrying the same file", async () => {
+    const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.test", account_id: "acct-1", has_access_token: true, has_id_token: true, has_refresh_token: true }], contains_refresh_token: true, message: "检测到 refresh_token" };
+    let attempts = 0;
+    const call: AuthCall = async function call<T>(command: string): Promise<T> {
+      if (command === "choose_broker_json_import_path") return preview.path as T;
+      if (command === "broker_preview_json") return preview as T;
+      if (command === "broker_import_json") { attempts++; throw new Error("无法连接 Broker，请稍后重试"); }
+      return overview() as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    await act(async () => [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("导入/转换 JSON"))?.click());
+    await settle();
+    const confirm = () => [...document.querySelectorAll("button")].find(candidate => candidate.textContent === "确认导入并纳管")!;
+    await act(async () => confirm().click());
+    await settle();
+    expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain("无法连接 Broker");
+    expect(confirm().disabled).toBe(false);
+    await act(async () => confirm().click());
+    await settle();
+    expect(attempts).toBe(2);
+    expect(document.body.textContent).not.toContain("已导入并纳管");
+  });
+
+  it("explains why an access-only file cannot be managed and still offers file conversion", async () => {
+    const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.test", account_id: "acct-1", has_access_token: true, has_id_token: true, has_refresh_token: false }], contains_refresh_token: false, message: "access-only" };
+    const call: AuthCall = async function call<T>(command: string): Promise<T> {
+      if (command === "choose_broker_json_import_path") return preview.path as T;
+      if (command === "broker_preview_json") return preview as T;
+      return overview() as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    await act(async () => [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("导入/转换 JSON"))?.click());
+    await settle();
+    expect([...document.querySelectorAll("button")].find(candidate => candidate.textContent === "确认导入并纳管")?.disabled).toBe(true);
+    expect(document.body.textContent).toContain("此账号缺少 refresh_token，不能纳管");
+    await act(async () => [...document.querySelectorAll("button")].find(candidate => candidate.textContent === "仅转换文件")?.click());
+    await settle();
+    expect([...document.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("转换并保存"))?.disabled).toBe(false);
   });
   it("shows progress and cancellation while login is pending and does not hand off after cancellation", async () => {
     const data = overview();

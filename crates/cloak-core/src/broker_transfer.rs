@@ -1,13 +1,14 @@
 //! Safe JSON exchange formats for Broker-managed access-only credentials.
 //!
 //! This module defaults to access-only output. An explicit caller choice can
-//! preserve a refresh token in a local export, but the import path never
-//! promotes an external file to Broker ownership.
-use crate::broker::iso_time;
+//! preserve a refresh token in a local export. An explicit Broker import path
+//! can promote a selected complete credential to Broker ownership.
+use crate::broker::{claim_account, claim_email, claim_plan, claims, iso_time};
 use crate::{AccessCredential, CloakError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::path::Path;
+use std::{io::Read, path::Path};
+use zeroize::Zeroizing;
 
 const MAX_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -46,6 +47,7 @@ pub struct BrokerJsonAccountPreview {
     pub email: Option<String>,
     pub account_id: Option<String>,
     pub has_access_token: bool,
+    pub has_id_token: bool,
     pub has_refresh_token: bool,
 }
 
@@ -59,8 +61,8 @@ pub struct BrokerJsonImportPreview {
     pub message: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct JsonCredentialRecord {
+#[derive(Clone)]
+pub(crate) struct JsonCredentialRecord {
     pub access_token: String,
     pub id_token: String,
     pub account_id: String,
@@ -73,16 +75,39 @@ pub struct JsonCredentialRecord {
     pub has_refresh_token: bool,
 }
 
-pub fn preview_file(path: &Path) -> Result<BrokerJsonImportPreview> {
-    reject_input_link(path)?;
-    let metadata =
-        std::fs::metadata(path).map_err(|_| CloakError::Auth("无法读取 JSON 文件".into()))?;
-    if metadata.len() > MAX_IMPORT_BYTES {
-        return Err(CloakError::Auth("JSON 文件过大，已拒绝读取".into()));
+/// Parse a local credential file without exposing token contents to the UI.
+pub(crate) fn import_records(path: &Path) -> Result<Vec<JsonCredentialRecord>> {
+    read_detected_records(path).map(|(_, records)| records)
+}
+
+/// Repackage one complete Codex credential into the Broker grant envelope.
+/// The caller sends this body directly to the configured Broker.
+pub(crate) fn broker_grant_body(record: &JsonCredentialRecord) -> Result<Zeroizing<String>> {
+    if record.access_token.is_empty()
+        || record.id_token.is_empty()
+        || record.refresh_token.is_empty()
+        || record.account_id.is_empty()
+    {
+        return Err(CloakError::Auth(
+            "JSON 缺少完整授权链，至少需要 access_token、id_token、refresh_token 和 account_id"
+                .into(),
+        ));
     }
-    let raw = std::fs::read_to_string(path)
-        .map_err(|_| CloakError::Auth("JSON 文件不是有效文本".into()))?;
-    let (format, records) = parse_records(&raw)?;
+    serde_json::to_string(&json!({
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "access_token": record.access_token,
+            "id_token": record.id_token,
+            "refresh_token": record.refresh_token,
+            "account_id": record.account_id,
+        }
+    }))
+    .map(Zeroizing::new)
+    .map_err(|_| CloakError::Auth("授权 JSON 生成失败".into()))
+}
+
+pub fn preview_file(path: &Path) -> Result<BrokerJsonImportPreview> {
+    let (format, records) = read_detected_records(path)?;
     let contains_refresh_token = records.iter().any(|record| record.has_refresh_token);
     let accounts = records
         .iter()
@@ -90,13 +115,14 @@ pub fn preview_file(path: &Path) -> Result<BrokerJsonImportPreview> {
             email: non_empty(&record.email),
             account_id: non_empty(&record.account_id),
             has_access_token: !record.access_token.is_empty(),
+            has_id_token: !record.id_token.is_empty(),
             has_refresh_token: record.has_refresh_token,
         })
         .collect::<Vec<_>>();
     let message = if contains_refresh_token {
-        "检测到 refresh_token；默认保留，勾选清空选项才生成 access-only 副本，不会写入 Broker 或覆盖现有授权链".into()
+        "检测到 refresh_token；选择“导入并纳管”交给统一续期服务，或选择“仅转换文件”保存 JSON".into()
     } else {
-        "这是 access-only JSON，可转换为下游格式；不会成为 Broker 主授权".into()
+        "这是 access-only JSON，只能转换为下游格式，缺少 refresh_token 不能导入并纳管".into()
     };
     Ok(BrokerJsonImportPreview {
         path: path.to_string_lossy().into_owned(),
@@ -113,15 +139,7 @@ pub fn convert_file(
     format: BrokerJsonFormat,
     include_refresh_token: bool,
 ) -> Result<Vec<u8>> {
-    reject_input_link(path)?;
-    let metadata =
-        std::fs::metadata(path).map_err(|_| CloakError::Auth("无法读取 JSON 文件".into()))?;
-    if metadata.len() > MAX_IMPORT_BYTES {
-        return Err(CloakError::Auth("JSON 文件过大，已拒绝读取".into()));
-    }
-    let raw = std::fs::read_to_string(path)
-        .map_err(|_| CloakError::Auth("JSON 文件不是有效文本".into()))?;
-    let (_, records) = parse_records(&raw)?;
+    let records = import_records(path)?;
     if records.is_empty() || records.iter().any(|record| record.access_token.is_empty()) {
         return Err(CloakError::Auth("JSON 中没有可转换的 access_token".into()));
     }
@@ -310,6 +328,23 @@ fn parse_records(raw: &str) -> Result<(BrokerJsonFormat, Vec<JsonCredentialRecor
     Ok((detected, records))
 }
 
+fn read_detected_records(path: &Path) -> Result<(BrokerJsonFormat, Vec<JsonCredentialRecord>)> {
+    reject_input_link(path)?;
+    let metadata =
+        std::fs::metadata(path).map_err(|_| CloakError::Auth("无法读取 JSON 文件".into()))?;
+    if metadata.len() > MAX_IMPORT_BYTES {
+        return Err(CloakError::Auth("JSON 文件过大，已拒绝读取".into()));
+    }
+    let mut raw = Zeroizing::new(String::new());
+    std::fs::File::open(path)
+        .and_then(|file| file.take(MAX_IMPORT_BYTES + 1).read_to_string(&mut raw))
+        .map_err(|_| CloakError::Auth("JSON 文件不是有效文本".into()))?;
+    if raw.len() as u64 > MAX_IMPORT_BYTES {
+        return Err(CloakError::Auth("JSON 文件过大，已拒绝读取".into()));
+    }
+    parse_records(&raw)
+}
+
 fn detect_format(root: &Value) -> BrokerJsonFormat {
     if root.get("type").and_then(Value::as_str) == Some("sub2api-data") {
         BrokerJsonFormat::Sub2Api
@@ -327,10 +362,18 @@ fn parse_record(value: &Value) -> Option<JsonCredentialRecord> {
     let tokens = root.get("tokens").unwrap_or(root);
     let access_token = string_field(tokens, "access_token")?;
     let id_token = string_field(tokens, "id_token").unwrap_or_default();
+    let access_claims = claims(&access_token);
+    let id_claims = claims(&id_token);
     let account_id = string_field(tokens, "account_id")
         .or_else(|| string_field(tokens, "chatgpt_account_id"))
+        .or_else(|| access_claims.as_ref().and_then(claim_account))
+        .or_else(|| id_claims.as_ref().and_then(claim_account))
         .unwrap_or_default();
-    let email = string_field(tokens, "email")
+    let email = id_claims
+        .as_ref()
+        .and_then(claim_email)
+        .or_else(|| access_claims.as_ref().and_then(claim_email))
+        .or_else(|| string_field(tokens, "email"))
         .or_else(|| string_field(value, "email"))
         .unwrap_or_default();
     let expired = string_field(tokens, "expired")
@@ -339,11 +382,18 @@ fn parse_record(value: &Value) -> Option<JsonCredentialRecord> {
     let expires_at = tokens
         .get("expires_at")
         .and_then(Value::as_u64)
-        .or_else(|| tokens.get("expired").and_then(Value::as_u64));
+        .or_else(|| tokens.get("expired").and_then(Value::as_u64))
+        .or_else(|| {
+            access_claims
+                .as_ref()
+                .and_then(|claims| claims.get("exp").and_then(Value::as_u64))
+        });
     let last_refresh = string_field(tokens, "last_refresh")
         .or_else(|| string_field(value, "last_refresh"))
         .unwrap_or_else(iso_now);
-    let plan_type = string_field(tokens, "plan_type");
+    let plan_type = string_field(tokens, "plan_type")
+        .or_else(|| access_claims.as_ref().and_then(claim_plan))
+        .or_else(|| id_claims.as_ref().and_then(claim_plan));
     let refresh_token = string_field(tokens, "refresh_token").unwrap_or_default();
     let has_refresh_token = !refresh_token.is_empty();
     Some(JsonCredentialRecord {
@@ -381,8 +431,10 @@ fn iso_now() -> String {
 fn reject_input_link(path: &Path) -> Result<()> {
     let metadata =
         std::fs::symlink_metadata(path).map_err(|_| CloakError::Auth("JSON 文件不存在".into()))?;
-    if metadata.file_type().is_symlink() {
-        return Err(CloakError::Auth("不接受符号链接 JSON 文件".into()));
+    if !metadata.file_type().is_file() {
+        return Err(CloakError::Auth(
+            "请选择普通 JSON 文件，不接受符号链接或目录".into(),
+        ));
     }
     Ok(())
 }
@@ -390,6 +442,7 @@ fn reject_input_link(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use tempfile::tempdir;
 
     fn credential() -> AccessCredential {
@@ -450,6 +503,52 @@ mod tests {
         assert_eq!(preview.account_count, 1);
         assert!(preview.contains_refresh_token);
         assert!(!preview.message.contains("secret"));
+    }
+
+    #[test]
+    fn official_auth_preview_recovers_email_and_account_from_token_claims() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        let jwt = |claims: Value| {
+            format!(
+                "synthetic.{}.signature",
+                URL_SAFE_NO_PAD.encode(claims.to_string())
+            )
+        };
+        let access = jwt(
+            json!({"exp": 1_900_000_000, "https://api.openai.com/profile": {"email": "alpha@example.test"}, "https://api.openai.com/auth": {"chatgpt_account_id": "acct-1", "chatgpt_plan_type": "plus"}}),
+        );
+        let id = jwt(
+            json!({"email": "alpha@example.test", "https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}}),
+        );
+        std::fs::write(&path, json!({"tokens": {"access_token": access, "id_token": id, "refresh_token": "synthetic-refresh"}}).to_string()).unwrap();
+        let preview = preview_file(&path).unwrap();
+        assert_eq!(
+            preview.accounts[0].email.as_deref(),
+            Some("alpha@example.test")
+        );
+        assert_eq!(preview.accounts[0].account_id.as_deref(), Some("acct-1"));
+        assert!(preview.accounts[0].has_id_token);
+        assert!(!serde_json::to_string(&preview)
+            .unwrap()
+            .contains("synthetic-refresh"));
+        let records = import_records(&path).unwrap();
+        let body = broker_grant_body(&records[0]).unwrap();
+        assert!(crate::broker::validate_import_grant("profile-1", &body).is_ok());
+    }
+
+    #[test]
+    fn incomplete_credential_can_convert_but_cannot_become_a_broker_grant() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("input.json");
+        std::fs::write(
+            &path,
+            r#"{"access_token":"synthetic-access","email":"alpha@example.test"}"#,
+        )
+        .unwrap();
+        assert!(convert_file(&path, BrokerJsonFormat::Cpa, false).is_ok());
+        let records = import_records(&path).unwrap();
+        assert!(broker_grant_body(&records[0]).is_err());
     }
 
     #[test]

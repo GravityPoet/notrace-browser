@@ -486,6 +486,33 @@ pub fn set_auth_authority(
     status_at(&home, name)
 }
 
+/// Hold the local operation lock throughout a file import, freezing refresh
+/// before its first write request. An uncertain reply leaves refresh frozen;
+/// retrying the same file is idempotent at Broker. No imported token is cached.
+pub(crate) fn with_imported_broker_handoff<T>(
+    config: &CloakConfig,
+    name: &str,
+    send: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let home = auth_home(config, name, true)?;
+    let _lock = lock(&home.join(".operation.lock"))?;
+    let mut p = policy(&home)?;
+    if !matches!(p.authority, AuthAuthority::NoTrace | AuthAuthority::Broker) {
+        return Err(CloakError::Auth(
+            "授权链由其他应用持有，不能直接导入 Broker".to_string(),
+        ));
+    }
+    p.authority = AuthAuthority::Broker;
+    p.enabled = false;
+    save_policy(&home, &p)?;
+    let result = send()?;
+    p.next_retry_at = None;
+    p.error = None;
+    p.failures = 0;
+    save_policy(&home, &p)?;
+    Ok(result)
+}
+
 /// Remove the private OAuth grant when an account is permanently purged.
 /// Soft-deleting an account intentionally leaves this directory untouched so
 /// recycle-bin accounts remain refreshable.
