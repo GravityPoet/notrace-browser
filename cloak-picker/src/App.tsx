@@ -1,8 +1,8 @@
-import { AuthPanel } from "./AuthPanel";
-import { BrokerPanel, type BrokerMetadata } from "./BrokerPanel";
+import { BrokerPanel, authorizationState, type BrokerAccountFilter, type BrokerAccountSort, type BrokerAuthorizationState, type BrokerMetadata, type BrokerOverview } from "./BrokerPanel";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import {
   ArchiveRestore,
+  ArrowDownUp,
   CalendarClock,
   Check,
   ChevronDown,
@@ -13,7 +13,6 @@ import {
   GripVertical,
   Globe2,
   KeyRound,
-  Link2,
   ListChecks,
   Loader2,
   MessageSquareText,
@@ -356,6 +355,11 @@ export function setMockCloseSeatsForTest(seats: ForceCloseResult["seats"]) {
   mockCloseSeats = seats;
 }
 
+export function setMockBrokerAccountsForTest(records: BrokerMetadata[]) {
+  mockBrokerAccounts.clear();
+  records.forEach(record => mockBrokerAccounts.set(record.email, record));
+}
+
 export function resetMockCommandsForTest() {
   mockMarkOverrides.clear();
   mockNoteOverrides.clear();
@@ -392,7 +396,7 @@ export function emitMockStartupErrorForTest(name: string, message: string, attem
   callbacks[index]?.(message);
 }
 
-type AccountView = "active" | "trash";
+type AccountView = "all" | "active" | "trash";
 type RightPaneMode = "broker" | "account";
 const allGroupsValue = "__all__";
 const allGroupsLabel = "全部";
@@ -411,8 +415,8 @@ const defaultMarkPresets = ["Plus", "自用"] as const;
 const maxMarkLength = 24;
 const maxNoteLength = 1000;
 const maxGroupLength = 40;
-const defaultSidebarWidth = 326;
-const minSidebarWidth = 260;
+const defaultSidebarWidth = 360;
+const minSidebarWidth = 280;
 const minDetailWidth = 360;
 const paneResizerWidth = 8;
 
@@ -512,7 +516,9 @@ export default function App() {
   const [selectedName, setSelectedName] = useState<string>("");
   const [rightPaneMode, setRightPaneMode] = useState<RightPaneMode>("broker");
   const [brokerBusy, setBrokerBusy] = useState(false);
-  const [brokerFocus, setBrokerFocus] = useState("");
+  const [brokerOverview, setBrokerOverview] = useState<BrokerOverview | null>(null);
+  const [authorizationFilter, setAuthorizationFilter] = useState<BrokerAccountFilter>("all");
+  const [accountSort, setAccountSort] = useState<BrokerAccountSort>("default");
   const [selectedGroup, setSelectedGroup] = useState<string>(allGroupsValue);
   const [accountSearch, setAccountSearch] = useState("");
   const [draggingAccountName, setDraggingAccountName] = useState<string>("");
@@ -593,11 +599,32 @@ export default function App() {
   const markSaveInFlightRef = useRef(false);
   const noteSaveInFlightRef = useRef(false);
 
-  const accounts = accountView === "trash" ? trashedAccounts : activeAccounts;
   const allAccounts = useMemo(
     () => [...activeAccounts, ...trashedAccounts].sort(compareAccountsByCreatedAt),
     [activeAccounts, trashedAccounts],
   );
+  const accounts = accountView === "all" ? allAccounts : accountView === "trash" ? trashedAccounts : activeAccounts;
+  const brokerRows = useMemo(() => new Map(brokerOverview?.accounts.map(row => [row.profile_id, row]) ?? []), [brokerOverview]);
+  const authorizationStates = useMemo(() => new Map(allAccounts.map(account => {
+    const row = brokerRows.get(account.profile_id);
+    return [account.profile_id, row ? authorizationState(row) : "unknown"] as const;
+  })), [allAccounts, brokerRows]);
+  function accountAuthorization(account: Account): BrokerAuthorizationState {
+    return authorizationStates.get(account.profile_id) ?? "unknown";
+  }
+  function matchesAuthorization(account: Account) {
+    const state = accountAuthorization(account);
+    return authorizationFilter === "all"
+      || (authorizationFilter === "authorized" && state === "authorized")
+      || (authorizationFilter === "unauthorized" && (state === "never_authorized" || state === "reauth_required"))
+      || (authorizationFilter === "reauth_required" && state === "reauth_required");
+  }
+  const authorizationCounts = {
+    all: allAccounts.length,
+    authorized: allAccounts.filter(account => accountAuthorization(account) === "authorized").length,
+    unauthorized: allAccounts.filter(account => ["never_authorized", "reauth_required"].includes(accountAuthorization(account))).length,
+    reauth_required: allAccounts.filter(account => accountAuthorization(account) === "reauth_required").length,
+  };
   const orderedAccounts = useMemo(
     () => orderAccountsForView(accounts, accountOrder, accountView),
     [accountOrder, accountView, accounts],
@@ -608,9 +635,9 @@ export default function App() {
   const accountSearchMatches = useMemo(
     () =>
       hasAccountSearch
-        ? searchAccounts(allOrderedAccounts, normalizedAccountSearch)
+        ? searchAccounts(allOrderedAccounts, normalizedAccountSearch).filter(matchesAuthorization)
         : [],
-    [allOrderedAccounts, hasAccountSearch, normalizedAccountSearch],
+    [allOrderedAccounts, hasAccountSearch, normalizedAccountSearch, authorizationFilter, brokerRows],
   );
   const selectedAccountSearchIndex = accountSearchMatches.findIndex((account) => account.name === selectedName);
   const accountSearchIndex = selectedAccountSearchIndex >= 0 ? selectedAccountSearchIndex : 0;
@@ -626,7 +653,19 @@ export default function App() {
         : orderedAccounts.filter((account) => accountGroupLabel(account) === selectedGroup),
     [orderedAccounts, selectedGroup],
   );
-  const visibleAccounts = browsedAccounts;
+  const visibleAccounts = useMemo(() => {
+    const visible = hasAccountSearch ? accountSearchMatches : browsedAccounts.filter(matchesAuthorization);
+    if (accountSort === "default") return visible;
+    return [...visible].sort((left, right) => {
+      if (accountSort === "name") return left.name.localeCompare(right.name, "zh-CN");
+      const a = brokerRows.get(left.profile_id);
+      const b = brokerRows.get(right.profile_id);
+      const difference = accountSort === "recent"
+        ? (b?.remote?.last_refresh_at ?? b?.local.last_refresh_at ?? 0) - (a?.remote?.last_refresh_at ?? a?.local.last_refresh_at ?? 0)
+        : (a?.remote?.expires_at ?? a?.local.expires_at ?? Number.MAX_SAFE_INTEGER) - (b?.remote?.expires_at ?? b?.local.expires_at ?? Number.MAX_SAFE_INTEGER);
+      return difference || left.name.localeCompare(right.name, "zh-CN");
+    });
+  }, [browsedAccounts, hasAccountSearch, accountSearchMatches, authorizationFilter, brokerRows, accountSort]);
   const selected = useMemo(
     () => visibleAccounts.find((account) => account.name === selectedName) ?? visibleAccounts[0] ?? null,
     [visibleAccounts, selectedName],
@@ -639,13 +678,13 @@ export default function App() {
   const launchAttemptSerialRef = useRef(0);
   const launchAttemptRef = useRef<Map<string, number>>(new Map());
   const groupedAccounts = useMemo(() => {
-    if (accountView === "trash") {
+    if (accountView === "trash" || hasAccountSearch || accountSort !== "default" || authorizationFilter !== "all") {
       return visibleAccounts.length > 0
-        ? [{ label: "回收站", accounts: visibleAccounts }]
+        ? [{ label: accountView === "trash" ? "回收站" : "筛选结果", accounts: visibleAccounts }]
         : [];
     }
     return orderAccountGroups(groupAccounts(visibleAccounts), groupOrder);
-  }, [accountView, groupOrder, visibleAccounts]);
+  }, [accountView, groupOrder, visibleAccounts, hasAccountSearch, accountSort, authorizationFilter]);
   const groupOptions = useMemo(
     () => buildGroupOptions(accounts, groupOrder, hiddenGroups),
     [accounts, groupOrder, hiddenGroups],
@@ -681,7 +720,7 @@ export default function App() {
     setLoadError("");
     setActiveAccounts(nextActiveAccounts);
     setTrashedAccounts(nextTrashedAccounts);
-    const nextViewAccounts = view === "trash" ? nextTrashedAccounts : nextActiveAccounts;
+    const nextViewAccounts = view === "all" ? [...nextActiveAccounts, ...nextTrashedAccounts] : view === "trash" ? nextTrashedAccounts : nextActiveAccounts;
     const selectionPool = nextViewAccounts;
     const orderedNext = orderAccountsForView(selectionPool, accountOrder, view);
     setSelectedName((current) => {
@@ -762,15 +801,14 @@ export default function App() {
     if (!normalizedSearch) return;
 
     setSelectedGroup(allGroupsValue);
-    const match = searchAccounts(allOrderedAccounts, normalizedSearch)[0] ?? null;
+    setAccountView("all");
+    const match = searchAccounts(allOrderedAccounts, normalizedSearch).filter(matchesAuthorization)[0] ?? null;
     if (!match) return;
 
     const matchingGroup = accountGroupLabel(match);
-    setAccountView(match.trashed ? "trash" : "active");
     setCollapsedGroups((current) =>
       current.includes(matchingGroup) ? current.filter((label) => label !== matchingGroup) : current,
     );
-    setBrokerFocus(match.name);
     setSelectedName(match.name);
   }
 
@@ -780,11 +818,9 @@ export default function App() {
     const match = accountSearchMatches[nextIndex];
     const matchingGroup = accountGroupLabel(match);
     setSelectedGroup(allGroupsValue);
-    setAccountView(match.trashed ? "trash" : "active");
     setCollapsedGroups((current) =>
       current.includes(matchingGroup) ? current.filter((label) => label !== matchingGroup) : current,
     );
-    setBrokerFocus(match.name);
     setSelectedName(match.name);
   }
 
@@ -808,11 +844,12 @@ export default function App() {
   function handleAccountViewChange(view: AccountView) {
     exitBulkSelection();
     setAccountSearch("");
+    setAuthorizationFilter("all");
     setAccountView(view);
   }
 
   function handleAccountViewTabKey(event: KeyboardEvent<HTMLButtonElement>) {
-    moveRovingTabFocus(event, ["active", "trash"], accountView, handleAccountViewChange);
+    moveRovingTabFocus(event, ["all", "active", "trash"], accountView, handleAccountViewChange);
   }
 
   function handleAccountSelection(name: string) {
@@ -822,12 +859,34 @@ export default function App() {
       setBulkActionMenuOpen(false);
       return;
     }
-    setAccountSearch("");
-    setBrokerFocus(name);
     setSelectedName(name);
   }
 
+  function handleAuthorizationFilter(filter: BrokerAccountFilter) {
+    exitBulkSelection();
+    setAccountSearch("");
+    setSelectedGroup(allGroupsValue);
+    setAccountView("all");
+    setAuthorizationFilter(filter);
+  }
+
+  function handleImportedAuthorization(profileId: string) {
+    const account = allAccounts.find(account => account.profile_id === profileId);
+    exitBulkSelection();
+    setAccountSearch("");
+    setSelectedGroup(allGroupsValue);
+    setAccountView("all");
+    setAuthorizationFilter("all");
+    setRightPaneMode("broker");
+    if (account) setSelectedName(account.name);
+  }
+
   function enterBulkSelection() {
+    if (accountView === "all") {
+      setAccountView(selected?.trashed ? "trash" : "active");
+      setAuthorizationFilter("all");
+      setBulkStatus(`批量操作范围：${selected?.trashed ? "回收站" : "活跃"}账号`);
+    }
     setAccountSearch("");
     setManageMenuOpen(false);
     setGroupContextMenu(null);
@@ -914,8 +973,7 @@ export default function App() {
     if (selectedGroup !== allGroupsValue) setSelectedGroup(allGroupsValue);
     if (!accountSearchMatch) return;
     const matchingGroup = accountGroupLabel(accountSearchMatch);
-    const matchingView = accountSearchMatch.trashed ? "trash" : "active";
-    if (accountView !== matchingView) setAccountView(matchingView);
+    if (accountView !== "all") setAccountView("all");
     setCollapsedGroups((current) =>
       current.includes(matchingGroup) ? current.filter((label) => label !== matchingGroup) : current,
     );
@@ -1351,15 +1409,6 @@ export default function App() {
     // dialog opens already showing the previous action's error.
     setDialogError("");
     setDialog(next);
-  }
-
-  function openBrokerPane() {
-    exitBulkSelection();
-    setManageMenuOpen(false);
-    setGroupContextMenu(null);
-    setAccountContextMenu(null);
-    setDialog(null);
-    setRightPaneMode("broker");
   }
 
   async function saveAccountMark(account: Account, rawValue: string, color: MarkColor) {
@@ -2709,13 +2758,9 @@ export default function App() {
     await refresh(restored.name, "active");
   }
 
-  const selectedGroupLabel = selectedGroup === allGroupsValue ? "" : `${selectedGroup} 分组 · `;
-  const accountCountLabel =
-    accountView === "trash"
-      ? `${selectedGroupLabel}${visibleAccounts.length} 个回收站账号`
-      : `${selectedGroupLabel}${visibleAccounts.length} 个活跃账号`;
-  const emptyTitle = accountView === "trash" ? "回收站为空" : "暂无活跃账号";
-  const emptyAction = accountView === "active" ? "新建账号" : "查看活跃";
+  const accountCountLabel = `${activeAccounts.length} 活跃 · ${trashedAccounts.length} 回收站`;
+  const emptyTitle = hasAccountSearch || authorizationFilter !== "all" ? "没有匹配账号" : accountView === "trash" ? "回收站为空" : "暂无活跃账号";
+  const emptyAction = hasAccountSearch || authorizationFilter !== "all" ? "清除筛选" : accountView !== "trash" ? "新建账号" : "查看活跃";
   const proxyLabel = selected ? middleTruncate(selected.proxy_display, 48) : "";
   const statusLabel = selected?.trashed ? "已移入回收站" : "活跃";
 
@@ -2807,16 +2852,7 @@ export default function App() {
         transform: `translate3d(${Math.round(activeAccountDrag.latestX - activeAccountDrag.grabOffsetX)}px, ${Math.round(activeAccountDrag.latestY - activeAccountDrag.grabOffsetY)}px, 0) scale(var(--account-drag-scale, 1.012))`,
       }
     : undefined;
-  return (
-    <main className={`shell ${draggingAccountName ? "accountDragging" : ""} ${draggingGroupLabel ? "groupDragging" : ""}`}>
-      <header className="topbar">
-        <div className="brand">
-          <span className="mark" />
-          <div>
-            <strong>Cloak 账号管理</strong>
-            <span>{accountCountLabel}</span>
-          </div>
-        </div>
+  const workbenchSearch = (
         <div className="accountSearch">
           <div className={`accountSearchField ${hasAccountSearch && !accountSearchMatch ? "notFound" : ""}`}>
             <Search aria-hidden="true" size={15} />
@@ -2879,6 +2915,46 @@ export default function App() {
             ) : null}
           </div>
         </div>
+  );
+  return (
+    <main className={`shell ${draggingAccountName ? "accountDragging" : ""} ${draggingGroupLabel ? "groupDragging" : ""}`}>
+      <header className="topbar">
+        <div className="brand">
+          <span className="mark" />
+          <div>
+            <strong>Cloak 账号管理</strong>
+            <span>{accountCountLabel}</span>
+          </div>
+        </div>
+        <div className="workspaceToolbarActions" aria-label="工作区工具">
+          <button
+            className="workspaceTool"
+            type="button"
+            disabled={busy}
+            onClick={(event) => openWorkspaceDialog(event.currentTarget)}
+          >
+            <ArchiveRestore aria-hidden="true" size={16} />
+            <strong>工作区备份</strong>
+          </button>
+          <button
+            className="workspaceTool"
+            type="button"
+            disabled={busy || bulkSelectionMode}
+            onClick={(event) => openManageDialog("groups", event.currentTarget)}
+          >
+            <Folder aria-hidden="true" size={16} />
+            <strong>管理分组</strong>
+          </button>
+          <button
+            className="workspaceTool"
+            type="button"
+            disabled={busy || bulkSelectionMode}
+            onClick={(event) => openManageDialog("marks", event.currentTarget)}
+          >
+            <Tags aria-hidden="true" size={16} />
+            <strong>管理标签</strong>
+          </button>
+        </div>
         <div className="topActions">
           <span className="browserProcessCount" title="按进程统计；关闭窗口后后台进程仍可能短暂保留">
             {browserStatus ? `运行中 ${browserStatus.browser_count}${browserStatus.helper_count > 0 ? ` · 后台 ${browserStatus.helper_count}` : ""}` : "运行状态未知"}
@@ -2900,52 +2976,6 @@ export default function App() {
           </button>
         </div>
       </header>
-
-      <section className="workspaceToolbar" aria-label="工作区工具">
-        <div className="workspaceToolbarIntro">
-          <span className="workspaceToolbarEyebrow">工作区工具</span>
-          <strong>常用操作</strong>
-          <span>入口保持可见，不需要先打开管理菜单。</span>
-        </div>
-        <div className="workspaceToolbarActions">
-          <button
-            className="workspaceTool workspaceToolPrimary"
-            type="button"
-            disabled={busy || brokerBusy || !selected || bulkSelectionMode}
-            onClick={() => setRightPaneMode("account")}
-          >
-            <ShieldCheck aria-hidden="true" size={16} />
-            <span><strong>账号详情</strong><small>当前账号的环境与授权</small></span>
-          </button>
-          <button
-            className="workspaceTool"
-            type="button"
-            disabled={busy}
-            onClick={(event) => openWorkspaceDialog(event.currentTarget)}
-          >
-            <ArchiveRestore aria-hidden="true" size={16} />
-            <span><strong>工作区备份</strong><small>导出或恢复账号环境</small></span>
-          </button>
-          <button
-            className="workspaceTool"
-            type="button"
-            disabled={busy || bulkSelectionMode}
-            onClick={(event) => openManageDialog("groups", event.currentTarget)}
-          >
-            <Folder aria-hidden="true" size={16} />
-            <span><strong>管理分组</strong><small>组织活跃与回收站账号</small></span>
-          </button>
-          <button
-            className="workspaceTool"
-            type="button"
-            disabled={busy || bulkSelectionMode}
-            onClick={(event) => openManageDialog("marks", event.currentTarget)}
-          >
-            <Tags aria-hidden="true" size={16} />
-            <span><strong>管理标签</strong><small>维护常用标记与颜色</small></span>
-          </button>
-        </div>
-      </section>
 
       <section className={`workspace ${resizingPane ? "resizing" : ""}`} ref={workspaceRef} style={workspaceStyle}>
         <aside className="sidebar">
@@ -3027,42 +3057,18 @@ export default function App() {
             </div>
           </div>
           <div className="viewSwitch" role="tablist" aria-label="账号视图">
-            <button
-              aria-controls="cloak-account-active-panel"
-              className={accountView === "active" ? "active" : ""}
-              data-tab-value="active"
-              id="cloak-account-active-tab"
-              type="button"
-              role="tab"
-              aria-selected={accountView === "active"}
-              tabIndex={accountView === "active" ? 0 : -1}
-              onClick={() => handleAccountViewChange("active")}
-              onKeyDown={handleAccountViewTabKey}
-            >
-              活跃
-            </button>
-            <button
-              aria-controls="cloak-account-trash-panel"
-              className={accountView === "trash" ? "active" : ""}
-              data-tab-value="trash"
-              id="cloak-account-trash-tab"
-              type="button"
-              role="tab"
-              aria-selected={accountView === "trash"}
-              tabIndex={accountView === "trash" ? 0 : -1}
-              onClick={() => handleAccountViewChange("trash")}
-              onKeyDown={handleAccountViewTabKey}
-            >
-              回收站
-            </button>
+            {([["all", "全环境", allAccounts.length], ["active", "活跃", activeAccounts.length], ["trash", "回收站", trashedAccounts.length]] as const).map(([value, label, count]) => (
+              <button aria-controls={`cloak-account-${value}-panel`} className={accountView === value ? "active" : ""}
+                data-tab-value={value} id={`cloak-account-${value}-tab`} type="button" role="tab"
+                aria-selected={accountView === value} tabIndex={accountView === value ? 0 : -1} key={value}
+                onClick={() => handleAccountViewChange(value)} onKeyDown={handleAccountViewTabKey}>
+                {label} <small className="rangeCount">{count}</small>
+              </button>
+            ))}
           </div>
-
-          <div
-            aria-labelledby={accountView === "active" ? "cloak-account-trash-tab" : "cloak-account-active-tab"}
-            hidden
-            id={accountView === "active" ? "cloak-account-trash-panel" : "cloak-account-active-panel"}
-            role="tabpanel"
-          />
+          {(["all", "active", "trash"] as const).filter(view => view !== accountView).map(view => (
+            <div aria-labelledby={`cloak-account-${view}-tab`} hidden id={`cloak-account-${view}-panel`} role="tabpanel" key={view} />
+          ))}
           <div
             className="groupFilter"
             aria-label="分组筛选"
@@ -3127,10 +3133,16 @@ export default function App() {
             })}
           </div>
 
+          <div className="sidebarListToolbar">
+            <span className="accountListSummary" role="status">显示 {visibleAccounts.length} / {accounts.length} 个{accountView === "trash" ? "回收站" : accountView === "active" ? "活跃" : "全环境"}账号{authorizationFilter !== "all" ? ` · ${authorizationFilter === "authorized" ? "已授权" : authorizationFilter === "reauth_required" ? "需重新授权" : "未授权"}` : ""}</span>
+            <label className="brokerSort"><ArrowDownUp size={12} /><select aria-label="账号排序方式" value={accountSort} disabled={bulkSelectionMode} onChange={event => setAccountSort(event.target.value as BrokerAccountSort)}>
+              <option value="default">默认顺序</option><option value="recent">最近授权/续期</option><option value="expiry">凭据到期</option><option value="name">邮箱名称</option>
+            </select></label>
+          </div>
           <div
-            aria-labelledby={accountView === "active" ? "cloak-account-active-tab" : "cloak-account-trash-tab"}
+            aria-labelledby={`cloak-account-${accountView}-tab`}
             className="accountList"
-            id={accountView === "active" ? "cloak-account-active-panel" : "cloak-account-trash-panel"}
+            id={`cloak-account-${accountView}-panel`}
             ref={accountListRef}
             role="tabpanel"
             tabIndex={0}
@@ -3302,11 +3314,11 @@ export default function App() {
                 <strong>{emptyTitle}</strong>
                 <button
                   className="subtleButton"
-                  onClick={
-                    accountView === "active"
-                      ? (event) => openCreateDialog(event.currentTarget)
-                      : () => setAccountView("active")
-                  }
+                  onClick={event => {
+                    if (hasAccountSearch || authorizationFilter !== "all") handleAuthorizationFilter("all");
+                    else if (accountView !== "trash") openCreateDialog(event.currentTarget);
+                    else setAccountView("active");
+                  }}
                 >
                   {accountView === "active" ? (
                     <Plus size={14} />
@@ -3321,7 +3333,7 @@ export default function App() {
                 <AccountGroupSection
                   accountDropTarget={accountDropTarget}
                   bulkSelectedNames={bulkSelectedNameSet}
-                  chronological={accountView === "trash"}
+                  chronological={accountView === "trash" || accountSort !== "default" || authorizationFilter !== "all"}
                   draggingAccountName={draggingAccountName}
                   pressedAccountName={pressedAccountName}
                   collapsed={!bulkSelectionMode && accountView === "active" && selectedGroup === allGroupsValue && collapsedGroups.includes(group.label)}
@@ -3341,7 +3353,8 @@ export default function App() {
                   onStartAccountDrag={startAccountPointerDrag}
                   onToggleCollapse={toggleGroupCollapse}
                   locatedName={hasAccountSearch ? accountSearchMatch?.name ?? "" : ""}
-                  searching={false}
+                  searching={hasAccountSearch}
+                  authorizationStates={authorizationStates}
                   selectedName={bulkSelectionMode ? "" : selected?.name ?? ""}
                   selectionMode={bulkSelectionMode}
                 />
@@ -3365,7 +3378,63 @@ export default function App() {
           title="左右拖动调整账号列表宽度，双击恢复默认"
         />
 
-        <section className={`detail ${rightPaneMode === "broker" && !bulkSelectionMode ? "brokerDetail" : ""}`}>
+        <section className="detail accountWorkbench">
+          <BrokerPanel
+            call={call}
+            embedded
+            selectedProfileId={bulkSelectionMode ? "" : selected?.profile_id ?? ""}
+            accountVisible={!bulkSelectionMode && rightPaneMode === "broker"}
+            onOverviewChange={setBrokerOverview}
+            onBusyChange={setBrokerBusy}
+            onImportedAccount={handleImportedAuthorization}
+            searchControls={workbenchSearch}
+            workbenchHeader={(
+              <>
+                <div className="workbenchAuthorizationFilters" aria-label="全环境授权筛选">
+                  <span className="workbenchFilterScope">全环境 · 含回收站</span>
+                  <div className="brokerFilterTabs" role="group" aria-label="授权状态筛选">
+                    {([
+                      ["all", "全部"], ["authorized", "已授权"], ["unauthorized", "未授权"], ["reauth_required", "需重新授权"],
+                    ] as const).map(([value, label]) => (
+                      <button className={`brokerFilterTab ${authorizationFilter === value ? "active" : ""} ${value === "reauth_required" ? "issue" : ""}`} type="button" key={value}
+                        aria-pressed={authorizationFilter === value} disabled={!brokerOverview}
+                        onClick={() => handleAuthorizationFilter(value === "reauth_required" && authorizationFilter === value ? "all" : value)}>
+                        {label} <small>{authorizationCounts[value]}</small>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {!bulkSelectionMode && <>
+                  <header className="workbenchAccountHeader">
+                    <div className="titleBlock">
+                      <span className="eyebrow">当前账号</span>
+                      <div className={`accountNameControl ${selected && copiedAccountName === selected.name ? "copied" : ""}`}>
+                        <h1 className="accountNameHeading">{selected?.name ?? (hasAccountSearch ? "没有匹配账号" : "选择账号")}</h1>
+                        {selected && <button className="accountNameCopy" type="button" aria-label={`复制账号 ${selected.name}`} title={copiedAccountName === selected.name ? "已复制" : "复制账号邮箱"} onClick={() => void copyAccountName(selected.name)}>
+                          {copiedAccountName === selected.name ? <Check size={15} /> : <Copy size={15} />}
+                        </button>}
+                      </div>
+                      {selected && <p className="workbenchAccountContext">{selected.trashed ? "回收站 · 临时启动不会恢复账号" : "活跃"} · {accountGroupLabel(selected)} · 环境 #{selected.serial}</p>}
+                      {launchStatusIndicator}
+                      {webStoreStatusLabel && <span className="webStoreStatus">{webStoreStatusLabel}</span>}
+                    </div>
+                    {selectedLaunchButton}
+                  </header>
+                  <div className="rightPaneTabs" role="tablist" aria-label="当前账号工作区">
+                    {([["broker", "授权与续期"], ["account", "账号资料"]] as const).map(([value, label]) => (
+                      <button type="button" role="tab" className={`rightPaneTab ${rightPaneMode === value ? "active" : ""}`} key={value}
+                        id={`workbench-${value}-tab`} data-tab-value={value} aria-selected={rightPaneMode === value}
+                        aria-controls={value === "broker" ? "workbench-authorization" : "workbench-details"} tabIndex={rightPaneMode === value ? 0 : -1}
+                        onClick={() => setRightPaneMode(value)}
+                        onKeyDown={event => moveRovingTabFocus(event, ["broker", "account"], rightPaneMode, setRightPaneMode)}>
+                        {value === "broker" ? <KeyRound size={14} /> : <Settings2 size={14} />}{label}
+                      </button>
+                    ))}
+                  </div>
+                </>}
+              </>
+            )}
+          >
           {bulkSelectionMode ? (
             <>
               <header className="detailHeader">
@@ -3465,106 +3534,9 @@ export default function App() {
                 </div>
               </footer>
             </>
-          ) : rightPaneMode === "broker" ? (
-            <section className="brokerWorkspacePane" aria-label="右侧统一授权续期">
-              <header className="brokerWorkspacePaneHeader">
-                <div className="brokerWorkspacePaneTitle">
-                  <span className="eyebrow">工作区</span>
-                  <h1>统一授权续期</h1>
-                  <p>{selected ? `当前账号：${selected.name}` : "搜索邮箱，直接授权、续期和同步。"}</p>
-                  {launchStatusIndicator}
-                </div>
-                <div className="brokerWorkspaceLaunch">{selectedLaunchButton}</div>
-              </header>
-              <div className="brokerWorkspacePaneScroll">
-                <BrokerPanel call={call} embedded focusedAccount={brokerFocus} onBusyChange={setBrokerBusy} />
-              </div>
-            </section>
-          ) : selected ? (
-            <>
-              <header className="detailHeader">
-                <div className="titleBlock">
-                  <span className="eyebrow">隔离身份</span>
-                  <div className={`accountNameControl ${copiedAccountName === selected.name ? "copied" : ""}`}>
-                    <h1 className="accountNameHeading" title={selected.name}>
-                      {middleTruncate(selected.name, 44)}
-                    </h1>
-                    <button
-                      className="accountNameCopy"
-                      type="button"
-                      aria-label={`复制账号 ${selected.name}`}
-                      title={copiedAccountName === selected.name ? "已复制" : `点击复制账号：${selected.name}`}
-                      onClick={() => void copyAccountName(selected.name)}
-                    >
-                      {copiedAccountName === selected.name ? (
-                        <Check className="accountNameCopyIcon" aria-hidden="true" size={16} />
-                      ) : (
-                        <Copy className="accountNameCopyIcon" aria-hidden="true" size={16} />
-                      )}
-                    </button>
-                  </div>
-                  {webStoreStatusLabel ? (
-                    <span
-                      className={`webStoreStatus ${webStoreStatusIsCurrent ? "current" : "other"}`}
-                      title={
-                        webStoreStatus?.phase === "opened"
-                          ? `${webStoreStatusLabel}｜profile=${webStoreStatus.result.profile_path}`
-                          : webStoreStatusLabel
-                      }
-                    >
-                      {webStoreStatusLabel}
-                    </span>
-                  ) : null}
-                  {launchStatusIndicator}
-                </div>
-                {selected.trashed ? (
-                  <div className="detailHeaderControl">
-                    <div className="detailHeaderActions">
-                      <button className="secondaryButton" disabled={busy} type="button" onClick={openBrokerPane}>
-                        <Link2 size={16} />
-                        统一授权续期
-                      </button>
-                      <button
-                        className="secondaryButton dangerText"
-                        disabled={busy}
-                        onClick={(event) => openDialog({ kind: "permanentDelete", account: selected }, event.currentTarget)}
-                      >
-                        <Trash2 size={16} />
-                        彻底删除
-                      </button>
-                      <button className="secondaryButton" disabled={busy} onClick={() => void restoreAccount(selected)}>
-                        <ArchiveRestore size={16} />
-                        恢复
-                      </button>
-                      {selectedLaunchButton}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="detailHeaderControl">
-                    <div className="detailHeaderActions">
-                      <button className="secondaryButton" disabled={busy} type="button" onClick={openBrokerPane}>
-                        <Link2 size={16} />
-                        统一授权续期
-                      </button>
-                      <button
-                        className="secondaryButton"
-                        disabled={busy || forceCloseBusy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "web-store")}
-                        title={runtimeLaunchBlocked ? plan?.runtime.message : `用 ${selected.name} 打开 Chrome Web Store`}
-                        onClick={() => void (
-                          launchStatusIsPending && launchStatus?.target === "web-store"
-                            ? cancelLaunch(selected)
-                            : launchWebStore(selected)
-                        )}
-                      >
-                        {launchStatusIsPending && launchStatus?.target === "web-store" ? <X size={16} /> : <Store size={16} />}
-                        {launchStatusIsPending && launchStatus?.target === "web-store" ? "取消" : "商店"}
-                      </button>
-                      {selectedLaunchButton}
-                    </div>
-                  </div>
-                )}
-              </header>
-
+          ) : (
+            <div id="workbench-details" role="tabpanel" aria-labelledby="workbench-account-tab" hidden={rightPaneMode !== "account"}>
+            {selected ? <>
               <div className="detailScroll">
                 <div className="detailSummary" aria-label="账号摘要">
                   <span className={`detailSummaryChip ${selected.trashed ? "warning" : "success"}`}>
@@ -3577,8 +3549,18 @@ export default function App() {
                   <span className="detailSummaryHint">环境 #{selected.serial} · {selected.region ?? "未设置区域"}</span>
                 </div>
 
-                {selected.trashed ? null : (
+                {selected.trashed ? (
+                  <div className="detailInlineActions" aria-label="回收站账号操作">
+                    <ActionButton icon={<ArchiveRestore size={15} />} label="恢复" onClick={() => void restoreAccount(selected)} disabled={busy} />
+                    <ActionButton danger icon={<Trash2 size={15} />} label="彻底删除" disabled={busy} onClick={event => openDialog({ kind: "permanentDelete", account: selected }, event.currentTarget)} />
+                  </div>
+                ) : (
                   <div className="detailInlineActions" aria-label="账号操作">
+                    <ActionButton icon={<Store size={15} />} label={launchStatusIsPending && launchStatus?.target === "web-store" ? "取消" : "商店"}
+                      disabled={busy || forceCloseBusy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "web-store")}
+                      onClick={() => void (launchStatusIsPending && launchStatus?.target === "web-store" ? cancelLaunch(selected) : launchWebStore(selected))} />
+                    <ActionButton icon={<Tag size={15} />} label="标记" onClick={event => openDialog({ kind: "mark", account: selected, value: selected.mark_note ?? "", color: normalizeMarkColor(selected.mark_color) }, event.currentTarget)} />
+                    <ActionButton icon={<MessageSquareText size={15} />} label="备注" onClick={event => openDialog({ kind: "note", account: selected, value: selected.note ?? "" }, event.currentTarget)} />
                     <ActionButton icon={<ShieldCheck size={15} />} label="检查出口" onClick={() => void diagnoseAccount(selected)} />
                     <ActionButton
                       icon={challengeAudit?.phase === "running" ? <Loader2 className="spin" size={15} /> : <ShieldCheck size={15} />}
@@ -3619,7 +3601,6 @@ export default function App() {
                     <InfoRow copyable label="账号目录" value={selected.profile_path} mono />
                   </InspectorGroup>
 
-                  <AuthPanel key={selected.profile_id} name={selected.name} onOpenBroker={() => { setBrokerFocus(selected.name); openBrokerPane(); }} />
 
                   <InspectorGroup title="网络">
                     <InfoRow icon={<Tag size={15} />} label="区域" value={selected.region ?? "未设置"} />
@@ -3693,13 +3674,15 @@ export default function App() {
                 </details>
               </div>
 
-            </>
-          ) : (
+            </> : (
             <div className="emptyState detailEmpty">
               <ShieldCheck size={28} />
               <strong>选择账号</strong>
             </div>
+            )}
+            </div>
           )}
+          </BrokerPanel>
         </section>
       </section>
 
@@ -3986,6 +3969,7 @@ function AccountDropPlaceholder() {
 
 function AccountGroupSection({
   accountDropTarget,
+  authorizationStates,
   bulkSelectedNames,
   canCollapse,
   chronological,
@@ -4009,6 +3993,7 @@ function AccountGroupSection({
   onToggleCollapse,
 }: {
   accountDropTarget: AccountDropTarget | null;
+  authorizationStates: Map<string, BrokerAuthorizationState>;
   bulkSelectedNames: Set<string>;
   canCollapse: boolean;
   chronological: boolean;
@@ -4078,14 +4063,14 @@ function AccountGroupSection({
                 {showPlaceholderBefore ? <AccountDropPlaceholder /> : null}
                 <button
                   aria-current={isLocated ? "true" : undefined}
-                  aria-keyshortcuts={!selectionMode && !searching && !account.trashed ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
+                  aria-keyshortcuts={!selectionMode && !searching && !chronological && !account.trashed ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
                   aria-label={selectionMode ? `${isBulkSelected ? "取消选择" : "选择"}账号 ${account.name}` : undefined}
                   aria-pressed={selectionMode ? isBulkSelected : undefined}
                   className={`accountRow ${searching ? "searchResult" : ""} ${chronological ? "chronological" : ""} ${account.name === selectedName ? "selected" : ""} ${isBulkSelected ? "bulkSelected" : ""} ${selectionMode ? "selectionMode" : ""} ${isLocated ? "searchLocated" : ""} ${account.name === pressedAccountName ? "dragPressed" : ""} ${account.name === draggingAccountName ? "dragOrigin" : ""}`}
                   data-account-group={searching ? undefined : accountGroupLabel(account)}
-                  data-account-name={searching ? undefined : account.name}
+                  data-account-name={account.name}
                   hidden={!searching && account.name === draggingAccountName}
-                  title={`${account.name}${selectionMode ? isBulkSelected ? "｜已选择" : "｜点击选择" : ""}${isLocated ? "｜当前搜索匹配" : ""}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${account.note ? `｜备注：${account.note.replace(/\s+/g, " ")}` : ""}${selectionMode || searching || account.trashed ? "" : "｜拖动左侧手柄排序或移动分组；⌥↑ / ⌥↓ 微调"}`}
+                  title={`${account.name}${selectionMode ? isBulkSelected ? "｜已选择" : "｜点击选择" : ""}${isLocated ? "｜当前搜索匹配" : ""}${account.marked ? `｜已标记${account.mark_note ? `：${account.mark_note}` : ""}` : ""}${account.note ? `｜备注：${account.note.replace(/\s+/g, " ")}` : ""}${selectionMode || searching || chronological || account.trashed ? "" : "｜拖动左侧手柄排序或移动分组；⌥↑ / ⌥↓ 微调"}`}
                   onClick={() => onSelectAccount(account.name)}
                   onContextMenu={selectionMode ? (event) => event.preventDefault() : (event) => onOpenAccountContextMenu(event, account)}
                   onDoubleClick={selectionMode ? undefined : (event) => {
@@ -4093,12 +4078,12 @@ function AccountGroupSection({
                     if (target instanceof Element && target.closest(".dragHandle")) return;
                     void onLaunchAccount(account);
                   }}
-                  onKeyDown={searching || selectionMode ? undefined : (event) => onMoveAccountFromKeyboard(event, account)}
-                  onLostPointerCapture={searching || selectionMode ? undefined : (event) => onFinishAccountDrag(event, true)}
-                  onPointerCancel={searching || selectionMode ? undefined : (event) => onFinishAccountDrag(event, true)}
-                  onPointerDown={searching || selectionMode ? undefined : (event) => onStartAccountDrag(event, account)}
-                  onPointerMove={searching || selectionMode ? undefined : onMoveAccountDrag}
-                  onPointerUp={searching || selectionMode ? undefined : (event) => onFinishAccountDrag(event, false)}
+                  onKeyDown={searching || chronological || selectionMode ? undefined : (event) => onMoveAccountFromKeyboard(event, account)}
+                  onLostPointerCapture={searching || chronological || selectionMode ? undefined : (event) => onFinishAccountDrag(event, true)}
+                  onPointerCancel={searching || chronological || selectionMode ? undefined : (event) => onFinishAccountDrag(event, true)}
+                  onPointerDown={searching || chronological || selectionMode ? undefined : (event) => onStartAccountDrag(event, account)}
+                  onPointerMove={searching || chronological || selectionMode ? undefined : onMoveAccountDrag}
+                  onPointerUp={searching || chronological || selectionMode ? undefined : (event) => onFinishAccountDrag(event, false)}
                 >
                   <span className="accountRail" />
                   <span className="accountMain">
@@ -4111,12 +4096,12 @@ function AccountGroupSection({
                         <Search className="searchMatchIcon" size={14} />
                       ) : account.trashed ? (
                         <Trash2 className="trashRowIcon" size={14} />
-                      ) : (
+                      ) : chronological ? null : (
                         <span className="dragHandle" title="拖动调整顺序或移动分组">
                           <GripVertical size={14} />
                         </span>
                       )}
-                      <strong title={account.name}>{middleTruncate(account.name, 34)}</strong>
+                      <strong title={account.name}>{account.name}</strong>
                       {account.note ? (
                         <span className="accountNoteIndicator" title={account.note} aria-label={`备注：${account.note}`}>
                           <MessageSquareText aria-hidden="true" size={13} />
@@ -4148,6 +4133,10 @@ function AccountGroupSection({
                       <code title={account.trashed ? "删除日期" : "创建日期"}>
                         {formatCreatedDate(account.trashed ? account.deleted_at ?? 0 : account.created_at)}
                       </code>
+                    </span>
+                    <span className={`accountAuthorization accountAuthorization-${authorizationStates.get(account.profile_id) ?? "unknown"}`}>
+                      {authorizationStates.get(account.profile_id) === "authorized" ? "已授权" : authorizationStates.get(account.profile_id) === "reauth_required" ? "需重新授权" : authorizationStates.get(account.profile_id) === "never_authorized" ? "未授权" : "授权待确认"}
+                      {account.trashed && !searching && !chronological ? " · 回收站" : ""}
                     </span>
                   </span>
                 </button>
