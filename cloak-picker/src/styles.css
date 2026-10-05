@@ -1573,6 +1573,33 @@ summary:focus-visible {
 .workbenchBody .detailHeader { border-radius: 8px; }
 .workbenchBody .detailFooter { padding: 10px 0 0; background: transparent; }
 
+.bulkWorkspace { display: grid; gap: 16px; min-width: 0; }
+.bulkWorkspaceHeader.detailHeader { height: auto; min-height: 76px; padding: 14px 16px; border: 1px solid var(--border); background: var(--panel); }
+.bulkWorkspaceHeader .secondaryButton { min-height: 36px; }
+.bulkWorkspaceControls.detailFooter { padding: 0; border: 0; }
+.bulkWorkspaceActions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.bulkActionButton { display: flex; align-items: center; gap: 12px; min-height: 88px; min-width: 0; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--panel); color: var(--text); text-align: left; padding: 16px; cursor: pointer; }
+.bulkActionButton:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+.bulkActionButton.primary { border-color: rgba(0, 113, 227, 0.34); background: rgba(0, 113, 227, 0.055); }
+.bulkActionButton.danger { border-color: rgba(217, 45, 32, 0.25); }
+.bulkActionButton.danger:hover:not(:disabled) { border-color: var(--danger); background: var(--danger-soft); }
+.bulkActionButton:disabled { opacity: 0.48; cursor: default; }
+.bulkActionIcon { display: flex; align-items: center; justify-content: center; flex: 0 0 36px; height: 36px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); }
+.bulkActionButton.danger .bulkActionIcon { color: var(--danger); background: var(--danger-soft); }
+.bulkActionText { display: grid; flex: 1; gap: 6px; min-width: 0; }
+.bulkActionText strong { font-size: 14px; font-weight: 650; }
+.bulkActionDescription { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.bulkActionButton > svg { flex: 0 0 auto; color: var(--soft); }
+.bulkSelectedPreview { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 14px 16px; }
+.bulkSelectedPreviewHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.bulkSelectedPreviewHeader strong { font-size: 13px; }
+.bulkSelectedPreviewHeader span, .bulkSelectedPreview p { font-size: 11px; color: var(--muted); }
+.bulkSelectedPreview ul { list-style: none; margin: 12px 0 0; padding: 0; }
+.bulkSelectedPreview li { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; border-top: 1px solid var(--border); padding: 9px 0; font-size: 12px; }
+.bulkSelectedPreview li > span { overflow-wrap: anywhere; }
+.bulkSelectedPreview li > small { flex: 0 0 auto; color: var(--muted); }
+@container (max-width: 520px) { .bulkWorkspaceActions { grid-template-columns: minmax(0, 1fr); } }
+
 .sidebarListToolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .accountListSummary { color: var(--muted); font-size: 10px; line-height: 1.5; }
 .sidebarListToolbar .brokerSort { border: 0; background: transparent; min-height: 24px; padding: 0; gap: 4px; }
@@ -2381,6 +2408,24 @@ button:disabled {
   width: 184px;
   max-height: min(320px, calc(100vh - 16px));
   overflow-y: auto;
+}
+
+.accountGroupSubmenu {
+  width: 220px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  z-index: 31;
+  transform: none;
+  --submenu-offset: -5px;
+  animation: accountSubmenuEnter 100ms ease-out;
+}
+.accountGroupSubmenu[data-side="left"] { --submenu-offset: 5px; }
+@keyframes accountSubmenuEnter {
+  from { opacity: 0; transform: translateX(var(--submenu-offset)); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .accountGroupSubmenu { animation: none; }
 }
 
 .contextMenuTitle {

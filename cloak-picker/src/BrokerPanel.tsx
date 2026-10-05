@@ -65,9 +65,9 @@ function authorizationFailureLabel(remote: BrokerMetadata): string {
   if (remote.error === "recovery_required") return "授权链状态不确定，需要重新授权";
   return "授权已失效，需要重新授权";
 }
-export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false, focusedAccount = "", selectedProfileId, accountVisible = true, searchControls, workbenchHeader, children, onOverviewChange, onImportedAccount }: {
+export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false, focusedAccount = "", selectedProfileId, selectedAccount, accountVisible = true, searchControls, workbenchHeader, children, onOverviewChange, onImportedAccount }: {
   call?: AuthCall; onBusyChange?: (busy: boolean) => void; embedded?: boolean; focusedAccount?: string;
-  selectedProfileId?: string; accountVisible?: boolean; searchControls?: ReactNode; workbenchHeader?: ReactNode;
+  selectedProfileId?: string; selectedAccount?: Pick<BrokerRow, "name" | "trashed">; accountVisible?: boolean; searchControls?: ReactNode; workbenchHeader?: ReactNode;
   children?: ReactNode; onOverviewChange?: (overview: BrokerOverview) => void;
   onImportedAccount?: (profileId: string) => void;
 }) {
@@ -246,7 +246,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     };
   }, [authorized, overview?.accounts]);
   const visibleAccounts = useMemo(() => {
-    if (workbench) return accountVisible ? (overview?.accounts ?? []).filter(row => row.profile_id === selectedProfileId) : [];
+    if (workbench) return accountVisible ? (overview?.accounts ?? []).filter(row => row.profile_id === selectedProfileId).map(row => selectedAccount ? { ...row, ...selectedAccount } : row) : [];
     const query = accountSearch.trim().toLocaleLowerCase();
     const rows = (overview?.accounts ?? []).filter((row) => {
       if (accountFilter === "authorized" && authorizationState(row) !== "authorized") return false;
@@ -265,7 +265,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       const difference = authorizationTime(right) - authorizationTime(left);
       return difference || left.name.localeCompare(right.name, "zh-CN");
     });
-  }, [accountFilter, accountSearch, accountSort, authorized, authorizationTime, expiryTime, overview?.accounts, workbench, selectedProfileId, accountVisible]);
+  }, [accountFilter, accountSearch, accountSort, authorized, authorizationTime, expiryTime, overview?.accounts, workbench, selectedProfileId, selectedAccount, accountVisible]);
   const filterLabels: Array<{ value: BrokerAccountFilter; label: string }> = [
     { value: "all", label: `全部 ${accountCounts.all}` },
     { value: "authorized", label: `已授权 ${accountCounts.authorized}` },

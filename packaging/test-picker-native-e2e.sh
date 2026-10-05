@@ -155,6 +155,8 @@ node -e '
     "renewal-search-authorize-seat-error",
     "renewal-header-active-and-trash-launch",
     "cpa-sync-pending-retry-success",
+    "account-context-submenu-and-restore",
+    "bulk-workspace-large-actions",
     "account-tab-aria-controls",
     "account-tab-keyboard-focus",
     "path-ellipsis-copy-source",
