@@ -81,6 +81,8 @@ function assert(condition, message) {
   }
 }
 assert(argv.some((arg) => arg.startsWith("--user-data-dir=")), "missing --user-data-dir");
+assert(plan.runtime?.blocks_launch === false, "selected runtime is blocked by the core provenance/TCC gate");
+assert((plan.privacy_failures || []).length === 0, "core launch privacy preflight did not pass");
 assert(argv.some((arg) => arg.startsWith("--fingerprint=")), "missing --fingerprint");
 assert(argv.includes("--fingerprint-platform=macos"), "missing --fingerprint-platform=macos");
 const independent = argv.includes("--uxr-synthetic-device-tests=true");
