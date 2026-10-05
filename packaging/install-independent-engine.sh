@@ -45,7 +45,7 @@ PY
 /usr/bin/ditto "$tmp/extracted.noindex/chromix/Chromium.app" "$stage/Chromium.app"
 cp "$tmp/extracted.noindex/chromix/LICENSE.chromium" "$stage/LICENSE.chromium"
 cp "$tmp/extracted.noindex/chromix/LICENSE.chromix" "$stage/LICENSE.chromix"
-printf '%s\n' 'NoTrace independent local runtime' > "$stage/.notrace-local-runtime"
+printf '%s\n' 'NoTrace local runtime v1; independent Chromix runtime' > "$stage/.notrace-local-runtime"
 CLOAK_BROWSER_APP="$stage/Chromium.app" bash "$ROOT/packaging/patch-chromium.sh"
 node - "$stage" <<'JS'
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');

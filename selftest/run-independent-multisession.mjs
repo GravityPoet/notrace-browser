@@ -15,7 +15,8 @@ const cli = process.argv[2] || join(repo, "target/debug/cloak");
 const root = mkdtempSync(join(tmpdir(), "notrace-independent-multi-"));
 const env = { ...process.env, CLOAK_ACCOUNT_BASE: join(root, "Accounts"),
   CLOAK_REPO_ROOT: repo, CLOAK_EXTENSION_SOURCE: join(repo, "extension/cloak-companion"),
-  CLOAK_SKIP_GEO: "1", CLOAK_EXTRA_EXTENSIONS: "0", CLOAK_COMPANION_PAGE_SPOOF: "0", TZ: "Asia/Tokyo" };
+  CLOAK_SKIP_GEO: "1", CLOAK_EXTRA_EXTENSIONS: "0", CLOAK_COMPANION_PAGE_SPOOF: "0",
+  CLOAK_WINDOW_GEOMETRY: "100,100,1024,800", TZ: "Asia/Tokyo" };
 delete env.CLOAKBROWSER_LICENSE_KEY;
 delete env.CLOAKBROWSER_LICENSE_STATUS_FILE;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -124,6 +125,8 @@ try {
   }
   assert.equal(new Set(launched.map(item => item.pid)).size, 3);
   assert.ok(launched.every(item => alive(item.pid)), "Real LaunchServices launches did not coexist");
+  await Promise.all(launched.map(item => promisify(execFile)("/usr/bin/xcrun",
+    ["swift", join(repo, "packaging/picker-native-window-check.swift"), String(item.pid)], { timeout: 25000 })));
   console.log("正式 LaunchServices 启动路径：三个独立进程共存");
   for (const item of launched) await closeLaunch(item);
   const browsers = await Promise.all(plans.map(startProbe));
@@ -145,7 +148,7 @@ try {
   const restarted = await startProbe(plans[0]);
   assert.equal(restarted.result.canvas, first.canvas); assert.equal(restarted.result.pixels, first.pixels);
   assert.equal(restarted.result.storage, "owned-A");
-  console.log(JSON.stringify({ passed: true, realLaunchServicesConcurrent: 3, nativeFingerprintConcurrent: 3,
+  console.log(JSON.stringify({ passed: true, realLaunchServicesConcurrent: 3, visibleNativeWindows: 3, nativeFingerprintConcurrent: 3,
     storageIsolated: true, restartStable: true, sandboxDisabled: false,
     canvasHashes: browsers.map(item => item.result.canvas) }, null, 2));
 } finally {
