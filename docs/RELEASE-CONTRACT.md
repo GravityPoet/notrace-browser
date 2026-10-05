@@ -45,8 +45,8 @@ workspace-tab keyboard flows. CI treats this check as part of the
 `macOS release gate` job.
 
 The exact macOS build `150.0.7871.114.3` remains blocked for its confirmed
-`browserTampering` regression. Wrapper `0.5.9` resolves the newer macOS Stable
-line, but a wrapper update alone does not authorize an engine promotion.
+`browserTampering` regression. Wrapper `0.5.12` resolves macOS Stable
+`151.0.7922.108.3`, but a wrapper update alone does not authorize an engine promotion.
 
 ## Audit commands
 
@@ -59,8 +59,9 @@ node packaging/audit-cloakbrowser-compatibility.mjs --check-upstream
 The scheduled CI audit reports wrapper drift. Candidate engine drift is checked
 again inside `packaging/update-chromium.sh` before any runtime staging copy.
 
-Upstream references reviewed on 2026-08-30:
+Upstream references reviewed on 2026-10-05:
 
-- [CloakBrowser 0.5.9 changelog](https://github.com/CloakHQ/CloakBrowser/blob/0811704e7f5a5f67b5cc0b4a1f9b38810c7eb4d5/CHANGELOG.md)
-- [CloakBrowser 151.0.7922.108.3 release](https://github.com/CloakHQ/CloakBrowser/releases/tag/v151.0.7922.108.3)
+- [CloakBrowser 0.5.12 changelog](https://github.com/CloakHQ/CloakBrowser/blob/1c867a7046effc5f0324941e4569006d05411344/CHANGELOG.md)
+- [CloakBrowser macOS 151.0.7922.108.3 release](https://github.com/CloakHQ/CloakBrowser/releases/tag/chromium-v151.0.7922.108.3-pro)
+- [CloakBrowser 152 release retaining macOS 151](https://github.com/CloakHQ/CloakBrowser/releases/tag/chromium-v152.0.7977.82.1-pro)
 - [CloakBrowser binary license](https://github.com/CloakHQ/CloakBrowser/blob/main/BINARY-LICENSE.md)
