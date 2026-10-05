@@ -236,8 +236,9 @@ const NATIVE_E2E_DRIVER: &str = r#"
       if (temporary) {
         const trashed = await invoke('list_trashed_accounts');
         if (!trashed.some(account => account.name === name)) throw new Error('临时启动恢复了回收站账号');
-        const rowBounds = row.getBoundingClientRect();
-        row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: rowBounds.left + 20, clientY: rowBounds.top + 10 }));
+        const currentRow = await waitFor(() => document.querySelector(`.accountRow[data-account-name="${name}"]`), '启动后的当前账号行');
+        const rowBounds = currentRow.getBoundingClientRect();
+        currentRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: rowBounds.left + 20, clientY: rowBounds.top + 10 }));
         const menu = await waitFor(() => document.querySelector('.accountContextMenu'), '一级账号右键菜单');
         const restore = Array.from(menu.querySelectorAll('button')).find(control => control.textContent.trim() === '恢复');
         if (!restore || restore.disabled || restore.closest('.accountGroupSubmenu')) throw new Error('恢复未直接显示在一级右键菜单');
