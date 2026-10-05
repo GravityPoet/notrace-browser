@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowDownUp, Download, FileJson, KeyRound, Link2, Loader2, RefreshCw, Search, UploadCloud } from "lucide-react";
 import { authProgressLabels, type ActiveAuth, type AuthCall, type AuthLoginPhase, type AuthStatus } from "./AuthPanel";
 
@@ -12,16 +12,16 @@ export type BrokerMetadata = {
   cpa_enabled: boolean; cpa_synced_generation: number | null; cpa_sync_error: string | null;
   cockpit_synced_generation: number | null;
 };
-type BrokerRow = { name: string; profile_id: string; trashed: boolean; local: AuthStatus; remote: BrokerMetadata | null };
+export type BrokerRow = { name: string; profile_id: string; trashed: boolean; local: AuthStatus; remote: BrokerMetadata | null };
 export type BrokerOverview = { configured: boolean; endpoint: string | null; connected: boolean; message: string | null; accounts: BrokerRow[]; unmatched: BrokerMetadata[] };
 type BrokerJsonFormat = "cockpit_tools" | "auth_json" | "cpa" | "sub2api";
 type BrokerJsonTransferSummary = { path: string; format: string; account_count: number; refresh_token_exported: boolean };
 type BrokerJsonImportSummary = { email: string; account_id: string; profile_id: string; generation: number };
 type BrokerJsonPreviewAccount = { email: string | null; account_id: string | null; has_access_token: boolean; has_id_token: boolean; has_refresh_token: boolean };
 type BrokerJsonPreview = { path: string; detected_format: string; account_count: number; accounts: BrokerJsonPreviewAccount[]; contains_refresh_token: boolean; message: string };
-type BrokerAccountFilter = "all" | "authorized" | "unauthorized" | "reauth_required";
-type BrokerAccountSort = "default" | "recent" | "expiry" | "name";
-type BrokerAuthorizationState = "authorized" | "never_authorized" | "reauth_required";
+export type BrokerAccountFilter = "all" | "authorized" | "unauthorized" | "reauth_required";
+export type BrokerAccountSort = "default" | "recent" | "expiry" | "name";
+export type BrokerAuthorizationState = "authorized" | "never_authorized" | "reauth_required" | "unknown";
 const nativeCall: AuthCall = (command, args) => invoke(command, args);
 const jsonFormats: Array<{ value: BrokerJsonFormat; label: string }> = [
   { value: "auth_json", label: "官方 auth.json" },
@@ -38,6 +38,7 @@ const errors: Record<string, string> = {
   storage: "服务器文件读写失败，请检查同步服务",
   unchanged: "尚未获得新的凭据",
 };
+const authorityNames = { no_trace: "NoTrace 本机", codex: "Codex", cockpit: "Cockpit Tools", cpa: "CPA", broker: "NoTrace Broker" };
 function time(value: number | null) {
   return value ? new Date(value * 1000).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
 }
@@ -49,12 +50,13 @@ function syncLabel(enabled: boolean, synced: number | null, generation: number, 
 function refreshCountLabel(count: number | undefined) {
   return count === undefined ? "服务端尚未统计" : `${count} 次`;
 }
-function authorizationState(row: BrokerRow): BrokerAuthorizationState {
+export function authorizationState(row: BrokerRow): BrokerAuthorizationState {
   if (row.remote) {
     return row.remote.error === "reauth_required" || row.remote.error === "recovery_required"
       ? "reauth_required"
       : "authorized";
   }
+  if (row.local.authority === "broker") return "unknown";
   if (row.local.state === "missing") return "never_authorized";
   return row.local.state === "reauth_required" ? "reauth_required" : "authorized";
 }
@@ -63,7 +65,13 @@ function authorizationFailureLabel(remote: BrokerMetadata): string {
   if (remote.error === "recovery_required") return "授权链状态不确定，需要重新授权";
   return "授权已失效，需要重新授权";
 }
-export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false, focusedAccount = "" }: { call?: AuthCall; onBusyChange?: (busy: boolean) => void; embedded?: boolean; focusedAccount?: string }) {
+export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false, focusedAccount = "", selectedProfileId, accountVisible = true, searchControls, workbenchHeader, children, onOverviewChange, onImportedAccount }: {
+  call?: AuthCall; onBusyChange?: (busy: boolean) => void; embedded?: boolean; focusedAccount?: string;
+  selectedProfileId?: string; accountVisible?: boolean; searchControls?: ReactNode; workbenchHeader?: ReactNode;
+  children?: ReactNode; onOverviewChange?: (overview: BrokerOverview) => void;
+  onImportedAccount?: (profileId: string) => void;
+}) {
+  const workbench = selectedProfileId !== undefined;
   const [overview, setOverview] = useState<BrokerOverview | null>(null);
   const [endpoint, setEndpoint] = useState("");
   const [adminKey, setAdminKey] = useState("");
@@ -88,9 +96,23 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   const [accountSort, setAccountSort] = useState<BrokerAccountSort>("default");
   const mounted = useRef(true);
   const inFlight = useRef(false);
+  const overviewRef = useRef<BrokerOverview | null>(null);
+  const overviewCallback = useRef(onOverviewChange);
+  overviewCallback.current = onOverviewChange;
+  function acceptOverview(next: BrokerOverview) {
+    const previous = overviewRef.current;
+    // A temporary tunnel outage does not erase the last known managed grant.
+    if (next.configured && !next.connected && previous?.endpoint === next.endpoint) {
+      const previousRows = new Map(previous.accounts.map(row => [row.profile_id, row]));
+      next = { ...next, accounts: next.accounts.map(row => ({ ...row, remote: row.remote ?? previousRows.get(row.profile_id)?.remote ?? null })) };
+    }
+    overviewRef.current = next;
+    setOverview(next);
+    overviewCallback.current?.(next);
+  }
   const read = useCallback(async () => {
     const next = await call<BrokerOverview>("broker_overview", {});
-    if (mounted.current) { setOverview(next); if (next.endpoint) setEndpoint(next.endpoint); }
+    if (mounted.current) { acceptOverview(next); if (next.endpoint) setEndpoint(next.endpoint); }
   }, [call]);
   useEffect(() => {
     mounted.current = true;
@@ -125,7 +147,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   }
   async function connect() {
     const next = await call<BrokerOverview>("save_broker_connection", { endpoint, adminKey });
-    if (mounted.current) { setOverview(next); setAdminKey(""); setEditing(false); setMessage("续期服务已连接"); }
+    if (mounted.current) { acceptOverview(next); setAdminKey(""); setEditing(false); setMessage("续期服务已连接"); }
   }
   async function browserLogin(row: BrokerRow) {
     setLogin({ name: row.name, phase: "preparing", cancelling: false });
@@ -204,6 +226,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       setAccountSearch(result.email);
       setCpaAction(current => current?.profileId === result.profile_id ? null : current);
       setMessage(`${result.email} 已导入并纳管；请点击“同步到 CPA”更新凭据`);
+      onImportedAccount?.(result.profile_id);
     }
     try { await read(); } catch { if (mounted.current) setError("导入并纳管已完成，列表读取失败；请点击“读取状态”重试"); }
   }
@@ -217,16 +240,17 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     return {
       all: accounts.length,
       authorized: authorizedCount,
-      unauthorized: accounts.length - authorizedCount,
+      unauthorized: accounts.filter(row => ["never_authorized", "reauth_required"].includes(authorizationState(row))).length,
       reauth: reauthCount,
-      never: accounts.length - authorizedCount - reauthCount,
+      never: accounts.filter(row => authorizationState(row) === "never_authorized").length,
     };
   }, [authorized, overview?.accounts]);
   const visibleAccounts = useMemo(() => {
+    if (workbench) return accountVisible ? (overview?.accounts ?? []).filter(row => row.profile_id === selectedProfileId) : [];
     const query = accountSearch.trim().toLocaleLowerCase();
     const rows = (overview?.accounts ?? []).filter((row) => {
       if (accountFilter === "authorized" && authorizationState(row) !== "authorized") return false;
-      if (accountFilter === "unauthorized" && authorizationState(row) === "authorized") return false;
+      if (accountFilter === "unauthorized" && !["never_authorized", "reauth_required"].includes(authorizationState(row))) return false;
       if (accountFilter === "reauth_required" && authorizationState(row) !== "reauth_required") return false;
       if (!query) return true;
       return [row.name, row.local.email, row.remote?.email].filter(Boolean).some((value) => value!.toLocaleLowerCase().includes(query));
@@ -241,7 +265,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       const difference = authorizationTime(right) - authorizationTime(left);
       return difference || left.name.localeCompare(right.name, "zh-CN");
     });
-  }, [accountFilter, accountSearch, accountSort, authorized, authorizationTime, expiryTime, overview?.accounts]);
+  }, [accountFilter, accountSearch, accountSort, authorized, authorizationTime, expiryTime, overview?.accounts, workbench, selectedProfileId, accountVisible]);
   const filterLabels: Array<{ value: BrokerAccountFilter; label: string }> = [
     { value: "all", label: `全部 ${accountCounts.all}` },
     { value: "authorized", label: `已授权 ${accountCounts.authorized}` },
@@ -264,24 +288,28 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     : !importAccount.has_access_token || !importAccount.has_id_token || !importAccount.email || !importAccount.account_id ? "授权文件缺少完整的账号身份或凭据，请使用完整 auth.json。"
     : importTargets.length === 0 ? `NoTrace 中找不到 ${importAccount.email}，请先新建同名账号环境。`
     : importTargets.length > 1 ? "多个 NoTrace 环境使用此邮箱，请先整理账号绑定后再导入。" : "";
-  return <section className={`brokerPanel ${embedded ? "brokerPanelEmbedded" : ""}`} aria-label="统一授权续期">
+  return <section className={`brokerPanel ${workbench ? "brokerPanelWorkbench" : embedded ? "brokerPanelEmbedded" : ""}`} aria-label={workbench ? "账号工作区" : "统一授权续期"}>
     <div className={`brokerPanelHeader ${embedded ? "brokerPanelHeaderEmbedded" : ""}`}>
-      <div>{embedded ? null : <><span className="eyebrow">授权管理中心</span><h2 id="cloak-editor-dialog-title">统一授权续期</h2><p>查看谁负责刷新，以及各端是否收到最新凭据。</p></>}</div>
+      {workbench ? searchControls : <div>{embedded ? null : <><span className="eyebrow">授权管理中心</span><h2 id="cloak-editor-dialog-title">统一授权续期</h2><p>查看谁负责刷新，以及各端是否收到最新凭据。</p></>}</div>}
       <div className="brokerPanelHeaderActions">
-        <button className="secondaryButton" type="button" disabled={disabled} onClick={() => void run("import-json", importJson)}><UploadCloud size={14} />导入/转换 JSON</button>
-        <button className="secondaryButton" type="button" disabled={disabled} onClick={() => void run("status", read)}><RefreshCw size={14} />读取状态</button>
+        <button className="secondaryButton" type="button" disabled={disabled} onClick={() => void run("import-json", importJson)}><UploadCloud size={14} />{workbench ? "导入 JSON" : "导入/转换 JSON"}</button>
+        <button className={workbench ? "iconButton" : "secondaryButton"} aria-label="读取授权状态" title="读取授权状态" type="button" disabled={disabled} onClick={() => void run("status", read)}><RefreshCw size={14} />{!workbench && "读取状态"}</button>
+        {workbench && <button className={`brokerServiceButton ${brokerConnected ? "connected" : "disconnected"}`} type="button" aria-expanded={editing} disabled={disabled} onClick={() => setEditing(!editing)}><span className="brokerAuthDot" aria-hidden="true" />{!overview ? "连接中" : brokerConnected ? "续期服务" : "服务未连接"}</button>}
       </div>
     </div>
-    {overview?.configured && !editing ? <p className="inspectorHint">{overview.connected ? "续期服务已连接" : "续期服务暂不可用"} · {overview.endpoint} <button className="textButton" type="button" onClick={() => setEditing(true)} disabled={disabled}>更换连接</button></p> : <div className="brokerConnection">
+    {workbench && workbenchHeader}
+    <div className={workbench ? "workbenchBody" : "brokerPanelBody"}>
+    {overview?.configured && !editing ? !workbench && <p className="inspectorHint">{overview.connected ? "续期服务已连接" : "续期服务暂不可用"} · {overview.endpoint} <button className="textButton" type="button" onClick={() => setEditing(true)} disabled={disabled}>更换连接</button></p> : <div className="brokerConnection">
       <input aria-label="Broker 地址" placeholder="续期服务地址" value={endpoint} onChange={event => setEndpoint(event.target.value)} disabled={disabled} />
       <input aria-label="Broker 管理密钥" type="password" autoComplete="off" placeholder="管理密钥" value={adminKey} onChange={event => setAdminKey(event.target.value)} disabled={disabled} />
       <button className="primaryButton" type="button" disabled={!endpoint || !adminKey || disabled} onClick={() => void run("connect", connect)}>{busy === "connect" ? <Loader2 className="spin" size={14} /> : <Link2 size={14} />}连接</button>
     </div>}
+    {workbench && overview?.configured && !overview.connected && <p className="brokerJsonNotice warning" role="status">续期服务暂未连接，显示上次读取的授权状态。授权、刷新和同步恢复连接后可用。</p>}
     {overview?.message && <p className="inspectorHint">{overview.message}</p>}
-    {error && !importPreview && !overview?.accounts.some(row => row.profile_id === errorTarget) && <p className="brokerError" role="alert">{error}</p>}
+    {error && !importPreview && (workbench || !visibleAccounts.some(row => row.profile_id === errorTarget)) && <div className="brokerRowFeedback error" role="alert"><strong>{overview?.accounts.find(row => row.profile_id === errorTarget)?.name ?? "操作未完成"}</strong><p>{error}</p></div>}
     {message && <p className="inspectorHint" role="status">{message}</p>}
     {!overview && !error && <p className="inspectorHint">正在读取授权状态…</p>}
-    <div className="brokerListToolbar" aria-label="授权账号筛选与排序" aria-busy={!overview}>
+    {!workbench && <div className="brokerListToolbar" aria-label="授权账号筛选与排序" aria-busy={!overview}>
       <div className="brokerFilterTabs" role="tablist" aria-label="授权状态筛选">
         {filterLabels.map((filter) => {
           const parentActive = accountFilter === "reauth_required" && filter.value === "unauthorized";
@@ -294,20 +322,20 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
         <label className="brokerSort"><ArrowDownUp aria-hidden="true" size={14} /><span className="visuallyHidden">排序方式</span><select aria-label="排序方式" value={accountSort} onChange={(event) => setAccountSort(event.target.value as BrokerAccountSort)}><option value="default">默认顺序</option><option value="recent">最近授权/续期</option><option value="expiry">访问凭据到期</option><option value="name">账号名称</option></select></label>
       </div>
       <p className="brokerListSummary">{overview ? `显示 ${visibleAccounts.length} / ${accountCounts.all} 个账号${accountFilter === "reauth_required" ? " · 仅显示曾授权失效账号" : accountSearch.trim() ? ` · 搜索“${accountSearch.trim()}”` : ""}` : error ? "授权状态读取失败，请点击“读取状态”重试" : "正在读取授权状态…"}</p>
-    </div>
-    {visibleLogin && !visibleAccounts.some(row => row.name === visibleLogin.name) && activity}
-    <div className="brokerRows">{visibleAccounts.map(row => {
+    </div>}
+    {visibleLogin && (workbench || !visibleAccounts.some(row => row.name === visibleLogin.name)) && activity}
+    {workbench && busy && !visibleLogin && <p className="brokerOperationStatus" role="status"><Loader2 size={14} className="spin" />{overview?.accounts.find(row => row.profile_id === busy)?.name} · 正在处理，请稍候…</p>}
+    <div className="brokerRows" id={workbench ? "workbench-authorization" : undefined} role={workbench ? "tabpanel" : undefined} aria-labelledby={workbench ? "workbench-broker-tab" : undefined} hidden={workbench && !accountVisible}>{visibleAccounts.map(row => {
       const remote = row.remote;
       const accountState = authorizationState(row);
       const historicalAuthorization = accountState === "reauth_required";
       const canManage = ["no_trace", "broker"].includes(row.local.authority);
       const needsLogin = row.local.state === "missing";
       const needsReauthLocal = row.local.state === "reauth_required";
-      // A missing or invalid local grant still needs a fresh browser login,
-      // even if an old policy record says another client owned the previous
-      // grant. The authority guard applies only when handing over a live
-      // credential, not when creating a new OAuth grant.
-      const canAuthorize = canManage || needsLogin || needsReauthLocal;
+      // Reconnect through the browser for external owners; do not hand over
+      // their live refresh token as if NoTrace already owned it.
+      const externalGrant = !canManage && !needsLogin && !needsReauthLocal;
+      const grantEmail = remote?.email ?? row.local.email;
       const rowBusy = busy === row.profile_id;
       const cpaSynced = remote?.cpa_enabled && !remote.cpa_sync_error && remote.cpa_synced_generation === remote.generation;
       const rowCpaAction = cpaAction?.profileId === row.profile_id ? cpaAction : null;
@@ -316,7 +344,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
         : historicalAuthorization
           ? remote?.cpa_enabled ? "暂停 CPA 同步" : "需重新授权"
           : cpaSynced ? "暂停 CPA 同步" : remote?.cpa_sync_error || rowCpaAction ? "重试同步" : "同步到 CPA";
-      const localStatus = needsReauthLocal ? "曾授权 · OAuth 已失效，需要重新授权" : needsLogin ? "尚未连接 OAuth" : "本机授权尚未纳管";
+      const localStatus = needsReauthLocal ? "曾授权 · OAuth 已失效，需要重新授权" : needsLogin ? "尚未连接 OAuth" : externalGrant ? `当前凭据由 ${authorityNames[row.local.authority]} 管理` : "本机授权尚未纳管";
       const accountStatusLabel = historicalAuthorization
         ? `未授权 · 曾授权 · ${remote ? authorizationFailureLabel(remote) : "OAuth 已失效，需要重新授权"}`
         : remote
@@ -327,22 +355,26 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
               ? `未授权 · ${localStatus}`
               : `已授权 · ${localStatus}`;
       return <article className={`brokerRow ${historicalAuthorization ? "brokerRowHistorical" : ""}`} key={row.profile_id}>
-        <div className="brokerRowTop"><div className="brokerRowMain"><strong>{row.name}</strong><span className={`brokerAuthStatus brokerAuthStatus-${accountState}`}><span className="brokerAuthDot" aria-hidden="true" />{row.trashed ? "回收站账号" : "浏览器账号"} · {accountStatusLabel}</span></div>
+        <div className="brokerRowTop"><div className="brokerRowMain"><strong>{workbench ? "授权状态" : row.name}</strong><span className={`brokerAuthStatus brokerAuthStatus-${accountState}`}><span className={`brokerAuthDot brokerAuthDot-${accountState}`} aria-hidden="true" />{row.trashed ? "回收站账号" : "浏览器账号"} · {accountState === "unknown" ? "托管状态待确认" : accountStatusLabel}</span>{workbench && (remote?.plan_type || row.local.plan_type) && <span>ChatGPT · {remote?.plan_type ?? row.local.plan_type}{grantEmail && grantEmail !== row.name ? ` · 授权账号：${grantEmail}` : ""}</span>}</div>
           <div className="brokerRowActions">{remote ? <>
-            <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} title="打开此账号的登录环境，重新取得授权凭据" onClick={() => void run(row.profile_id, () => reauthorize(row))}><KeyRound size={14} />重新授权</button>
+            <button className={workbench && historicalAuthorization ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected} title="打开此账号的登录环境，重新取得授权凭据" onClick={() => void run(row.profile_id, () => reauthorize(row))}><KeyRound size={14} />重新授权</button>
             {!historicalAuthorization && <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { try { await call("broker_refresh_account", { profileId: row.profile_id }); } catch (caught) { await read(); throw caught; } await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>}
-            <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected || (historicalAuthorization && !remote.cpa_enabled)} onClick={() => void run(row.profile_id, () => updateCpa(row, historicalAuthorization ? false : !cpaSynced))}>{cpaButtonLabel}</button>
+            <button className={workbench && !historicalAuthorization && !cpaSynced ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected || (historicalAuthorization && !remote.cpa_enabled)} onClick={() => void run(row.profile_id, () => updateCpa(row, historicalAuthorization ? false : !cpaSynced))}>{cpaButtonLabel}</button>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => { setPreserveRefreshToken(false); setImportPreview(null); setExportRow(row); setJsonFormat("auth_json"); }}><Download size={14} />导出 JSON</button>
-          </> : <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected || !canAuthorize} onClick={() => void run(row.profile_id, () => manage(row))}>{rowBusy ? <Loader2 className="spin" size={14} /> : needsLogin || needsReauthLocal ? <KeyRound size={14} /> : <UploadCloud size={14} />}{rowBusy ? "授权处理中…" : needsLogin ? "授权并纳管" : needsReauthLocal ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
+          </> : <button className={workbench ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, () => externalGrant ? reauthorize(row) : manage(row))}>{rowBusy ? <Loader2 className="spin" size={14} /> : needsLogin || needsReauthLocal || externalGrant ? <KeyRound size={14} /> : <UploadCloud size={14} />}{rowBusy ? "授权处理中…" : needsLogin ? "授权并纳管" : needsReauthLocal || externalGrant ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
         </div>
-        {visibleLogin?.name === row.name && activity}
-        {error && errorTarget === row.profile_id && <div className="brokerRowFeedback error" role="alert"><strong>操作未完成</strong><p>{error}</p><span>请按上方原因处理后，重新点击此账号的操作按钮。</span></div>}
+        {!workbench && visibleLogin?.name === row.name && activity}
+        {!workbench && error && errorTarget === row.profile_id && <div className="brokerRowFeedback error" role="alert"><strong>操作未完成</strong><p>{error}</p><span>请按上方原因处理后，重新点击此账号的操作按钮。</span></div>}
         {historicalAuthorization && <div className="brokerRowFeedback error" role="status"><strong>{remote?.error === "reauth_required" ? "授权已失效" : "授权链需要重新授权"}</strong><p>{remote?.error === "reauth_required" ? "refresh_token 已失效，当前账号已移入“未授权”。" : "上次刷新结果无法安全确认，当前账号已移入“未授权”。"}</p><span>点击“重新授权”获取新的授权链。</span></div>}
-        {remote && <><div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span title="从启用统计起累计，只计成功续期；首次授权、重新授权和失败重试不计入。">成功续期<b>{refreshCountLabel(remote.refresh_count)}</b>{remote.refresh_count !== undefined && remote.automatic_refresh_count !== undefined && <small>自动 {remote.automatic_refresh_count} 次 · 手动 {Math.max(0, remote.refresh_count - remote.automatic_refresh_count)} 次</small>}<small>启用统计后累计</small></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? "已确认" : "尚未完成适配验收"}</b></span></div>{remote.error && !historicalAuthorization && <p className="brokerError brokerTransientError">{errors[remote.error] ?? "授权操作未完成"}</p>}</>}
+        {externalGrant && <p className="brokerJsonHint">重新授权会打开此账号的浏览器，获取新的授权链后纳入统一续期。</p>}
+        {workbench && !remote && row.local.expires_at && <div className="brokerStatus"><span>访问凭据到期<b>{time(row.local.expires_at)}</b></span><span>最近更新<b>{time(row.local.last_refresh_at)}</b></span><span>当前管理工具<b>{authorityNames[row.local.authority]}</b></span></div>}
+        {remote && <><div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span title="从启用统计起累计，只计成功续期；首次授权、重新授权和失败重试不计入。">成功续期<b>{refreshCountLabel(remote.refresh_count)}</b>{remote.refresh_count !== undefined && remote.automatic_refresh_count !== undefined && <small>自动 {remote.automatic_refresh_count} 次 · 手动 {Math.max(0, remote.refresh_count - remote.automatic_refresh_count)} 次</small>}<small>启用统计后累计</small></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? "已确认" : "使用导出 JSON 导入"}</b></span></div>{remote.error && !historicalAuthorization && <p className="brokerError brokerTransientError">{errors[remote.error] ?? "授权操作未完成"}</p>}</>}
       </article>;
     })}</div>
-    {overview && visibleAccounts.length === 0 && <p className="brokerEmpty">当前筛选没有匹配账号。可以切换“全部”或清空搜索。</p>}
+    {overview && visibleAccounts.length === 0 && (!workbench || accountVisible) && <p className="brokerEmpty">{workbench ? "在左侧选择账号，或在上方搜索邮箱后授权。" : "当前筛选没有匹配账号。可以切换“全部”或清空搜索。"}</p>}
     {!!overview?.unmatched.length && <p className="inspectorHint">服务端还有 {overview.unmatched.length} 条未绑定本机浏览器的授权。它们保留在 Broker，不会被窗口自动删除。</p>}
+    {children}
+    </div>
     {exportRow && createPortal(<div className="brokerJsonOverlay">
       <div className="brokerJsonCard" role="dialog" aria-modal="true" aria-label="导出 JSON">
       <div className="brokerJsonCardHeader"><div><strong>导出 JSON</strong><span>{exportRow.name}</span></div><button className="iconButton" type="button" aria-label="关闭导出 JSON" onClick={() => setExportRow(null)}>×</button></div>

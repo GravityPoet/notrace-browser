@@ -162,25 +162,29 @@ const NATIVE_E2E_DRIVER: &str = r#"
   }));
   const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
   try {
-    const search = await waitFor(() => document.querySelector('input[aria-label="搜索授权账号"]'), '右侧授权搜索');
-    const scroll = search.closest('.brokerWorkspacePaneScroll');
-    const bounds = scroll.getBoundingClientRect();
+    const search = await waitFor(() => document.querySelector('input[aria-label="搜索账号"]'), '右侧共享搜索');
+    const pane = search.closest('.accountWorkbench');
+    const scroll = pane.querySelector('.workbenchBody');
+    const bounds = pane.getBoundingClientRect();
     const searchBounds = search.getBoundingClientRect();
-    if (bounds.height < 150 || searchBounds.bottom > bounds.bottom || searchBounds.top < bounds.top) {
-      throw new Error(`授权面板被裁切：滚动区高度 ${bounds.height}`);
+    if (scroll.getBoundingClientRect().height < 150 || searchBounds.bottom > bounds.bottom || searchBounds.top < bounds.top) {
+      throw new Error('账号工作区被裁切');
     }
     const hit = document.elementFromPoint(searchBounds.x + searchBounds.width / 2, searchBounds.y + searchBounds.height / 2);
-    if (hit !== search) throw new Error('右侧授权搜索被其他元素遮挡');
-    const headings = Array.from(document.querySelectorAll('h1,h2')).filter(e => e.textContent.trim() === '统一授权续期');
-    if (headings.length !== 1) throw new Error('统一授权续期存在重复标题');
-    const firstTool = document.querySelector('.workspaceToolPrimary');
-    if (!firstTool?.textContent.includes('账号详情')) throw new Error('账号详情未移到顶部工具栏');
+    if (hit !== search) throw new Error('共享搜索被其他元素遮挡');
+    if (document.querySelectorAll('input[type="search"]').length !== 1) throw new Error('仍有重复账号搜索');
+    const firstTool = document.querySelector('#workbench-account-tab');
+    if (!firstTool || !document.querySelector('#workbench-broker-tab')) throw new Error('两个账号页签不完整');
+    const visibleRangeTabs = Array.from(document.querySelectorAll('.viewSwitch [role="tab"]'));
+    if (visibleRangeTabs.length !== 3 || visibleRangeTabs.some(tab => tab.getBoundingClientRect().bottom > tab.parentElement.getBoundingClientRect().bottom)) {
+      throw new Error('全环境、活跃或回收站范围入口被裁切');
+    }
     checks.push('renewal-pane-visible-search');
     await waitFor(() => document.querySelector('.brokerRow'), '真实 IPC 读取授权列表');
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     setter.call(search, 'native-e2e-account');
     search.dispatchEvent(new Event('input', { bubbles: true }));
-    await waitFor(() => document.querySelectorAll('.brokerRow').length === 1, '搜索精确账号');
+    await waitFor(() => document.querySelectorAll('.brokerRow').length === 1 && pane.querySelector('h1')?.textContent === 'native-e2e-account', '搜索精确账号');
     const authorize = Array.from(document.querySelectorAll('.brokerRow button')).find(e => e.textContent.trim() === '授权并纳管');
     if (!authorize || authorize.disabled) throw new Error('搜索结果未提供可点击的授权操作');
     authorize.click();
@@ -202,22 +206,24 @@ const NATIVE_E2E_DRIVER: &str = r#"
     readyToSync.click();
     await waitFor(() => syncButton('同步中…')?.disabled, '显示同步进度');
     const retry = await waitFor(() => syncButton('重试同步'), '同步失败提供重试');
-    if (!syncRow.querySelector('[role="alert"]')?.textContent.includes('服务器文件读写失败')) {
+    if (!pane.querySelector('[role="alert"]')?.textContent.includes('服务器文件读写失败')) {
       throw new Error('同步失败没有展示具体原因');
     }
     await waitFor(() => !retry.disabled, '同步失败恢复操作');
     retry.click();
     await waitFor(() => syncButton('暂停 CPA 同步') && Array.from(syncRow.querySelectorAll('.brokerStatus > span')).some(e => e.textContent === 'CPA已同步'), '重试成功后开启自动同步');
-    if (syncRow.querySelector('[role="alert"]')) throw new Error('同步成功后仍显示旧错误');
+    if (pane.querySelector('[role="alert"]')) throw new Error('同步成功后仍显示旧错误');
     checks.push('cpa-sync-pending-retry-success');
     const verifyHeaderLaunch = async (name, temporary) => {
+      setter.call(search, '');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
       const row = await waitFor(() => document.querySelector(`.accountRow[data-account-name="${name}"]`), '左侧启动账号');
       row.click();
-      const header = document.querySelector('.brokerWorkspacePaneHeader');
+      const header = document.querySelector('.workbenchAccountHeader');
       const label = temporary ? '临时启动' : '启动';
       const button = await waitFor(() => {
         const candidate = header?.querySelector('.launchButton');
-        return header?.textContent.includes(`当前账号：${name}`) && candidate?.textContent.trim() === label && !candidate.disabled ? candidate : null;
+        return header?.querySelector('h1')?.textContent === name && candidate?.textContent.trim() === label && !candidate.disabled ? candidate : null;
       }, '右上角直接启动入口');
       const bounds = button.getBoundingClientRect();
       const headerBounds = header.getBoundingClientRect();
@@ -238,9 +244,11 @@ const NATIVE_E2E_DRIVER: &str = r#"
     checks.push('renewal-header-active-and-trash-launch');
     document.querySelector('#cloak-account-active-tab').click();
     await waitFor(() => document.querySelector('.accountRow[data-account-name="native-e2e-account"]'), '恢复活跃列表').then(row => row.click());
-    setter.call(search, 'native-e2e-account');
-    search.dispatchEvent(new Event('input', { bubbles: true }));
     firstTool.click();
+    await waitFor(() => !document.querySelector('#workbench-details').hidden && document.querySelector('#workbench-authorization').hidden, '共享账号资料页签');
+    if (getComputedStyle(document.querySelector('#workbench-authorization')).display !== 'none') throw new Error('授权页没有随页签隐藏');
+    if (pane.querySelector('h1')?.textContent !== 'native-e2e-account') throw new Error('切换资料时账号改变');
+    if (!document.querySelector('button[aria-label="读取授权状态"]')) throw new Error('资料页没有保留共享状态入口');
     const activeTab = await waitFor(
       () => document.querySelector('#cloak-account-active-tab[aria-selected="true"]'),
       '活跃账号 tab',
@@ -264,7 +272,7 @@ const NATIVE_E2E_DRIVER: &str = r#"
     if (!trashPanel || trashPanel.hidden) throw new Error('回收站面板未随键盘切换显示');
     checks.push('account-tab-keyboard-focus');
 
-    tabKey(trashTab, 'Home');
+    tabKey(trashTab, 'ArrowLeft');
     await waitFor(
       () => document.querySelector('#cloak-account-active-tab[aria-selected="true"]'),
       '返回活跃账号 tab',
@@ -343,7 +351,7 @@ const NATIVE_E2E_DRIVER: &str = r#"
     const visibleTools = Array.from(document.querySelectorAll('.workspaceTool strong'))
       .map((node) => node.textContent?.trim())
       .filter(Boolean);
-    for (const label of ['账号详情', '工作区备份', '管理分组', '管理标签']) {
+    for (const label of ['工作区备份', '管理分组', '管理标签']) {
       if (!visibleTools.includes(label)) throw new Error(`首屏工具栏缺少：${label}`);
     }
     checks.push('workspace-tools-visible');

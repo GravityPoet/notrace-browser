@@ -2,6 +2,8 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { BrokerMetadata } from "../src/BrokerPanel";
+
 import App, {
   cancelNextMockChallengeAuditForTest,
   emitMockStartupErrorForTest,
@@ -10,6 +12,7 @@ import App, {
   mockCommandCountForTest,
   resetMockCommandsForTest,
   setMockCloseSeatsForTest,
+  setMockBrokerAccountsForTest,
 } from "../src/App";
 
 declare global {
@@ -49,7 +52,11 @@ function installMemoryStorage() {
 
 function buttonWithText(text: string, scope: ParentNode = document): HTMLButtonElement {
   const button = Array.from(scope.querySelectorAll<HTMLButtonElement>("button")).find(
-    (candidate) => candidate.textContent?.trim() === text,
+    (candidate) => {
+      const label = candidate.cloneNode(true) as HTMLElement;
+      label.querySelectorAll("small").forEach(count => count.remove());
+      return label.textContent?.trim() === text;
+    },
   );
   if (!button) throw new Error(`button not found: ${text}`);
   return button;
@@ -156,7 +163,7 @@ beforeEach(async () => {
   const firstAccountRow = document.querySelector<HTMLButtonElement>(".accountRow");
   if (!firstAccountRow) throw new Error("account row not found after initial load");
   await click(firstAccountRow);
-  await click(document.querySelector<HTMLButtonElement>(".workspaceToolPrimary")!);
+  await click(document.querySelector<HTMLButtonElement>("#workbench-account-tab")!);
   await settle(60);
   expect(buttonWithText("代理")).toBeTruthy();
   resetMockCommandsForTest();
@@ -213,33 +220,36 @@ describe("Cloak Picker dialog regressions", () => {
   it("keeps workspace tools visible without opening the management menu", () => {
     const toolLabels = Array.from(document.querySelectorAll<HTMLElement>('[aria-label="工作区工具"] .workspaceTool strong'))
       .map((label) => label.textContent?.trim());
-    expect(toolLabels).toEqual(["账号详情", "工作区备份", "管理分组", "管理标签"]);
+    expect(toolLabels).toEqual(["工作区备份", "管理分组", "管理标签"]);
     expect(document.querySelector('[aria-label="工作区工具"]')).not.toBeNull();
   });
 
-  it("keeps account details in the top tools and opens one searchable unified renewal work area", async () => {
-    const toolbar = document.querySelector('[aria-label="工作区工具"]');
-    if (!toolbar) throw new Error("workspace toolbar not found");
-    const accountTool = toolbar.querySelector<HTMLButtonElement>('.workspaceToolPrimary');
-    if (!accountTool) throw new Error("account details tool not found");
-    await click(accountTool);
-    expect(buttonWithText("代理")).toBeTruthy();
-    await click(buttonWithText("统一授权续期"));
-    const brokerPane = document.querySelector('[aria-label="右侧统一授权续期"]');
-    expect(brokerPane).not.toBeNull();
-    expect(brokerPane?.querySelector("h1")?.textContent).toContain("统一授权续期");
-    expect(brokerPane?.querySelector('input[aria-label="搜索授权账号"]')).not.toBeNull();
-    expect(brokerPane?.textContent).not.toContain("统一授权续期统一授权续期");
+  it("keeps one right-side search and symmetric views for the same selected account", async () => {
+    const header = document.querySelector('.workbenchAccountHeader');
+    const selectedName = header?.querySelector('h1')?.textContent;
+    expect(document.querySelectorAll('input[aria-label="搜索账号"]')).toHaveLength(1);
+    expect(document.querySelector('.topbar input[type="search"]')).toBeNull();
+    expect(buttonWithText("账号资料").getAttribute("aria-selected")).toBe("true");
+    expect(document.querySelector('[aria-label="工作区工具"]')?.textContent).not.toContain("账号详情");
+    expect(document.querySelector('[aria-label="OAuth 授权"]')).toBeNull();
+    await click(buttonWithText("授权与续期"));
+    expect(buttonWithText("授权与续期").getAttribute("aria-selected")).toBe("true");
+    expect(document.querySelector('.workbenchAccountHeader h1')?.textContent).toBe(selectedName);
+    expect(document.querySelector('#workbench-details')).toHaveProperty("hidden", true);
+    expect(document.querySelector('#workbench-authorization')).toHaveProperty("hidden", false);
+    await click(buttonWithText("账号资料"));
+    expect(document.querySelector('.workbenchAccountHeader h1')?.textContent).toBe(selectedName);
+    expect(document.querySelector('#workbench-details')).toHaveProperty("hidden", false);
   });
 
   it("keeps renewal open when selecting a left account and authorizes the searched account", async () => {
-    await click(buttonWithText("统一授权续期"));
+    await click(buttonWithText("授权与续期"));
     await settle();
     const left = document.querySelector<HTMLButtonElement>('.accountRow[data-account-name="demo-beta"]')!;
     await click(left);
-    const panel = document.querySelector('[aria-label="右侧统一授权续期"]')!;
-    const search = panel.querySelector<HTMLInputElement>('input[aria-label="搜索授权账号"]')!;
-    expect(search.value).toBe("demo-beta");
+    const panel = document.querySelector('[aria-label="账号工作区"]')!;
+    const search = panel.querySelector<HTMLInputElement>('input[aria-label="搜索账号"]')!;
+    expect(search.value).toBe("");
     expect(panel.querySelectorAll('.brokerRow')).toHaveLength(1);
     await inputText(search, "demo-alpha@example.test");
     await click(buttonWithText("授权并纳管", panel));
@@ -251,13 +261,13 @@ describe("Cloak Picker dialog regressions", () => {
   });
 
   it("launches the selected left account from the visible renewal header", async () => {
-    await click(buttonWithText("统一授权续期"));
+    await click(buttonWithText("授权与续期"));
     await click(accountRow("demo-beta"));
     await settle(160);
-    const panel = document.querySelector('[aria-label="右侧统一授权续期"]')!;
-    const header = panel.querySelector('.brokerWorkspacePaneHeader')!;
+    const panel = document.querySelector('[aria-label="账号工作区"]')!;
+    const header = panel.querySelector('.workbenchAccountHeader')!;
     const launch = buttonWithText("启动", header);
-    expect(header.textContent).toContain("当前账号：demo-beta");
+    expect(header.textContent).toContain("demo-beta");
     expect(launch.closest("details")).toBeNull();
     expect(launch.title).toContain("demo-beta");
     await click(launch);
@@ -265,25 +275,53 @@ describe("Cloak Picker dialog regressions", () => {
     expect(mockCommandCountForTest("launch_account")).toBe(1);
     expect(header.querySelector('.launchStatus')?.textContent).toContain("已启动");
     expect(header.querySelector('.launchStatus')?.textContent).not.toContain("demo-alpha");
-    expect(document.querySelector('[aria-label="右侧统一授权续期"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="账号工作区"]')).not.toBeNull();
   });
 
   it("temporarily launches the selected trash account from the renewal header", async () => {
-    await click(buttonWithText("统一授权续期"));
+    await click(buttonWithText("授权与续期"));
     await click(buttonWithText("回收站"));
     await settle(120);
     await click(accountRow("demo-gamma"));
     await settle(160);
-    const header = document.querySelector('.brokerWorkspacePaneHeader')!;
+    const header = document.querySelector('.workbenchAccountHeader')!;
     const launch = buttonWithText("临时启动", header);
-    expect(header.textContent).toContain("当前账号：demo-gamma");
+    expect(header.textContent).toContain("demo-gamma");
     expect(launch.closest("details")).toBeNull();
     await click(launch);
     await settle(300);
     expect(mockCommandCountForTest("launch_account")).toBe(1);
     expect(mockCommandCountForTest("restore_account")).toBe(0);
     expect(document.querySelector('#cloak-account-trash-tab[aria-selected="true"]')).not.toBeNull();
-    expect(document.querySelector('[aria-label="右侧统一授权续期"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="账号工作区"]')).not.toBeNull();
+  });
+
+  it("filters invalidated grants across all environments and shows their text badges", async () => {
+    const remote = (name: string, error: string | null): BrokerMetadata => ({
+      key: name, email: name, account_id: name, plan_type: "plus", expires_at: 1_900_000_000,
+      last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000,
+      next_retry_at: null, error, cpa_enabled: false, cpa_synced_generation: null,
+      cpa_sync_error: null, cockpit_synced_generation: null,
+    });
+    setMockBrokerAccountsForTest([remote("demo-alpha@example.test", null), remote("demo-beta", "reauth_required"), remote("demo-gamma", "recovery_required")]);
+    await click(document.querySelector<HTMLButtonElement>('[aria-label="读取授权状态"]')!);
+    await settle(240);
+    const filters = document.querySelector('[aria-label="全环境授权筛选"]')!;
+    expect(buttonWithText("已授权", filters).textContent).toContain("1");
+    expect(buttonWithText("未授权", filters).textContent).toContain("4");
+    await inputText(document.querySelector<HTMLInputElement>('input[aria-label="搜索账号"]')!, "demo-alpha");
+    await click(buttonWithText("需重新授权", filters));
+    expect(document.querySelector<HTMLInputElement>('input[aria-label="搜索账号"]')?.value).toBe("");
+    expect(document.querySelector('#cloak-account-all-tab')?.getAttribute("aria-selected")).toBe("true");
+    expect(Array.from(document.querySelectorAll('.accountTitle strong'), element => element.textContent)).toEqual(["demo-gamma", "demo-beta"]);
+    expect(Array.from(document.querySelectorAll('.accountAuthorization'), element => element.textContent?.trim())).toEqual(["需重新授权", "需重新授权"]);
+    await click(accountRow("demo-beta"));
+    await click(buttonWithText("授权与续期"));
+    expect(buttonWithText("重新授权").className).toBe("primaryButton");
+    expect(document.querySelector('.workbenchAccountHeader h1')?.textContent).toBe("demo-beta");
+    expect(mockCommandCountForTest("login_account_auth")).toBe(0);
+    await click(buttonWithText("需重新授权", filters));
+    expect(document.querySelectorAll('.accountRow')).toHaveLength(5);
   });
 
   it("clears old launch state and delayed denials after closing, then launches again", async () => {
@@ -1127,7 +1165,7 @@ describe("Cloak Picker dialog regressions", () => {
     await settle(30);
 
     expect(groupFilterLabels()).toEqual(["antigravity", "codex", "claude"]);
-    expect(document.querySelector('[role="status"]')?.textContent).toContain("codex 分组已移至第 2 位");
+    expect(document.querySelector('.visuallyHidden[role="status"]')?.textContent).toContain("codex 分组已移至第 2 位");
   });
 
   it("reorders accounts without the native drag ghost and keeps a keyboard alternative", async () => {
@@ -1146,7 +1184,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(window.localStorage.getItem("cloak-picker.accountOrder.v1")).toContain(
       '"demo-beta","demo-alpha@example.test"',
     );
-    expect(document.querySelector('[role="status"]')?.textContent).toContain("已移至第 2 位");
+    expect(document.querySelector('.visuallyHidden[role="status"]')?.textContent).toContain("已移至第 2 位");
   });
 
   it("moves the placeholder with the pointer, accepts a row gap, and commits the drop", async () => {
@@ -1342,7 +1380,7 @@ describe("Cloak Picker dialog regressions", () => {
   it("temporarily launches a trashed account without restoring it", async () => {
     const accountSearch = document.querySelector<HTMLInputElement>('input[type="search"]');
     expect(accountSearch?.placeholder).toBe("搜索所有账号、分组、标记或备注");
-    expect(accountSearch?.closest(".topbar")).not.toBeNull();
+    expect(accountSearch?.closest(".accountWorkbench")).not.toBeNull();
     expect(document.querySelector('.sidebar input[type="search"]')).toBeNull();
 
     await click(buttonWithText("回收站"));
@@ -1403,7 +1441,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(document.querySelector(".detail")?.textContent).toContain("删除时间");
   });
 
-  it("locates a matching account inside the complete left list", async () => {
+  it("locates a matching account and clears unrelated account actions on no match", async () => {
     const codexGroup = document.querySelector<HTMLButtonElement>('[data-group-label="codex"] .groupFilterSelect');
     expect(codexGroup).not.toBeNull();
     await click(codexGroup as HTMLButtonElement);
@@ -1414,7 +1452,10 @@ describe("Cloak Picker dialog regressions", () => {
     await inputText(accountSearch as HTMLInputElement, "missing-account");
     await settle(30);
 
-    expect(document.querySelectorAll(".accountRow")).toHaveLength(3);
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(0);
+    expect(document.querySelector(".workbenchAccountHeader h1")?.textContent).toBe("没有匹配账号");
+    expect(document.querySelector(".launchButton")).toBeNull();
+    expect(document.querySelectorAll(".brokerRow")).toHaveLength(0);
     expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("无匹配");
     expect(document.querySelector(".accountSearchField")?.classList.contains("notFound")).toBe(true);
     expect(document.querySelector(".searchLocateStatus")).toBeNull();
@@ -1427,27 +1468,25 @@ describe("Cloak Picker dialog regressions", () => {
 
     expect(document.querySelector(".viewSwitch")).not.toBeNull();
     expect(document.querySelector(".groupFilter")).not.toBeNull();
-    expect(document.querySelector(".accountGroupHeader")).not.toBeNull();
+    expect(document.querySelector(".accountGroupHeader")).toBeNull();
     expect(document.querySelector(".searchScopeSummary")).toBeNull();
     expect(document.querySelector<HTMLButtonElement>('.viewSwitch [role="tab"][aria-selected="true"]')?.textContent).toContain(
-      "活跃",
+      "全环境",
     );
     expect(document.querySelector<HTMLButtonElement>(".groupFilterSelect[aria-pressed=\"true\"]")?.textContent).toContain(
       "全部",
     );
 
     const accountRows = Array.from(document.querySelectorAll<HTMLButtonElement>(".accountRow"));
-    expect(accountRows).toHaveLength(3);
+    expect(accountRows).toHaveLength(1);
     expect(accountRows.map((row) => row.querySelector(".accountTitle strong")?.textContent)).toEqual([
-      "demo-alpha@example.test",
-      "demo-beta",
       "demo-gamma-copy",
     ]);
     const selectedRow = accountRows.find((row) => row.classList.contains("selected"));
     expect(selectedRow?.querySelector(".accountTitle strong")?.textContent).toBe("demo-gamma-copy");
     expect(selectedRow?.classList.contains("searchLocated")).toBe(true);
-    expect(selectedRow?.querySelector(".searchMatchIcon")).not.toBeNull();
-    expect(selectedRow?.querySelector(".accountLocationTag")).toBeNull();
+    expect(selectedRow?.querySelector(".searchMatchIcon")).toBeNull();
+    expect(selectedRow?.querySelector(".accountLocationTag")?.textContent).toBe("活跃 · antigravity");
     expect(HTMLElement.prototype.scrollIntoView).toHaveBeenLastCalledWith({
       block: "center",
       inline: "nearest",
@@ -1467,45 +1506,45 @@ describe("Cloak Picker dialog regressions", () => {
     await settle(30);
 
     expect(document.querySelector<HTMLButtonElement>('.viewSwitch [role="tab"][aria-selected="true"]')?.textContent).toContain(
-      "回收站",
+      "全环境",
     );
     const accountRows = Array.from(document.querySelectorAll<HTMLButtonElement>(".accountRow"));
     expect(accountRows).toHaveLength(2);
     expect(accountRows.map((row) => row.querySelector(".accountTitle strong")?.textContent)).toEqual([
-      "old-lab",
       "demo-gamma",
+      "demo-gamma-copy",
     ]);
-    expect(accountRows[1].classList.contains("selected")).toBe(true);
+    expect(accountRows[0].classList.contains("selected")).toBe(true);
     expect(document.querySelector(".detail h1")?.textContent).toBe("demo-gamma");
     expect(document.querySelector(".detail")?.textContent).toContain("已移入回收站");
     expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("1/2");
   });
 
-  it("moves through ranked matches without replacing the complete account list", async () => {
+  it("moves through ranked matches while keeping the header and the filtered list in sync", async () => {
     const accountSearch = document.querySelector<HTMLInputElement>('input[type="search"]');
     await inputText(accountSearch as HTMLInputElement, "demo");
     await settle(30);
 
     expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("1/4");
     expect(document.querySelector(".detail h1")?.textContent).toBe("demo-gamma-copy");
-    expect(document.querySelectorAll(".accountRow")).toHaveLength(3);
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(4);
 
     const nextResult = document.querySelector<HTMLButtonElement>('button[aria-label="下一个匹配"]');
     expect(nextResult).not.toBeNull();
     await click(nextResult as HTMLButtonElement);
     expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("2/4");
     expect(document.querySelector(".detail h1")?.textContent).toBe("demo-gamma");
-    expect(document.querySelectorAll(".accountRow")).toHaveLength(2);
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(4);
     expect(document.querySelector<HTMLButtonElement>('.viewSwitch [role="tab"][aria-selected="true"]')?.textContent).toContain(
-      "回收站",
+      "全环境",
     );
 
     await click(nextResult as HTMLButtonElement);
     expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("3/4");
     expect(document.querySelector(".detail h1")?.textContent).toBe("demo-beta");
-    expect(document.querySelectorAll(".accountRow")).toHaveLength(3);
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(4);
     expect(document.querySelector<HTMLButtonElement>('.viewSwitch [role="tab"][aria-selected="true"]')?.textContent).toContain(
-      "活跃",
+      "全环境",
     );
 
     await pressKeyOn(accountSearch as HTMLInputElement, "ArrowUp");
@@ -1523,7 +1562,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(accountSearch?.value).toBe("demo-gamma");
     expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("1/2");
     expect(document.querySelector<HTMLButtonElement>('.viewSwitch [role="tab"][aria-selected="true"]')?.textContent).toContain(
-      "回收站",
+      "全环境",
     );
 
     await click(buttonWithText("活跃"));

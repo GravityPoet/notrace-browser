@@ -42,7 +42,7 @@ describe("统一授权续期窗口", () => {
     expect(document.body.textContent).toContain("自动 2 次 · 手动 1 次");
     expect(document.body.textContent).toContain("启用统计后累计");
     expect(document.body.textContent).not.toContain("9 次");
-    expect(document.body.textContent).toContain("尚未完成适配验收");
+    expect(document.body.textContent).toContain("使用导出 JSON 导入");
     expect(document.body.textContent).not.toContain("refresh_token");
   });
 
@@ -145,6 +145,51 @@ describe("统一授权续期窗口", () => {
     expect(calls).toContain("login_account_auth");
     expect(calls).toContain("broker_push_account");
     expect(calls).not.toContain("broker_set_cpa");
+  });
+
+  it("keeps authorization progress and errors visible when changing the selected view", async () => {
+    let failLogin: ((reason: Error) => void) | undefined;
+    const data = overview(null);
+    data.accounts[0].local = { ...data.accounts[0].local, state: "missing" };
+    const other = { ...data.accounts[0], name: "other@example.test", profile_id: "profile-2" };
+    data.accounts.push(other);
+    const call: AuthCall = async function call<T>(command: string): Promise<T> {
+      if (command === "broker_overview") return data as T;
+      if (command === "login_account_auth") return await new Promise<T>((_, reject) => { failLogin = reject; });
+      return null as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1", accountVisible: true })));
+    await settle();
+    const authorize = [...document.querySelectorAll("button")].find(button => button.textContent === "授权并纳管");
+    await act(async () => authorize?.click());
+    await settle();
+    expect(document.querySelector('.brokerRowFeedback[role="status"]')?.textContent).toContain("demo@example.test");
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-2", accountVisible: false, children: createElement("p", null, "账号资料") })));
+    expect(document.querySelector('.brokerRowFeedback[role="status"]')?.textContent).toContain("demo@example.test");
+    expect(document.body.textContent).toContain("账号资料");
+    await act(async () => failLogin?.(new Error("上游席位已占满")));
+    await settle();
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("demo@example.test");
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("上游席位已占满");
+    expect(document.querySelector('.brokerRowFeedback[role="status"]')).toBeNull();
+  });
+
+  it("retains last known Broker metadata during a temporary service outage", async () => {
+    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    let data = overview(remote);
+    const changes: BrokerOverview[] = [];
+    const call: AuthCall = async function call<T>(command: string): Promise<T> { return command === "broker_overview" ? data as T : null as T; };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1", onOverviewChange: data => changes.push(data) })));
+    await settle();
+    data = { ...data, connected: false, accounts: data.accounts.map(row => ({ ...row, local: { ...row.local, authority: "broker" }, remote: null })) };
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="读取授权状态"]')?.click());
+    await settle();
+    expect(changes.at(-1)?.accounts[0].remote?.generation).toBe(3);
+    expect(document.body.textContent).toContain("显示上次读取的授权状态");
+    expect(document.querySelector('.brokerAuthStatus-authorized')).not.toBeNull();
+    expect([...document.querySelectorAll<HTMLButtonElement>('.brokerRow button')].every(button => button.disabled)).toBe(true);
   });
 
   it("offers access-only JSON export for a Broker-owned grant", async () => {
@@ -336,6 +381,29 @@ describe("统一授权续期窗口", () => {
     expect(calls).toContain("broker_push_account");
   });
 
+  it("allows a new browser grant when a live credential belongs to another tool", async () => {
+    const data = overview();
+    data.accounts[0].local = { ...local, authority: "cockpit" };
+    const calls: string[] = [];
+    const call: AuthCall = async function call<T>(command: string): Promise<T> {
+      calls.push(command);
+      return command === "active_account_auth" ? null as T : data as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    const authorize = [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "重新授权并纳管")!;
+    expect(authorize.disabled).toBe(false);
+    expect(document.body.textContent).toContain("当前凭据由 Cockpit Tools 管理");
+    await act(async () => authorize.click());
+    await settle();
+    expect(calls.indexOf("login_account_auth")).toBeLessThan(calls.indexOf("broker_push_account"));
+    expect(calls).toContain("login_account_auth");
+    expect(calls).toContain("broker_push_account");
+    expect(calls).not.toContain("refresh_account_auth");
+    expect(calls).not.toContain("broker_set_cpa");
+  });
+
   it("preserves an imported refresh token by default and clears it only when selected", async () => {
     const calls: Array<{ command: string; args?: unknown }> = [];
     const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.test", account_id: "acct-1", has_access_token: true, has_id_token: true, has_refresh_token: true }], contains_refresh_token: true, message: "检测到 refresh_token" };
@@ -372,6 +440,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("imports a complete file into Broker and immediately reveals the managed account without a browser login or CPA sync", async () => {
+    const selectedProfiles: string[] = [];
     const calls: Array<{ command: string; args?: unknown }> = [];
     const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.test", account_id: "acct-1", has_access_token: true, has_id_token: true, has_refresh_token: true }], contains_refresh_token: true, message: "检测到 refresh_token" };
     let remote: BrokerMetadata | null = null;
@@ -387,7 +456,7 @@ describe("统一授权续期窗口", () => {
       return { ...overview(remote), accounts: [{ ...overview(remote).accounts[0], local: { ...local, state: "missing" } }] } as T;
     };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
-    await act(async () => root?.render(createElement(BrokerPanel, { call, focusedAccount: "other@example.test" })));
+    await act(async () => root?.render(createElement(BrokerPanel, { call, focusedAccount: "other@example.test", onImportedAccount: profile => selectedProfiles.push(profile) })));
     await settle();
     await act(async () => [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("导入/转换 JSON"))?.click());
     await settle();
@@ -399,6 +468,7 @@ describe("统一授权续期窗口", () => {
     await settle();
     expect(calls.find(item => item.command === "broker_import_json")?.args).toEqual({ path: preview.path, email: "demo@example.test", accountId: "acct-1" });
     expect(calls.some(item => ["broker_convert_json", "login_account_auth", "broker_set_cpa"].includes(item.command))).toBe(false);
+    expect(selectedProfiles).toEqual(["profile-1"]);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(document.querySelector<HTMLInputElement>('[aria-label="搜索授权账号"]')?.value).toBe("demo@example.test");
     expect(document.body.textContent).toContain("已导入并纳管");
