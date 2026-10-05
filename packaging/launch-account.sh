@@ -53,17 +53,6 @@ EXT_SRC="$ROOT/extension/cloak-companion"
 # Resolve the stealth Chromium: prefer the auto-update symlink, else newest pin.
 CB="${CLOAK_BROWSER_ROOT:-$HOME/.cloakbrowser}"
 BIN="${CLOAK_BROWSER_BIN:-$CB/current/Chromium.app/Contents/MacOS/Chromium}"
-# The latest free/Pro binary validates the key inside the Chromium process, so
-# a GUI-launched account must inherit it explicitly.  This mirrors the official
-# wrapper's ~/.cloakbrowser/license.key lookup and keeps the secret out of argv,
-# dry-run output, and repository files.
-if [[ -z "${CLOAKBROWSER_LICENSE_KEY:-}" ]]; then
-  license_file="$CB/license.key"
-  if [[ -f "$license_file" && ! -L "$license_file" ]]; then
-    IFS= read -r CLOAKBROWSER_LICENSE_KEY < "$license_file" || true
-    export CLOAKBROWSER_LICENSE_KEY
-  fi
-fi
 if [[ ! -x "$BIN" ]]; then
   fallback_bins=()
   for fallback_bin in "$CB"/chromium-*/Chromium.app/Contents/MacOS/Chromium; do
@@ -98,6 +87,19 @@ LICENSE_DENIAL_CODE=""
 is_keyed_binary() {
   [[ "$1" =~ /chromium-[0-9]+([.][0-9]+){3,4}-pro(-notrace)?/ ]]
 }
+
+# Only the vendor's resolved keyed runtime may read or receive its key.
+if is_keyed_binary "$BIN"; then
+  if [[ -z "${CLOAKBROWSER_LICENSE_KEY:-}" ]]; then
+    license_file="$CB/license.key"
+    if [[ -f "$license_file" && ! -L "$license_file" ]]; then
+      IFS= read -r CLOAKBROWSER_LICENSE_KEY < "$license_file" || true
+      export CLOAKBROWSER_LICENSE_KEY
+    fi
+  fi
+else
+  unset CLOAKBROWSER_LICENSE_KEY CLOAKBROWSER_LICENSE_STATUS_FILE
+fi
 
 mint_license_status_file() {
   is_keyed_binary "$BIN" || return 0
@@ -176,6 +178,7 @@ fi
 CLOAK_DISTRIBUTION_VERSION="$(printf '%s\n' "$BIN" | sed -E -n \
   's#^.*/chromium-([0-9]+([.][0-9]+){3,4})(-pro)?(-notrace)?/Chromium[.]app/.*#\1#p')"
 CLOAK_NATIVE_IDENTITY=0
+NOTRACE_INDEPENDENT_ENGINE=0
 if (( CLOAK_CHROME_MAJOR >= 150 )); then
   CLOAK_NATIVE_IDENTITY=1
 elif [[ "$CLOAK_CHROME_MAJOR" == "148" && -n "$CLOAK_DISTRIBUTION_VERSION" ]]; then
@@ -187,6 +190,13 @@ elif [[ "$CLOAK_CHROME_MAJOR" == "148" && -n "$CLOAK_DISTRIBUTION_VERSION" ]]; t
 fi
 
 CLOAK_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X $CLOAK_MAC_UA_VERSION) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$CLOAK_CHROME_MAJOR.0.0.0 Safari/537.36"
+engine_dir="${BIN%/Chromium.app/Contents/MacOS/Chromium}"
+if [[ -e "$engine_dir/.notrace-independent-engine.json" ]]; then
+  node "$ROOT/packaging/verify-independent-runtime.mjs" "$engine_dir" >/dev/null
+  NOTRACE_INDEPENDENT_ENGINE=1
+  CLOAK_NATIVE_IDENTITY=0
+  unset CLOAKBROWSER_LICENSE_KEY CLOAKBROWSER_LICENSE_STATUS_FILE
+fi
 
 # Deterministic GPU renderer selection from seed (matches Rust gpu_renderer_for_seed)
 gpu_renderer_for_seed() {
@@ -933,7 +943,7 @@ args=(
   "--fingerprint=$seed"
   "--fingerprint-platform=macos"
 )
-if [[ "$CLOAK_NATIVE_IDENTITY" == "0" ]]; then
+if [[ "$CLOAK_NATIVE_IDENTITY" == "0" && "$NOTRACE_INDEPENDENT_ENGINE" == "0" ]]; then
   args+=("--user-agent=$CLOAK_USER_AGENT")
 fi
 args+=(
@@ -953,8 +963,10 @@ args+=(
 # Fixed macOS 148.0.7778.215.3+ and 150+ builds own UA, Client Hints,
 # platform and GPU coherence inside the engine. Older builds keep overrides.
 if [[ "$CLOAK_NATIVE_IDENTITY" == "0" ]]; then
+  fingerprint_brand=Chrome
+  [[ "$NOTRACE_INDEPENDENT_ENGINE" == "1" ]] && fingerprint_brand='Google Chrome'
   args+=(
-    "--fingerprint-brand=Chrome"
+    "--fingerprint-brand=$fingerprint_brand"
     "--fingerprint-brand-version=$CLOAK_CHROME_FULL"
     "--fingerprint-platform-version=$CLOAK_MAC_PLATFORM_VERSION"
     "--fingerprint-gpu-vendor=Google Inc. (Apple)"
@@ -966,7 +978,11 @@ if [[ -n "$accept_lang" ]]; then
   primary_locale="${accept_lang%%,*}"
   args+=("--lang=$primary_locale" "--fingerprint-locale=$primary_locale" "--accept-lang=$accept_lang")
 fi
-[[ -n "$exit_ip" ]] && args+=("--fingerprint-webrtc-ip=$exit_ip")
+if [[ "$NOTRACE_INDEPENDENT_ENGINE" == "1" ]]; then
+  args+=("--uxr-synthetic-device-tests=true" "--fingerprint-hardware-concurrency=8" "--fingerprint-device-memory=8" "--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
+elif [[ -n "$exit_ip" ]]; then
+  args+=("--fingerprint-webrtc-ip=$exit_ip")
+fi
 
 proxy_server_arg=""
 if [[ "$proxy_mode" == "direct" ]]; then

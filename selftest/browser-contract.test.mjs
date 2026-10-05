@@ -1,11 +1,17 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
+import { createHash } from "node:crypto";
 
 import {
   browserIdentityForVersion,
   browserIdentityHeaderRules,
   companionPageSpoofEnabled,
   distributionVersionFromPath,
+  independentEngineMetadata,
+  independentFingerprintArgs,
   nativeEngineIdentitySupported,
   parseChromiumVersion,
   redactProxyCredentials,
@@ -55,6 +61,49 @@ test("companion page spoof is opt-in", () => {
     companionPageSpoofEnabled({ CLOAK_COMPANION_PAGE_SPOOF: "0", CLOAK_JS_FINGERPRINT: "1" }),
     false,
   );
+});
+
+test("independent runtime selects tested native flags without disabling the sandbox", () => {
+  assert.equal(nativeEngineIdentitySupported({ major: "152", independent: true }), false);
+  const args = independentFingerprintArgs("24680");
+  assert.deepEqual(args, independentFingerprintArgs("24680"));
+  assert.ok(args.includes("--uxr-synthetic-device-tests=true"));
+  assert.ok(args.some(arg => arg.includes("Apple M3")));
+  assert.ok(args.includes("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"));
+  assert.ok(!args.includes("--no-sandbox"));
+  assert.ok(!args.some(arg => arg.startsWith("--fingerprint-webrtc-ip=")));
+});
+
+test("independent provenance rejects framework changes, unknown fields and symlink markers", () => {
+  const root = mkdtempSync(join(tmpdir(), "notrace-independent-contract-"));
+  try {
+    const binary = join(root, "Chromium.app/Contents/MacOS/Chromium");
+    const framework = join(root, "Chromium.app/Contents/Frameworks/Chromium Framework.framework/Versions/152.0.7977.82/Chromium Framework");
+    mkdirSync(dirname(binary), { recursive: true });
+    mkdirSync(dirname(framework), { recursive: true });
+    writeFileSync(binary, "launcher");
+    writeFileSync(framework, "fingerprints");
+    assert.equal(independentEngineMetadata(binary), null);
+    const hash = value => createHash("sha256").update(value).digest("hex");
+    const data = { provider: "chromix", version: "152.0.7977.82",
+      archive_sha256: "8ceefefced9018dfe917650ce156bd1ffdaa9bc2bc6b89b70b6d021262166eb4",
+      source_commit: "ca52ae0d01168a8bc118ccc28d484011a7eb0efb",
+      binary_sha256: hash("launcher"), framework_sha256: hash("fingerprints") };
+    const marker = join(root, ".notrace-independent-engine.json");
+    writeFileSync(marker, JSON.stringify(data));
+    assert.equal(independentEngineMetadata(binary).provider, "chromix");
+    writeFileSync(framework, "tampered");
+    assert.throws(() => independentEngineMetadata(binary), /hash mismatch/);
+    writeFileSync(framework, "fingerprints");
+    writeFileSync(marker, JSON.stringify({ ...data, extra: true }));
+    assert.throws(() => independentEngineMetadata(binary), /fields/);
+    rmSync(marker);
+    writeFileSync(join(root, "other.json"), JSON.stringify(data));
+    symlinkSync(join(root, "other.json"), marker);
+    assert.throws(() => independentEngineMetadata(binary), /marker/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("browser identity rules never force high-entropy client hints", () => {

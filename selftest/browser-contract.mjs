@@ -1,3 +1,7 @@
+import { lstatSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+
 const MAC_UA_VERSION = "10_15_7";
 const MAC_PLATFORM_VERSION = "15.5.0";
 const NATIVE_IDENTITY_148_RELEASE = "148.0.7778.215.3";
@@ -44,6 +48,7 @@ export function distributionVersionFromPath(binaryPath) {
 }
 
 export function nativeEngineIdentitySupported(version) {
+  if (version?.independent) return false;
   const major = Number.parseInt(String(version?.major ?? ""), 10);
   if (Number.isInteger(major) && major >= 150) return true;
   if (major !== 148) return false;
@@ -54,6 +59,46 @@ export function nativeEngineIdentitySupported(version) {
     if ((current[index] || 0) < (minimum[index] || 0)) return false;
   }
   return current.length > 0;
+}
+
+export function independentEngineMetadata(binary) {
+  const app = dirname(dirname(dirname(binary)));
+  const marker = join(dirname(app), ".notrace-independent-engine.json");
+  let file;
+  try { file = lstatSync(marker); } catch (error) {
+    if (error.code === "ENOENT") {
+      if (basename(dirname(app)) === "chromium-152.0.7977.82-notrace") throw new Error("missing independent engine marker");
+      return null;
+    }
+    throw error;
+  }
+  if (!file.isFile() || file.size > 4096) throw new Error("invalid independent engine marker");
+  const data = JSON.parse(readFileSync(marker, "utf8"));
+  const fields = ["provider", "version", "archive_sha256", "source_commit", "binary_sha256", "framework_sha256"].sort();
+  if (JSON.stringify(Object.keys(data).sort()) !== JSON.stringify(fields)) {
+    throw new Error("invalid independent engine fields");
+  }
+  const hash = path => createHash("sha256").update(readFileSync(path)).digest("hex");
+  if (data.provider !== "chromix" || data.version !== "152.0.7977.82"
+      || data.archive_sha256 !== "8ceefefced9018dfe917650ce156bd1ffdaa9bc2bc6b89b70b6d021262166eb4"
+      || data.source_commit !== "ca52ae0d01168a8bc118ccc28d484011a7eb0efb"
+      || hash(binary) !== data.binary_sha256
+      || hash(join(app, `Contents/Frameworks/Chromium Framework.framework/Versions/${data.version}/Chromium Framework`)) !== data.framework_sha256) {
+    throw new Error("independent engine provenance or hash mismatch");
+  }
+  return data;
+}
+
+export function independentFingerprintArgs(seed) {
+  const bucket = createHash("sha256").update(`gpu:${seed}`).digest().readUInt32BE(0) % 4 + 1;
+  return [
+    "--uxr-synthetic-device-tests=true",
+    "--fingerprint-hardware-concurrency=8",
+    "--fingerprint-device-memory=8",
+    "--fingerprint-gpu-vendor=Google Inc. (Apple)",
+    `--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M${bucket}, Unspecified Version)`,
+    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+  ];
 }
 
 export function companionPageSpoofEnabled(env = process.env) {

@@ -25,6 +25,8 @@ import {
   companionPageSpoofEnabled,
   distributionVersionFromPath,
   nativeEngineIdentitySupported,
+  independentEngineMetadata,
+  independentFingerprintArgs,
   parseChromiumVersion,
 } from "./browser-contract.mjs";
 
@@ -319,6 +321,9 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
     "--remote-debugging-port=0",
     `--fingerprint=${seed}`,
     "--fingerprint-platform=macos",
+    // Match the real launcher on Clash fake-IP DNS. Real LAN/loopback ranges
+    // are not exempted; only the launcher's two reserved fake-IP pools are.
+    "--ip-address-space-overrides=198.18.0.0/15=public,[fdfe:dcba:9876::]/48=public",
     "--ignore-gpu-blocklist",
     "--test-type",
     "--disable-blink-features=AutomationControlled",
@@ -328,13 +333,14 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
     "--remote-allow-origins=*",
   ];
   if (!nativeEngineIdentitySupported(BROWSER_VERSION)) {
+    if (!BROWSER_VERSION.independent) args.push(`--user-agent=${BROWSER_IDENTITY.userAgent}`);
     args.push(
-      `--user-agent=${BROWSER_IDENTITY.userAgent}`,
-      "--fingerprint-brand=Chrome",
+      `--fingerprint-brand=${BROWSER_VERSION.independent ? "Google Chrome" : "Chrome"}`,
       `--fingerprint-brand-version=${BROWSER_IDENTITY.uaData.uaFullVersion}`,
       `--fingerprint-platform-version=${BROWSER_IDENTITY.uaData.platformVersion}`,
     );
   }
+  if (BROWSER_VERSION.independent) args.push(...independentFingerprintArgs(seed));
   if (opts.headless) {
     args.push("--headless=new", "--window-size=1440,900", "--force-device-scale-factor=2");
   }
@@ -345,11 +351,16 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
     const primaryLocale = opts.acceptLang.split(",", 1)[0].trim();
     args.push(`--lang=${primaryLocale}`, `--fingerprint-locale=${primaryLocale}`, `--accept-lang=${opts.acceptLang}`);
   }
-  if (opts.expectIp) args.push(`--fingerprint-webrtc-ip=${opts.expectIp}`);
+  if (opts.expectIp && !BROWSER_VERSION.independent) args.push(`--fingerprint-webrtc-ip=${opts.expectIp}`);
   args.push("about:blank");
 
+  const childEnv = { ...process.env, TZ: opts.tz };
+  if (BROWSER_VERSION.independent) {
+    delete childEnv.CLOAKBROWSER_LICENSE_KEY;
+    delete childEnv.CLOAKBROWSER_LICENSE_STATUS_FILE;
+  }
   const child = spawn(BIN, args, {
-    env: { ...process.env, TZ: opts.tz },
+    env: childEnv,
     stdio: "ignore",
   });
 
@@ -640,6 +651,7 @@ async function main() {
   }
   BROWSER_VERSION = parseChromiumVersion(versionResult.stdout);
   BROWSER_VERSION.distribution = distributionVersionFromPath(BIN);
+  BROWSER_VERSION.independent = Boolean(independentEngineMetadata(BIN));
   BROWSER_IDENTITY = browserIdentityForVersion(BROWSER_VERSION);
   const server = await startProbeServer();
 
@@ -654,7 +666,7 @@ async function main() {
       pair = { a, b };
       addProbeChecks(checks, "A", a.probe, opts);
       addProbeChecks(checks, "B", b.probe, opts);
-      if (companionPageSpoofEnabled()) {
+      if (companionPageSpoofEnabled() || BROWSER_VERSION.independent) {
         checks.push({
           name: "pair: canvas hashes differ by seed",
           level: "hard",
@@ -667,12 +679,14 @@ async function main() {
           pass: a.probe.image_data_hash !== b.probe.image_data_hash,
           got: `${a.probe.image_data_hash} vs ${b.probe.image_data_hash}`,
         });
-        checks.push({
-          name: "pair: audio hashes differ by seed",
-          level: "hard",
-          pass: a.probe.audio_hash !== b.probe.audio_hash,
-          got: `${a.probe.audio_hash} vs ${b.probe.audio_hash}`,
-        });
+        if (companionPageSpoofEnabled()) {
+          checks.push({
+            name: "pair: audio hashes differ by seed",
+            level: "hard",
+            pass: a.probe.audio_hash !== b.probe.audio_hash,
+            got: `${a.probe.audio_hash} vs ${b.probe.audio_hash}`,
+          });
+        }
       }
       checks.push({
         name: "pair: localStorage/cookie/IndexedDB are isolated",

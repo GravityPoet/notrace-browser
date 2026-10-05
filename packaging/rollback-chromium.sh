@@ -63,6 +63,10 @@ esac
 app="$dest/Chromium.app"
 bin="$app/Contents/MacOS/Chromium"
 [[ -x "$bin" ]] || die "目标 Chromium 不可执行：$bin"
+if [[ -e "$dest/.notrace-independent-engine.json" ]]; then
+  node "$(dirname "$0")/verify-independent-runtime.mjs" "$dest" \
+    || die "目标独立内核来源校验失败"
+fi
 /usr/bin/codesign --verify --deep --strict "$app" >/dev/null 2>&1 \
   || die "目标 Chromium 签名校验失败：$app"
 
