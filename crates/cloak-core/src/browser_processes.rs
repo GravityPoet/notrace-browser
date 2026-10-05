@@ -31,6 +31,10 @@ pub fn browser_process_status(config: &CloakConfig) -> Result<BrowserProcessStat
 /// Query the uncached upstream seat count without exposing the license key.
 /// `None` means the key is unavailable or the service could not answer.
 pub fn license_session_status(config: &CloakConfig) -> Option<SeatUsage> {
+    let browser = crate::resolve_browser(config).ok()?;
+    if !crate::is_keyed_browser_binary(&browser.binary) {
+        return None;
+    }
     crate::resolve_cloakbrowser_license_key(&config.cloakbrowser_root)
         .and_then(|key| crate::license::query_session_seats(key.as_str()))
         .map(|seats| SeatUsage {

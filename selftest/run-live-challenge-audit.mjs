@@ -937,8 +937,13 @@ async function run() {
   prepareCompanion(plan);
 
   const args = launchArgsFromPlan(plan, opts);
+  const childEnv = { ...env, TZ: plan.geo?.timezone || process.env.TZ || "" };
+  if (args.includes("--uxr-synthetic-device-tests=true")) {
+    delete childEnv.CLOAKBROWSER_LICENSE_KEY;
+    delete childEnv.CLOAKBROWSER_LICENSE_STATUS_FILE;
+  }
   const child = spawn(plan.browser_binary, args, {
-    env: { ...env, TZ: plan.geo?.timezone || process.env.TZ || "" },
+    env: childEnv,
     stdio: "ignore",
   });
 

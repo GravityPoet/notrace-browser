@@ -142,6 +142,16 @@ Every profile carries `.cloak-profile.json` plus two private backup replicas. A 
 
 ## 🍎 macOS Native UX & TCC Permissions (macOS Specific)
 
+### Independent fingerprint runtime (2026-10-05)
+
+This machine can select the BSD-3-Clause [Chromix 152.0.7977.82 runtime](https://github.com/xiaozhou26/Chromix/releases/tag/v152.0.7977.82) instead of the licensed CloakBrowser binary. It does not query the vendor seat service, forward its license, or disable Chromium's sandbox. The old runtime and key remain untouched. The archive, source revision, installed main executable and Framework are pinned and validated separately from the official wrapper contract.
+
+Run `packaging/install-independent-engine.sh`, install the current Picker, then run `packaging/switch-independent-engine.sh activate` with browsers and Picker closed. Activation clones and checksum-compares the complete Accounts tree before switching `current`. To downgrade, use `packaging/switch-independent-engine.sh restore <snapshot-directory>`: it restores the old runtime/profile snapshot and preserves post-switch data separately. Pointer-only downgrade does not restore profile compatibility.
+
+The integration retains account seeds and storage, native Canvas separation, stable Apple GPU templates, timezone/Worker consistency and real-version UA-CH. Different engines produce different fingerprints even with the same seed. Chromix must keep its native UA and use the `Google Chrome` brand token; a raw `--user-agent` override clears its high-entropy hints. WebRTC blocks non-proxied UDP rather than pretending to implement the vendor's exit-IP rewriting. Audio remains native, as in the tested local 151 baseline; UDP-dependent calls require site TCP/TURN support. No universal anti-detection guarantee is made.
+
+The CloakBrowser updater retains this independent selection instead of silently replacing it. A newer Chromix asset requires fresh runtime validation: the macOS 154 asset did not honor fingerprint flags in local testing. `node selftest/run-independent-multisession.mjs` verifies three real LaunchServices sessions, seeded Canvas differences, storage isolation and restart stability.
+
 NoTrace Browser is built specifically to feel like a premium application on macOS:
 
 - **Durable Green Icon**: Chromium shims overwrite `app.icns` on updates, stripping custom PWA icons. NoTrace applies a Finder-level custom icon (`kHasCustomIcon` + bundle-root `Icon\r` resource) via `NSWorkspace setIcon:forFile:`. This custom icon is preferred by LaunchServices and **survives browser engine rebuilds**.

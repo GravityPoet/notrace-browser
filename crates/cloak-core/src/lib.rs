@@ -150,6 +150,7 @@ struct EngineVersion {
     major: String,
     full: String,
     distribution: String,
+    independent: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -164,10 +165,14 @@ impl EngineVersion {
             major: CLOAK_CHROME_MAJOR_FALLBACK.to_string(),
             full: format!("{CLOAK_CHROME_MAJOR_FALLBACK}.0.0.0"),
             distribution: format!("{CLOAK_CHROME_MAJOR_FALLBACK}.0.0.0"),
+            independent: false,
         }
     }
 
     fn uses_native_identity(&self) -> bool {
+        if self.independent {
+            return false;
+        }
         match self.major.parse::<u64>() {
             Ok(major) if major >= 150 => true,
             Ok(148) => {
@@ -220,6 +225,7 @@ fn parse_chromium_version(output: &str) -> Option<EngineVersion> {
         major,
         distribution: full.clone(),
         full,
+        independent: false,
     })
 }
 
@@ -250,6 +256,7 @@ fn extract_version_from_path(path: &Path) -> Option<EngineVersion> {
                 major,
                 full,
                 distribution,
+                independent: false,
             });
         }
     }
@@ -1141,7 +1148,9 @@ fn build_launch_plan_for_url(
     let resolved_browser = resolve_browser(config)?;
     let runtime = browser_runtime_status(config, &resolved_browser)?;
     let browser_binary = resolved_browser.binary;
-    let engine = detect_engine_version(&browser_binary);
+    let mut engine = detect_engine_version(&browser_binary);
+    engine.independent =
+        independent_runtime_marker(&browser_binary).is_some_and(|path| path.exists());
 
     let region = read_first_line(&profile_path.join(".cloak-region"))?;
     let proxy_raw = read_first_line(&profile_path.join(".cloak-proxy"))?;
@@ -1291,7 +1300,9 @@ fn build_launch_plan_for_url(
     // identity inside the engine. Re-supplying the legacy overrides can create
     // conflicts with those native patches. Keep them only for the installed 145
     // compatibility line.
-    if !engine.uses_native_identity() {
+    // Chromix fills native UA-CH metadata. Chromium's raw --user-agent override
+    // clears high-entropy hints there, so it must not be used for that runtime.
+    if !engine.uses_native_identity() && !engine.independent {
         let user_agent = browser_identity
             .get("userAgent")
             .and_then(Value::as_str)
@@ -1435,7 +1446,9 @@ fn launch_plan(
     let launch_started = Instant::now();
     let preflight_duration = launch_started.saturating_duration_since(preflight_started);
     ensure_launch_not_cancelled(options.cancellation.as_deref())?;
-    let license_key = resolve_cloakbrowser_license_key(&config.cloakbrowser_root);
+    let license_key = is_keyed_browser_binary(&plan.browser_binary)
+        .then(|| resolve_cloakbrowser_license_key(&config.cloakbrowser_root))
+        .flatten();
     // The keyed binary owns the actual license decision.  We only do a
     // read-only seat preflight when a key is available, and only wait for a
     // stale lease when no managed browser process is present.  This avoids a
@@ -1526,9 +1539,22 @@ fn launch_plan(
             launch_ms: duration_millis(launch_started.elapsed()),
             runtime: plan.runtime.clone(),
             capabilities: launch_capabilities(
-                !plan.argv.iter().any(|arg| arg.starts_with("--user-agent=")),
+                !plan.argv.iter().any(|arg| arg.starts_with("--user-agent="))
+                    && !plan
+                        .argv
+                        .iter()
+                        .any(|arg| arg == "--uxr-synthetic-device-tests=true"),
                 is_local_notrace_runtime(&plan.browser_binary),
-            ),
+            )
+            .into_iter()
+            .filter(|capability| {
+                capability != "webrtc-exit-ip-binding"
+                    || !plan
+                        .argv
+                        .iter()
+                        .any(|arg| arg == "--uxr-synthetic-device-tests=true")
+            })
+            .collect(),
         },
     };
 
@@ -1577,9 +1603,13 @@ fn launch_browser_process(
     // Chromium argv and let the process environment carry it instead.
     if let Some(key) = license_key {
         command.env("CLOAKBROWSER_LICENSE_KEY", key);
+    } else {
+        command.env_remove("CLOAKBROWSER_LICENSE_KEY");
     }
     if let Some(path) = status_file {
         command.env(license::STATUS_FILE_ENV, path);
+    } else {
+        command.env_remove(license::STATUS_FILE_ENV);
     }
     command.arg(app_bundle).arg("--args").args(argv);
     command.stdin(Stdio::null());
@@ -1635,9 +1665,13 @@ fn launch_browser_direct(
     }
     if let Some(key) = license_key {
         command.env("CLOAKBROWSER_LICENSE_KEY", key);
+    } else {
+        command.env_remove("CLOAKBROWSER_LICENSE_KEY");
     }
     if let Some(path) = status_file {
         command.env(license::STATUS_FILE_ENV, path);
+    } else {
+        command.env_remove(license::STATUS_FILE_ENV);
     }
     command.stdin(Stdio::null());
     command.stdout(Stdio::null());
@@ -1668,7 +1702,8 @@ fn launch_browser_direct(
     Ok(pid)
 }
 
-fn is_keyed_browser_binary(browser_binary: &Path) -> bool {
+/// Whether this resolved runtime belongs to the vendor's licensed distribution.
+pub fn is_keyed_browser_binary(browser_binary: &Path) -> bool {
     version_sort_key(browser_binary).1
 }
 
@@ -3143,9 +3178,13 @@ fn run_selftest(
 
     let mut cmd = Command::new("node");
     cmd.args(args);
-    let license_key = resolve_cloakbrowser_license_key(&config.cloakbrowser_root);
+    let license_key = is_keyed_browser_binary(&plan.browser_binary)
+        .then(|| resolve_cloakbrowser_license_key(&config.cloakbrowser_root))
+        .flatten();
     if let Some(key) = license_key.as_ref() {
         cmd.env("CLOAKBROWSER_LICENSE_KEY", key.as_str());
+    } else {
+        cmd.env_remove("CLOAKBROWSER_LICENSE_KEY");
     }
     cmd.stdout(Stdio::null());
     cmd.stderr(if strict {
@@ -3226,6 +3265,7 @@ fn browser_runtime_status(
     config: &CloakConfig,
     resolved: &ResolvedBrowser,
 ) -> Result<BrowserRuntimeStatus> {
+    let independent = verify_independent_runtime(&resolved.binary)?;
     let managed_root = fs::canonicalize(&config.cloakbrowser_root)
         .unwrap_or_else(|_| config.cloakbrowser_root.clone());
     let kind = if resolved.selection == BrowserRuntimeSelection::ExplicitOverride {
@@ -3318,10 +3358,14 @@ fn browser_runtime_status(
         }
     }
 
-    let message = match kind {
-        BrowserRuntimeKind::SourceCache => "上游源缓存（SHA-256 已验证；不含本机 TCC 声明）",
-        BrowserRuntimeKind::LocalTccRuntime => "本机 TCC 运行副本（SHA-256 与权限声明已验证）",
-        BrowserRuntimeKind::CustomBinary => "自定义浏览器（SHA-256 已验证）",
+    let message = if independent {
+        "独立指纹内核 Chromix（无上游席位限制；本机哈希与权限声明已验证）"
+    } else {
+        match kind {
+            BrowserRuntimeKind::SourceCache => "上游源缓存（SHA-256 已验证；不含本机 TCC 声明）",
+            BrowserRuntimeKind::LocalTccRuntime => "本机 TCC 运行副本（SHA-256 与权限声明已验证）",
+            BrowserRuntimeKind::CustomBinary => "自定义浏览器（SHA-256 已验证）",
+        }
     };
     Ok(BrowserRuntimeStatus {
         kind,
@@ -3330,6 +3374,71 @@ fn browser_runtime_status(
         blocks_launch: false,
         message: message.to_string(),
     })
+}
+
+fn independent_runtime_marker(binary: &Path) -> Option<PathBuf> {
+    Some(
+        macos_app_bundle_for_binary(binary)?
+            .parent()?
+            .join(".notrace-independent-engine.json"),
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IndependentRuntimeMetadata {
+    provider: String,
+    version: String,
+    archive_sha256: String,
+    source_commit: String,
+    binary_sha256: String,
+    framework_sha256: String,
+}
+
+fn verify_independent_runtime(binary: &Path) -> Result<bool> {
+    let Some(marker) = independent_runtime_marker(binary) else {
+        return Ok(false);
+    };
+    let file = match fs::symlink_metadata(&marker) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if marker
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "chromium-152.0.7977.82-notrace")
+            {
+                return Err(CloakError::PrivacyGate(
+                    "独立内核来源标记缺失，已停止启动".into(),
+                ));
+            }
+            return Ok(false);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let invalid = || CloakError::PrivacyGate("独立内核来源或哈希无效，已停止启动".into());
+    if !file.file_type().is_file() || file.len() > 4096 {
+        return Err(invalid());
+    }
+    let metadata: IndependentRuntimeMetadata =
+        serde_json::from_slice(&fs::read(&marker)?).map_err(|_| invalid())?;
+    if metadata.provider != "chromix"
+        || metadata.version != "152.0.7977.82"
+        || metadata.archive_sha256
+            != "8ceefefced9018dfe917650ce156bd1ffdaa9bc2bc6b89b70b6d021262166eb4"
+        || metadata.source_commit != "ca52ae0d01168a8bc118ccc28d484011a7eb0efb"
+        || sha256_file(binary)? != metadata.binary_sha256
+    {
+        return Err(invalid());
+    }
+    let app = macos_app_bundle_for_binary(binary).ok_or_else(invalid)?;
+    let framework = app
+        .join("Contents/Frameworks/Chromium Framework.framework/Versions")
+        .join(&metadata.version)
+        .join("Chromium Framework");
+    if sha256_file(&framework)? != metadata.framework_sha256 {
+        return Err(invalid());
+    }
+    Ok(true)
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
@@ -3580,8 +3689,20 @@ fn append_native_fingerprint_args(
         argv.push(format!("--fingerprint-locale={primary_locale}"));
         argv.push(format!("--accept-lang={locale}"));
     }
-    if let Some(exit_ip) = geo.exit_ip.as_deref().filter(|value| !value.is_empty()) {
+    if let Some(exit_ip) = geo
+        .exit_ip
+        .as_deref()
+        .filter(|value| !value.is_empty() && !engine.independent)
+    {
         argv.push(format!("--fingerprint-webrtc-ip={exit_ip}"));
+    }
+    if engine.independent {
+        argv.extend([
+            "--uxr-synthetic-device-tests=true".to_string(),
+            "--fingerprint-hardware-concurrency=8".to_string(),
+            "--fingerprint-device-memory=8".to_string(),
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string(),
+        ]);
     }
     if engine.uses_native_identity() {
         return;
@@ -3594,7 +3715,14 @@ fn append_native_fingerprint_args(
     // Client-Hints label "Google Chrome". Passing the label leaves Chromium's
     // native full-version entries empty; the supported token versions both the
     // Chromium and Google Chrome entries coherently with the UA.
-    argv.push("--fingerprint-brand=Chrome".to_string());
+    argv.push(format!(
+        "--fingerprint-brand={}",
+        if engine.independent {
+            "Google Chrome"
+        } else {
+            "Chrome"
+        }
+    ));
     argv.push(format!(
         "--fingerprint-brand-version={full}",
         full = engine.full
@@ -4466,6 +4594,44 @@ mod tests {
         assert_eq!(verified.provenance, BrowserRuntimeProvenance::Verified);
         assert!(!verified.blocks_launch);
         assert!(verified.message.contains("上游源缓存"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn independent_runtime_requires_pinned_metadata_and_both_hashes() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("chromium-152.0.7977.82-notrace");
+        let browser = root.join("Chromium.app/Contents/MacOS/Chromium");
+        let framework = root.join("Chromium.app/Contents/Frameworks/Chromium Framework.framework/Versions/152.0.7977.82/Chromium Framework");
+        fs::create_dir_all(browser.parent().unwrap()).unwrap();
+        fs::create_dir_all(framework.parent().unwrap()).unwrap();
+        fs::write(&browser, b"independent fixture").unwrap();
+        fs::write(&framework, b"native fingerprint fixture").unwrap();
+        assert!(verify_independent_runtime(&browser).is_err());
+        let marker = root.join(".notrace-independent-engine.json");
+        let mut metadata = serde_json::json!({
+            "provider": "chromix", "version": "152.0.7977.82",
+            "archive_sha256": "8ceefefced9018dfe917650ce156bd1ffdaa9bc2bc6b89b70b6d021262166eb4",
+            "source_commit": "ca52ae0d01168a8bc118ccc28d484011a7eb0efb",
+            "binary_sha256": sha256_file(&browser).unwrap(),
+            "framework_sha256": sha256_file(&framework).unwrap(),
+        });
+        fs::write(&marker, serde_json::to_vec(&metadata).unwrap()).unwrap();
+        assert!(verify_independent_runtime(&browser).unwrap());
+        assert!(!is_keyed_browser_binary(&browser));
+        fs::write(&framework, b"changed framework").unwrap();
+        assert!(verify_independent_runtime(&browser).is_err());
+        fs::write(&framework, b"native fingerprint fixture").unwrap();
+        fs::write(&browser, b"changed launcher").unwrap();
+        assert!(verify_independent_runtime(&browser).is_err());
+        fs::write(&browser, b"independent fixture").unwrap();
+        metadata["unexpected"] = serde_json::json!(true);
+        fs::write(&marker, serde_json::to_vec(&metadata).unwrap()).unwrap();
+        assert!(verify_independent_runtime(&browser).is_err());
+        fs::remove_file(&marker).unwrap();
+        symlink(root.join("missing"), &marker).unwrap();
+        assert!(verify_independent_runtime(&browser).is_err());
     }
 
     #[cfg(unix)]
@@ -5424,12 +5590,55 @@ mod tests {
     }
 
     #[test]
+    fn independent_fingerprint_args_preserve_seeded_identity_without_vendor_flags() {
+        let engine = EngineVersion {
+            major: "152".into(),
+            full: "152.0.7977.82".into(),
+            distribution: "152.0.7977.82".into(),
+            independent: true,
+        };
+        let metadata = ProfileMetadata::new_for_test(1, "profile-id", "bucket-m3");
+        let identity = identity_contract_for(&metadata, &engine, "25.5.0");
+        assert!(!engine.uses_native_identity());
+        assert_eq!(identity.gpu_bucket, "bucket-m3");
+        let mut argv = Vec::new();
+        append_native_fingerprint_args(
+            &mut argv,
+            &GeoPlan {
+                exit_ip: Some("203.0.113.24".into()),
+                timezone: Some("Asia/Tokyo".into()),
+                ..GeoPlan::default()
+            },
+            Some("ja-JP"),
+            &engine,
+            &identity,
+        );
+        for required in [
+            "--uxr-synthetic-device-tests=true",
+            "--fingerprint-brand=Google Chrome",
+            "--fingerprint-hardware-concurrency=8",
+            "--fingerprint-device-memory=8",
+            "--fingerprint-brand-version=152.0.7977.82",
+            "--fingerprint-platform-version=15.5.0",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        ] {
+            assert!(argv.iter().any(|arg| arg == required), "missing {required}");
+        }
+        assert!(argv.iter().any(|arg| arg.contains("Apple M3")));
+        assert!(!argv
+            .iter()
+            .any(|arg| arg.starts_with("--fingerprint-webrtc-ip=")));
+        assert!(!argv.iter().any(|arg| arg == "--no-sandbox"));
+    }
+
+    #[test]
     fn modern_engine_keeps_native_identity_surfaces_authoritative() {
         let mut argv = Vec::new();
         let engine = EngineVersion {
             major: "150".to_string(),
             full: "150.0.7871.114".to_string(),
             distribution: "150.0.7871.114.4".to_string(),
+            independent: false,
         };
         let metadata = ProfileMetadata::new_for_test(1, "profile-id", "bucket-m3");
         let identity = identity_contract_for(&metadata, &engine, "25.5.0");
@@ -5469,6 +5678,7 @@ mod tests {
             major: "148".to_string(),
             full: "148.0.7778.215".to_string(),
             distribution: "148.0.7778.215.3".to_string(),
+            independent: false,
         };
         let regressed_148 = EngineVersion {
             distribution: "148.0.7778.215.2".to_string(),
@@ -6344,6 +6554,7 @@ mod tests {
             major: "150".to_string(),
             full: "150.0.7871.114".to_string(),
             distribution: "150.0.7871.114.4".to_string(),
+            independent: false,
         };
         let native = identity_contract_for(&metadata, &native_engine, "25.5.0");
         assert_eq!(native.template, IdentityTemplate::HostNative);

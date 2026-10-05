@@ -133,6 +133,25 @@ cloak auth refresh-all                 # 只检查到期窗口，不做无条件
 
 每个账号目录都包含 `.cloak-profile.json` 和两份私有备份副本；主文件或备份损坏时会自动用有效副本修复。永久环境编号在重命名后保持不变并显示于账号详情，但不会在 Dock 图标上显示数字角标。
 
+### 独立指纹内核与多会话（2026-10-05）
+
+本机可选择 BSD-3-Clause 开源的 [Chromix 152.0.7977.82](https://github.com/xiaozhou26/Chromix/releases/tag/v152.0.7977.82)，不使用 CloakBrowser 的许可或席位服务。这不是破解旧二进制，而是替换指纹内核；原 CloakBrowser 版本和许可证文件均保留。候选压缩包固定 SHA-256，安装后校验主程序及 Framework 哈希、版本、签名和 TCC 声明。
+
+```bash
+cd /Users/moonlitpoet/Tools/AI-tools/notrace-browser && bash packaging/install-independent-engine.sh
+cd /Users/moonlitpoet/Tools/AI-tools/notrace-browser && bash packaging/install-cloak-picker-app.sh
+cd /Users/moonlitpoet/Tools/AI-tools/notrace-browser && bash packaging/switch-independent-engine.sh activate
+```
+
+切换前须退出浏览器和 Picker。激活脚本会完整克隆并逐文件核对 `Accounts`，保存旧指针后原子切换；已激活时重复运行不会再切换。它保留账号 Seed 和存储，但更换指纹算法、GPU 模板和 Chromium 版本会改变部分网站可见指纹，不保证与旧内核字节级相同。正式启动仍走 LaunchServices；独立内核不读取/发送许可 key，不受单席位限制，也不关闭 Chromium sandbox。
+
+- 已接入原生 Seed / Canvas 指纹、按账号固定的 Apple GPU 模板、主线程与 Worker 时区、8 核 / 8 GiB 模板，以及与真实 152 版本一致的 UA / UA-CH。原生 UA-CH 保留，不传入会清空高熵提示的原始 `--user-agent`；该内核的品牌参数为 `Google Chrome`，不能沿用旧内核的 `Chrome` token。
+- WebRTC 使用 `disable_non_proxied_udp` 防止绕过代理，不声称支持旧内核的出口 IP 改写；依赖 UDP 的实时通话需站点支持 TCP/TURN。Audio 保持原生，两个 Seed 的 Audio hash 相同，与本机旧 151 基线一致。功能测试通过不等于所有网站永不要求挑战。
+- 选择独立内核后，原 CloakBrowser 定时更新器只验收并保留它，不会自动切回单席位内核。新 Chromix 版本须重新验收；154 macOS 产物未通过实际指纹参数测试，不能仅凭版本号升级。
+- 完整降级使用 `packaging/switch-independent-engine.sh restore <激活时输出的快照目录>`：恢复旧内核和切换前账号，切换后数据另存 `.noindex` 目录。不要仅切回旧内核再让旧版直接写已升级的 profile。
+
+验收：`node selftest/run-independent-multisession.mjs` 验证三会话正式启动、原生 Canvas 区分、存储隔离和重启稳定；`bash packaging/verify-challenge-contract.sh` 核对 Rust/Bash 参数与浏览器实际能力。
+
 ### 启动体验与版本回滚（新增）
 
 - **回收站可临时启动**：回收站账号可直接启动查看，关闭后仍保留在回收站；只有显式点击“恢复”才会重新变为活跃账号。

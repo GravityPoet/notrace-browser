@@ -43,18 +43,6 @@ COMPATIBILITY_AUDIT="$ROOT/packaging/audit-cloakbrowser-compatibility.mjs"
 CHANNEL="${CLOAK_BROWSER_CHANNEL:-stable}"
 LSREG="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
 
-# The official Pro binary consumes the key from its process environment.  Load
-# the local wrapper-managed key once so contract/live gates exercise the same
-# authenticated path as a real launch; the value is never logged or persisted by
-# this script.
-if [[ -z "${CLOAKBROWSER_LICENSE_KEY:-}" ]]; then
-  license_file="$CB/license.key"
-  if [[ -f "$license_file" && ! -L "$license_file" ]]; then
-    IFS= read -r CLOAKBROWSER_LICENSE_KEY < "$license_file" || true
-    export CLOAKBROWSER_LICENSE_KEY
-  fi
-fi
-
 mkdir -p "$CB"
 if [[ -L "$LOG" ]]; then
   printf 'error: refusing to append through a symlinked update log: %s\n' "$LOG" >&2
@@ -216,6 +204,24 @@ installed_runtime="$DIST_RUNTIME"
 installed_bin="$(binary_for_dir "$current_dir")"
 [[ -x "$installed_bin" ]] || die "current Chromium 不可执行：$installed_bin"
 log "current=$installed_name version=$installed_version tier=$installed_tier runtime=$installed_runtime channel=$CHANNEL wrapper=$WRAPPER_VERSION"
+
+if [[ -e "$current_dir/.notrace-independent-engine.json" ]]; then
+  unset CLOAKBROWSER_LICENSE_KEY
+  node "$ROOT/packaging/verify-independent-runtime.mjs" "$current_dir" >>"$LOG" 2>&1 \
+    || die "独立内核来源校验失败；current 保持不变"
+  log "当前为独立指纹内核；CloakBrowser 更新器保留该选择，不自动切回单会话内核"
+  exit 0
+fi
+
+# Only the official runtime's update path needs the wrapper-managed license.
+# Independent runtimes return above without reading or forwarding this secret.
+if [[ -z "${CLOAKBROWSER_LICENSE_KEY:-}" ]]; then
+  license_file="$CB/license.key"
+  if [[ -f "$license_file" && ! -L "$license_file" ]]; then
+    IFS= read -r CLOAKBROWSER_LICENSE_KEY < "$license_file" || true
+    export CLOAKBROWSER_LICENSE_KEY
+  fi
+fi
 
 # Picker statically links cloak-core. Check its freshness even on no-op runs, but
 # never let DRY_RUN rebuild it.

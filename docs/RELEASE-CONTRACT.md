@@ -16,7 +16,31 @@ rights beyond [LICENSE](../LICENSE).
 - A `-notrace` bundle is a machine-local TCC runtime copy. It must stay outside
   release artifacts and must not be represented as an upstream source cache.
 
-## Promotion contract
+## Independent local runtime
+
+The local ARM64 Chromix path is separate from CloakHQ's binary license and the
+official wrapper compatibility matrix. It uses BSD-3-Clause source patches at
+`ca52ae0d01168a8bc118ccc28d484011a7eb0efb`, release `152.0.7977.82`, and archive
+SHA-256 `8ceefefced9018dfe917650ce156bd1ffdaa9bc2bc6b89b70b6d021262166eb4`.
+Its upstream notices are retained beside the local bundle; no binary enters
+this repository or its release artifacts.
+
+`install-independent-engine.sh` stages, hashes and signs the runtime without
+changing `current`. A bounded, strict metadata marker records post-signing
+main/Framework hashes. The core rejects altered metadata or either changed
+binary. Promotion additionally requires the final Picker, a verified full
+profile snapshot, native fingerprint/UA-CH checks, three real simultaneous
+LaunchServices launches, isolated storage and restart stability. Native runtime
+checks retain sandboxing and page-spoof extensions stay off. Downgrade restores
+the saved profiles while preserving post-switch data separately.
+
+The official updater verifies and retains an independent current runtime; it
+does not contact the seat service or replace it with a vendor update. A higher
+Chromix version number is not sufficient evidence: the macOS 154 asset failed
+the actual fingerprint-flag probe. The independent path makes no unsupported
+WebRTC exit-IP or per-seed Audio claim.
+
+## Official CloakBrowser promotion contract
 
 An engine version may become `current` only when all of the following are true:
 

@@ -16,16 +16,6 @@ if [[ -z "$SHA_FILE" ]]; then
 fi
 ACCOUNT_NAME="${CLOAK_VERIFY_ACCOUNT:-challenge-smoke-9i@example.test}"
 
-# The official Pro binary reads its license from the process environment, while
-# the wrapper also supports ~/.cloakbrowser/license.key.  Keep the contract gate
-# aligned with the real launcher without ever printing the secret or writing it
-# into the repository.
-license_file="${CLOAKBROWSER_LICENSE_FILE:-${CLOAKBROWSER_CACHE_DIR:-$HOME/.cloakbrowser}/license.key}"
-if [[ -z "${CLOAKBROWSER_LICENSE_KEY:-}" && -f "$license_file" && ! -L "$license_file" ]]; then
-  IFS= read -r CLOAKBROWSER_LICENSE_KEY < "$license_file" || true
-  export CLOAKBROWSER_LICENSE_KEY
-fi
-
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
   exit 1
@@ -40,6 +30,18 @@ require_executable() {
 }
 
 require_executable "$BIN"
+bin_dir="$(cd "$(dirname "$BIN")" && pwd -P)"
+engine_dir="${bin_dir%/Chromium.app/Contents/MacOS}"
+if [[ -e "$engine_dir/.notrace-independent-engine.json" ]]; then
+  node "$ROOT/packaging/verify-independent-runtime.mjs" "$engine_dir"
+  unset CLOAKBROWSER_LICENSE_KEY CLOAKBROWSER_LICENSE_STATUS_FILE
+else
+  license_file="${CLOAKBROWSER_LICENSE_FILE:-${CLOAKBROWSER_CACHE_DIR:-$HOME/.cloakbrowser}/license.key}"
+  if [[ -z "${CLOAKBROWSER_LICENSE_KEY:-}" && -f "$license_file" && ! -L "$license_file" ]]; then
+    IFS= read -r CLOAKBROWSER_LICENSE_KEY < "$license_file" || true
+    export CLOAKBROWSER_LICENSE_KEY
+  fi
+fi
 
 if [[ -n "${CLOAK_BROWSER_EXPECTED_SHA256:-}" ]]; then
   expected_hash="$(printf '%s' "$CLOAK_BROWSER_EXPECTED_SHA256" | tr '[:upper:]' '[:lower:]')"
@@ -81,9 +83,10 @@ function assert(condition, message) {
 assert(argv.some((arg) => arg.startsWith("--user-data-dir=")), "missing --user-data-dir");
 assert(argv.some((arg) => arg.startsWith("--fingerprint=")), "missing --fingerprint");
 assert(argv.includes("--fingerprint-platform=macos"), "missing --fingerprint-platform=macos");
-const nativeIdentity = !argv.some((arg) => arg.startsWith("--user-agent="));
-fs.writeFileSync(process.argv[3], nativeIdentity ? "native\n" : "legacy\n");
-if (nativeIdentity) {
+const independent = argv.includes("--uxr-synthetic-device-tests=true");
+const nativeIdentity = !independent && !argv.some((arg) => arg.startsWith("--user-agent="));
+fs.writeFileSync(process.argv[3], independent ? "independent\n" : nativeIdentity ? "native\n" : "legacy\n");
+if (nativeIdentity || independent) {
   assert(!argv.some((arg) => arg.startsWith("--user-agent=")), "modern engine must keep native --user-agent");
 } else {
   assert(argv.some((arg) => arg.startsWith("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")), "legacy engine missing coherent macOS --user-agent");
@@ -99,7 +102,15 @@ assert(argv.some((arg) => arg.startsWith("--fingerprint-timezone=")), "missing -
 assert(argv.some((arg) => arg.startsWith("--lang=")), "missing --lang");
 assert(argv.some((arg) => arg.startsWith("--fingerprint-locale=")), "missing --fingerprint-locale");
 assert(argv.some((arg) => arg.startsWith("--accept-lang=")), "missing --accept-lang");
-assert(argv.some((arg) => arg.startsWith("--fingerprint-webrtc-ip=")), "missing --fingerprint-webrtc-ip");
+if (independent) {
+  assert(argv.includes("--fingerprint-hardware-concurrency=8"), "missing independent hardware profile");
+  assert(argv.includes("--fingerprint-device-memory=8"), "missing independent memory profile");
+  assert(argv.includes("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"), "missing independent WebRTC guard");
+  assert(!argv.some((arg) => arg.startsWith("--fingerprint-webrtc-ip=")), "unsupported independent WebRTC override");
+  assert(!argv.includes("--no-sandbox"), "independent runtime must retain Chromium sandbox");
+} else {
+  assert(argv.some((arg) => arg.startsWith("--fingerprint-webrtc-ip=")), "missing --fingerprint-webrtc-ip");
+}
 for (const prefix of [
   "--fingerprint-brand=",
   "--fingerprint-brand-version=",
@@ -133,7 +144,7 @@ if LC_ALL=C grep -aq -- "--disable-extensions-except=" "$tmpdir/bash-dry-run.txt
   fail "Bash dry-run blocks Web Store installs with --disable-extensions-except"
 fi
 identity_mode="$(awk 'NR == 1 { print $1 }' "$tmpdir/identity-mode")"
-if [[ "$identity_mode" == "native" ]]; then
+if [[ "$identity_mode" == "native" || "$identity_mode" == "independent" ]]; then
   if LC_ALL=C grep -aq -- "--user-agent=" "$tmpdir/bash-dry-run.txt"; then
     fail "Bash dry-run overrides modern engine user-agent"
   fi
@@ -150,7 +161,16 @@ if LC_ALL=C grep -aq -- "--enable-automation" "$tmpdir/bash-dry-run.txt"; then
 fi
 LC_ALL=C grep -aq -- "--disable-blink-features=AutomationControlled" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing AutomationControlled blink feature guard"
 LC_ALL=C grep -aq -- "--fingerprint-timezone=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --fingerprint-timezone"
-LC_ALL=C grep -aq -- "--fingerprint-webrtc-ip=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --fingerprint-webrtc-ip"
+if [[ "$identity_mode" == "independent" ]]; then
+  for flag in --uxr-synthetic-device-tests=true --fingerprint-hardware-concurrency=8 --fingerprint-device-memory=8 --force-webrtc-ip-handling-policy=disable_non_proxied_udp; do
+    LC_ALL=C grep -Fq -- "$flag" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing $flag"
+  done
+  if LC_ALL=C grep -aq -- "--fingerprint-webrtc-ip=" "$tmpdir/bash-dry-run.txt"; then
+    fail "Bash dry-run advertises unsupported independent WebRTC override"
+  fi
+else
+  LC_ALL=C grep -aq -- "--fingerprint-webrtc-ip=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --fingerprint-webrtc-ip"
+fi
 for identity_flag in \
   --fingerprint-brand= \
   --fingerprint-brand-version= \

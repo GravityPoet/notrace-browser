@@ -8,7 +8,7 @@ use cloak_core::{
     build_launch_plan, create_account_with_group as core_create_account_with_group,
     delete_account as core_delete_account,
     export_workspace_with_picker_state_and_cancellation as core_export_workspace,
-    import_workspace_with_cancellation as core_import_workspace,
+    import_workspace_with_cancellation as core_import_workspace, is_keyed_browser_binary,
     launch_account as core_launch_account, launch_chrome_web_store as core_launch_chrome_web_store,
     list_accounts as core_list_accounts, list_trashed_accounts as core_list_trashed_accounts,
     login_account_auth_with_progress as core_login_account_auth,
@@ -1212,9 +1212,13 @@ fn run_challenge_audit_blocking() -> Result<serde_json::Value, String> {
         .env("CLOAK_BROWSER_BIN", &browser)
         .env("CLOAK_BROWSER_EXPECTED_SHA256", &browser_sha256)
         .env("CLOAK_EXTRA_EXTENSIONS", "0");
-    let license_key = cloakbrowser_license_key(&config.cloakbrowser_root);
+    let license_key = is_keyed_browser_binary(&browser)
+        .then(|| cloakbrowser_license_key(&config.cloakbrowser_root))
+        .flatten();
     if let Some(key) = license_key.as_ref() {
         command.env("CLOAKBROWSER_LICENSE_KEY", key.as_str());
+    } else {
+        command.env_remove("CLOAKBROWSER_LICENSE_KEY");
     }
     let output = command
         .stdout(Stdio::piped())
