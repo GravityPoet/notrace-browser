@@ -296,6 +296,25 @@ describe("Cloak Picker dialog regressions", () => {
     expect(document.querySelector('[aria-label="账号工作区"]')).not.toBeNull();
   });
 
+  it("restores from a visible button after temporary launch in both account views", async () => {
+    await click(buttonWithText("回收站"));
+    await click(accountRow("demo-gamma"));
+    const header = document.querySelector('.workbenchAccountHeader')!;
+    for (const view of ["授权与续期", "账号资料"]) {
+      await click(buttonWithText(view));
+      const actions = header.querySelector('.workbenchAccountActions')!;
+      expect(Array.from(actions.querySelectorAll('button'), button => button.textContent?.trim())).toEqual(["临时启动", "恢复"]);
+      expect(buttonWithText("恢复", actions).closest('details')).toBeNull();
+    }
+    await click(buttonWithText("恢复", header));
+    await settle(220);
+    expect(mockCommandCountForTest("restore_account")).toBe(1);
+    expect(document.querySelector('.workbenchAccountHeader h1')?.textContent).toBe("demo-gamma");
+    expect(document.querySelector('#cloak-account-active-tab')?.getAttribute('aria-selected')).toBe("true");
+    expect(Array.from(header.querySelectorAll('.workbenchAccountActions button'), button => button.textContent?.trim())).toEqual(["启动"]);
+    expect(buttonWithText("账号资料").getAttribute('aria-selected')).toBe("true");
+  });
+
   it("restores a trash account from the primary context menu without opening account details", async () => {
     await click(buttonWithText("授权与续期"));
     await click(buttonWithText("回收站"));

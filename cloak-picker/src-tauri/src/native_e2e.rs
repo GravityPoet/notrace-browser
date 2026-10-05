@@ -227,9 +227,18 @@ const NATIVE_E2E_DRIVER: &str = r#"
       }, '右上角直接启动入口');
       const bounds = button.getBoundingClientRect();
       const headerBounds = header.getBoundingClientRect();
+      const actionBounds = header.querySelector('.workbenchAccountActions').getBoundingClientRect();
       const hit = document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-      if (bounds.right > headerBounds.right || headerBounds.right - bounds.right > 30 || bounds.top < headerBounds.top || bounds.bottom > headerBounds.bottom || !button.contains(hit)) {
+      if (bounds.right > headerBounds.right || headerBounds.right - actionBounds.right > 30 || bounds.top < headerBounds.top || bounds.bottom > headerBounds.bottom || !button.contains(hit)) {
         throw new Error('右上角启动按钮被裁切、折叠或遮挡');
+      }
+      if (temporary) {
+        const restore = Array.from(header.querySelectorAll('.workbenchAccountActions button')).find(control => control.textContent.trim() === '恢复');
+        if (!restore || restore.disabled || restore.closest('details')) throw new Error('临时启动旁没有可见的恢复按钮');
+        const restoreBounds = restore.getBoundingClientRect();
+        if (restoreBounds.left < bounds.right || restoreBounds.right > headerBounds.right) throw new Error('恢复按钮没有位于临时启动的右边');
+        const restoreHit = document.elementFromPoint(restoreBounds.x + restoreBounds.width / 2, restoreBounds.y + restoreBounds.height / 2);
+        if (!restore.contains(restoreHit)) throw new Error('恢复按钮被其他元素遮挡');
       }
       button.click();
       await waitFor(() => header.querySelector('.launchStatus')?.textContent.trim() === '启动失败，可重试', '真实启动命令反馈');
