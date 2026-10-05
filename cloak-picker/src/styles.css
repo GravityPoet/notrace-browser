@@ -1547,7 +1547,9 @@ summary:focus-visible {
 .workbenchAccountHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 16px 18px 12px; min-width: 0; }
 .workbenchAccountHeader .accountNameHeading { font-size: 19px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
 .workbenchAccountHeader .accountNameControl { width: fit-content; }
-.workbenchAccountHeader .launchButton { flex: 0 0 auto; margin-top: 8px; white-space: nowrap; }
+.workbenchAccountActions { display: flex; align-items: center; flex: 0 0 auto; gap: 8px; margin-top: 8px; }
+.workbenchAccountActions > button { white-space: nowrap; }
+.workbenchAccountHeader .launchButton { flex: 0 0 auto; white-space: nowrap; }
 .workbenchAccountContext { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .brokerPanelWorkbench > .rightPaneTabs { flex: 0 0 auto; justify-content: flex-start; width: auto; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: 0 18px; background: var(--panel); }
 .brokerPanelWorkbench > .rightPaneTabs .rightPaneTab { min-height: 40px; border-radius: 0; border-bottom: 2px solid transparent; font-size: 12px; padding: 0 14px; }

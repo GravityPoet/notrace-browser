@@ -3353,7 +3353,10 @@ export default function App() {
                       {launchStatusIndicator}
                       {webStoreStatusLabel && <span className="webStoreStatus">{webStoreStatusLabel}</span>}
                     </div>
-                    {selectedLaunchButton}
+                    <div className="workbenchAccountActions">
+                      {selectedLaunchButton}
+                      {selected?.trashed && <button className="secondaryButton" type="button" disabled={busy || brokerBusy} title="恢复到活跃列表，保留浏览器环境" onClick={() => void restoreAccount(selected)}><ArchiveRestore size={15} />恢复</button>}
+                    </div>
                   </header>
                   <div className="rightPaneTabs" role="tablist" aria-label="当前账号工作区">
                     {([["broker", "授权与续期"], ["account", "账号资料"]] as const).map(([value, label]) => (
