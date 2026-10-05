@@ -1581,14 +1581,14 @@ summary:focus-visible {
 .accountAuthorization { justify-self: start; border-radius: 4px; padding: 2px 5px; font-size: 10px; color: var(--muted); background: rgba(0, 0, 0, 0.04); line-height: 1.3; }
 .accountAuthorization-authorized { color: #14723d; background: rgba(26, 143, 75, 0.08); }
 .accountAuthorization-reauth_required { color: var(--danger); background: var(--danger-soft); }
-.accountMain { gap: 7px; }
-.accountTitle { flex-wrap: wrap; justify-content: flex-start; gap: 5px 6px; }
-.accountTitle strong { flex-basis: calc(100% - 36px); white-space: normal; overflow-wrap: anywhere; font-size: 12px; line-height: 1.4; }
-.accountTitle .accountMark, .accountTitle .accountLocationTag, .accountTitle code { font-size: 10px; }
-.accountTitle code { color: var(--muted); background: transparent; border: 0; }
+.accountMain { gap: 5px; }
+.accountTitle { justify-content: flex-start; gap: 6px; }
+.accountTitle strong { flex: 1 1 0; white-space: normal; overflow-wrap: anywhere; font-size: 12px; line-height: 1.4; }
+.accountRowMeta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 7px; min-width: 0; margin-left: 24px; font-size: 10px; }
+.accountRowMeta code { margin-left: auto; color: var(--muted); font: inherit; white-space: nowrap; }
 .accountRow { padding-block: 10px; }
-.accountRow .accountAuthorization { margin-left: 24px; }
-.accountRow.chronological .accountAuthorization, .accountRow.searchResult .accountAuthorization { margin-left: 0; }
+.accountRow.chronological .accountRowMeta, .accountRow.searchResult .accountRowMeta { margin-left: 0; }
+.accountRow.searchResult .accountRowMeta code { display: none; }
 
 @container (max-width: 570px) {
   .workbenchAuthorizationFilters { align-items: flex-start; flex-direction: column; gap: 6px; }

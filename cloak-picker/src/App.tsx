@@ -4107,6 +4107,12 @@ function AccountGroupSection({
                           <MessageSquareText aria-hidden="true" size={13} />
                         </span>
                       ) : null}
+                    </span>
+                    <span className="accountRowMeta">
+                    <span className={`accountAuthorization accountAuthorization-${authorizationStates.get(account.profile_id) ?? "unknown"}`}>
+                      {authorizationStates.get(account.profile_id) === "authorized" ? "已授权" : authorizationStates.get(account.profile_id) === "reauth_required" ? "需重新授权" : authorizationStates.get(account.profile_id) === "never_authorized" ? "未授权" : "授权待确认"}
+                      {account.trashed && !searching && !chronological ? " · 回收站" : ""}
+                    </span>
                       {searching || chronological ? (
                         <span
                           className={`accountLocationTag ${account.trashed ? "trashed" : "active"}`}
@@ -4134,10 +4140,7 @@ function AccountGroupSection({
                         {formatCreatedDate(account.trashed ? account.deleted_at ?? 0 : account.created_at)}
                       </code>
                     </span>
-                    <span className={`accountAuthorization accountAuthorization-${authorizationStates.get(account.profile_id) ?? "unknown"}`}>
-                      {authorizationStates.get(account.profile_id) === "authorized" ? "已授权" : authorizationStates.get(account.profile_id) === "reauth_required" ? "需重新授权" : authorizationStates.get(account.profile_id) === "never_authorized" ? "未授权" : "授权待确认"}
-                      {account.trashed && !searching && !chronological ? " · 回收站" : ""}
-                    </span>
+
                   </span>
                 </button>
                 {showPlaceholderAfter ? <AccountDropPlaceholder /> : null}
