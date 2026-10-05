@@ -562,7 +562,6 @@ export default function App() {
   const [loadError, setLoadError] = useState<string>("");
   const [plan, setPlan] = useState<LaunchPlan | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
-  const [manageMenuOpen, setManageMenuOpen] = useState(false);
   const [bulkSelectionMode, setBulkSelectionMode] = useState(false);
   const [bulkSelectedNames, setBulkSelectedNames] = useState<string[]>([]);
   const [bulkActionMenuOpen, setBulkActionMenuOpen] = useState(false);
@@ -594,7 +593,6 @@ export default function App() {
   const accountListRef = useRef<HTMLDivElement | null>(null);
   const resizingPaneRef = useRef(false);
   const dialogTriggerRef = useRef<HTMLElement | null>(null);
-  const manageButtonRef = useRef<HTMLButtonElement | null>(null);
   const bulkActionButtonRef = useRef<HTMLButtonElement | null>(null);
   const markSaveInFlightRef = useRef(false);
   const noteSaveInFlightRef = useRef(false);
@@ -888,7 +886,6 @@ export default function App() {
       setBulkStatus(`批量操作范围：${selected?.trashed ? "回收站" : "活跃"}账号`);
     }
     setAccountSearch("");
-    setManageMenuOpen(false);
     setGroupContextMenu(null);
     setAccountContextMenu(null);
     setBulkActionMenuOpen(false);
@@ -1214,12 +1211,11 @@ export default function App() {
   }, [webStoreStatus]);
 
   useEffect(() => {
-    if (!groupContextMenu && !accountContextMenu && !manageMenuOpen && !bulkActionMenuOpen) return;
+    if (!groupContextMenu && !accountContextMenu && !bulkActionMenuOpen) return;
     const close = () => {
       setGroupContextMenu(null);
       setAccountContextMenu(null);
-      setManageMenuOpen(false);
-      setBulkActionMenuOpen(false);
+        setBulkActionMenuOpen(false);
     };
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") close();
@@ -1232,7 +1228,7 @@ export default function App() {
       window.removeEventListener("contextmenu", close);
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [accountContextMenu, bulkActionMenuOpen, groupContextMenu, manageMenuOpen]);
+  }, [accountContextMenu, bulkActionMenuOpen, groupContextMenu]);
 
   useEffect(() => {
     if (bulkSelectionMode || !selected) {
@@ -1471,17 +1467,15 @@ export default function App() {
   }
 
   function openManageDialog(section: "groups" | "marks", trigger?: HTMLElement | null) {
-    setManageMenuOpen(false);
     setGroupContextMenu(null);
     setAccountContextMenu(null);
-    openDialog({ kind: "manage", section }, trigger ?? manageButtonRef.current);
+    openDialog({ kind: "manage", section }, trigger);
   }
 
   function openWorkspaceDialog(trigger?: HTMLElement | null) {
-    setManageMenuOpen(false);
     setGroupContextMenu(null);
     setAccountContextMenu(null);
-    openDialog({ kind: "workspace" }, trigger ?? manageButtonRef.current);
+    openDialog({ kind: "workspace" }, trigger);
   }
 
   function defaultCreateGroupValue() {
@@ -1944,7 +1938,7 @@ export default function App() {
       event.clientX,
       event.clientY,
       accountContextMenuWidth,
-      accountContextMenuHeight(groupOptions.length, account.marked),
+      accountContextMenuHeight(account.marked, account.trashed),
     );
     setGroupContextMenu(null);
     setAccountSearch("");
@@ -2995,65 +2989,6 @@ export default function App() {
               <IconButton label="重新读取账号列表" disabled={busy} onClick={() => void run(() => refresh())}>
                 <RefreshCw aria-hidden="true" className={busy ? "spin" : undefined} size={13} />
               </IconButton>
-              <div className="manageMenuWrap sidebarManageMenuWrap">
-                <button
-                  aria-expanded={manageMenuOpen}
-                  aria-haspopup="menu"
-                  className={`sidebarManageButton manageButton ${manageMenuOpen ? "active" : ""}`}
-                  disabled={busy || bulkSelectionMode}
-                  ref={manageButtonRef}
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setGroupContextMenu(null);
-                    setAccountContextMenu(null);
-                    setManageMenuOpen((current) => !current);
-                  }}
-                >
-                  <Settings2 aria-hidden="true" size={13} />
-                  管理
-                  <ChevronDown aria-hidden="true" className="manageChevron" size={10} />
-                </button>
-                {manageMenuOpen ? (
-                  <div
-                    aria-label="管理选项"
-                    className="contextMenu manageMenu"
-                    role="menu"
-                    onClick={(event) => event.stopPropagation()}
-                    onContextMenu={(event) => event.preventDefault()}
-                  >
-                    <button
-                      autoFocus
-                      className="contextMenuItem"
-                      role="menuitem"
-                      type="button"
-                      onClick={() => openManageDialog("groups", manageButtonRef.current)}
-                    >
-                      <Folder aria-hidden="true" size={14} />
-                      <span className="contextMenuItemLabel">管理分组</span>
-                    </button>
-                    <button
-                      className="contextMenuItem"
-                      role="menuitem"
-                      type="button"
-                      onClick={() => openManageDialog("marks", manageButtonRef.current)}
-                    >
-                      <Tags aria-hidden="true" size={14} />
-                      <span className="contextMenuItemLabel">管理标签</span>
-                    </button>
-                    <div className="contextMenuDivider" />
-                    <button
-                      className="contextMenuItem"
-                      role="menuitem"
-                      type="button"
-                      onClick={() => openWorkspaceDialog(manageButtonRef.current)}
-                    >
-                      <ArchiveRestore aria-hidden="true" size={14} />
-                      <span className="contextMenuItemLabel">工作区备份</span>
-                    </button>
-                  </div>
-                ) : null}
-              </div>
             </div>
           </div>
           <div className="viewSwitch" role="tablist" aria-label="账号视图">
@@ -3178,8 +3113,7 @@ export default function App() {
                     type="button"
                     onClick={(event) => {
                       event.stopPropagation();
-                      setManageMenuOpen(false);
-                      setGroupContextMenu(null);
+                                        setGroupContextMenu(null);
                       setAccountContextMenu(null);
                       setBulkActionMenuOpen((current) => !current);
                     }}
@@ -3383,6 +3317,7 @@ export default function App() {
             call={call}
             embedded
             selectedProfileId={bulkSelectionMode ? "" : selected?.profile_id ?? ""}
+            selectedAccount={selected ? { name: selected.name, trashed: selected.trashed } : undefined}
             accountVisible={!bulkSelectionMode && rightPaneMode === "broker"}
             onOverviewChange={setBrokerOverview}
             onBusyChange={setBrokerBusy}
@@ -3436,8 +3371,8 @@ export default function App() {
             )}
           >
           {bulkSelectionMode ? (
-            <>
-              <header className="detailHeader">
+            <section className="bulkWorkspace" aria-label="批量账号工作区">
+              <header className="detailHeader bulkWorkspaceHeader">
                 <div className="titleBlock">
                   <span className="eyebrow">批量操作</span>
                   <h1>
@@ -3449,62 +3384,46 @@ export default function App() {
                 <div className="detailHeaderControl">
                   <button className="secondaryButton" disabled={busy} type="button" onClick={exitBulkSelection}>
                     <Check size={16} />
-                    完成
+                    退出多选
                   </button>
                 </div>
               </header>
 
-              <div className="detailScroll">
-                <div className="emptyState detailEmpty">
-                  <ListChecks size={28} />
-                  <strong>
-                    {bulkSelectedAccounts.length > 0
-                      ? `已选中 ${bulkSelectedAccounts.length} 个账号`
-                      : "请在左侧勾选账号"}
-                  </strong>
-                  <p className="emptyStateDetail">
-                    {accountView === "active"
-                      ? "下方按钮只会操作已勾选的账号；移入回收站前会再次确认。"
-                      : "下方按钮只会操作已勾选的回收站账号；彻底删除前会再次确认。"}
-                  </p>
-                </div>
-              </div>
-
-              <footer className="detailFooter">
-                <div aria-label="所选账号的批量操作" className="actionBar">
+              <section className="detailFooter bulkWorkspaceControls">
+                <div aria-label="所选账号的批量操作" className="bulkWorkspaceActions">
                   {accountView === "active" ? (
                     <>
-                      <ActionButton
+                      <BulkActionCard
                         disabled={busy || bulkSelectedAccounts.length === 0}
-                        icon={<Folder size={15} />}
-                        label="移动分组"
+                        icon={<Folder size={20} />}
+                        label="移动分组" description="将所选账号移动到同一个分组"
                         onClick={(event) => openDialog(
                           { kind: "bulkGroup", accounts: bulkSelectedAccounts, value: "" },
                           event.currentTarget,
                         )}
                       />
-                      <ActionButton
+                      <BulkActionCard
                         disabled={busy || bulkSelectedAccounts.length === 0}
-                        icon={<Tag size={15} />}
-                        label="设置标记"
+                        icon={<Tag size={20} />}
+                        label="设置标记" description="为所选账号统一添加标记"
                         onClick={(event) => openDialog(
                           { kind: "bulkMark", accounts: bulkSelectedAccounts, value: "", color: "green" },
                           event.currentTarget,
                         )}
                       />
                       {bulkSelectedAccounts.some((account) => account.marked) ? (
-                        <ActionButton
+                        <BulkActionCard
                           disabled={busy}
-                          icon={<X size={15} />}
-                          label="取消已有标记"
+                          icon={<X size={20} />}
+                          label="取消已有标记" description="清除所选账号已保存的标记"
                           onClick={() => void clearBulkMarks(bulkSelectedAccounts)}
                         />
                       ) : null}
-                      <ActionButton
+                      <BulkActionCard
                         danger
                         disabled={busy || bulkSelectedAccounts.length === 0}
-                        icon={<Trash2 size={15} />}
-                        label="移入回收站"
+                        icon={<Trash2 size={20} />}
+                        label="移入回收站" description="保留浏览器环境，可随时恢复"
                         onClick={(event) => openDialog(
                           { kind: "bulkDelete", accounts: bulkSelectedAccounts },
                           event.currentTarget,
@@ -3513,17 +3432,17 @@ export default function App() {
                     </>
                   ) : (
                     <>
-                      <ActionButton
+                      <BulkActionCard
                         disabled={busy || bulkSelectedAccounts.length === 0}
-                        icon={<ArchiveRestore size={15} />}
-                        label="恢复账号"
+                        icon={<ArchiveRestore size={20} />}
+                        primary label="恢复账号" description="移回活跃列表，保留浏览器环境"
                         onClick={() => void restoreBulkAccounts(bulkSelectedAccounts)}
                       />
-                      <ActionButton
+                      <BulkActionCard
                         danger
                         disabled={busy || bulkSelectedAccounts.length === 0}
-                        icon={<Trash2 size={15} />}
-                        label="彻底删除"
+                        icon={<Trash2 size={20} />}
+                        label="彻底删除" description="删除所选浏览器环境，需要确认"
                         onClick={(event) => openDialog(
                           { kind: "bulkPermanentDelete", accounts: bulkSelectedAccounts },
                           event.currentTarget,
@@ -3532,8 +3451,12 @@ export default function App() {
                     </>
                   )}
                 </div>
-              </footer>
-            </>
+              </section>
+              <section className="bulkSelectedPreview" aria-label="所选账号">
+                <div className="bulkSelectedPreviewHeader"><strong>所选账号</strong><span>{accountView === "trash" ? "回收站" : "活跃列表"}</span></div>
+                {bulkSelectedAccounts.length ? <ul>{visibleAccounts.filter(account => bulkSelectedNameSet.has(account.name)).map(account => <li key={account.profile_id}><span>{account.name}</span><small>{accountGroupLabel(account)}</small></li>)}</ul> : <p>在左侧勾选账号后，上方操作会应用到这些账号。</p>}
+              </section>
+            </section>
           ) : (
             <div id="workbench-details" role="tabpanel" aria-labelledby="workbench-account-tab" hidden={rightPaneMode !== "account"}>
             {selected ? <>
@@ -3551,7 +3474,6 @@ export default function App() {
 
                 {selected.trashed ? (
                   <div className="detailInlineActions" aria-label="回收站账号操作">
-                    <ActionButton icon={<ArchiveRestore size={15} />} label="恢复" onClick={() => void restoreAccount(selected)} disabled={busy} />
                     <ActionButton danger icon={<Trash2 size={15} />} label="彻底删除" disabled={busy} onClick={event => openDialog({ kind: "permanentDelete", account: selected }, event.currentTarget)} />
                   </div>
                 ) : (
@@ -3779,111 +3701,21 @@ export default function App() {
       ) : null}
 
       {accountContextMenu ? (
-        <div
-          className="contextMenu accountContextMenu"
-          style={{ left: accountContextMenu.x, top: accountContextMenu.y }}
-          role="menu"
-          aria-label={`${accountContextMenu.account.name} 账号菜单`}
-          onClick={(event) => event.stopPropagation()}
-          onContextMenu={(event) => event.preventDefault()}
-        >
-          <div className="contextMenuTitle">移动到分组</div>
-          {groupOptions.map((option) => {
-            const activeValue = accountContextMenu.account.group?.trim() || "";
-            const isActive = option.value === activeValue || (!option.value && !activeValue);
-            return (
-              <button
-                className={`contextMenuItem ${isActive ? "active" : ""}`}
-                disabled={busy}
-                type="button"
-                key={option.label}
-                role="menuitem"
-                aria-pressed={isActive}
-                onClick={() => {
-                  if (isActive) {
-                    setAccountContextMenu(null);
-                    return;
-                  }
-                  void moveAccountFromContextMenu(accountContextMenu.account, option.value);
-                }}
-              >
-                <Folder size={14} />
-                <span className="contextMenuItemLabel">{option.label}</span>
-                {isActive ? <Check className="contextMenuCheck" size={14} /> : null}
-              </button>
-            );
-          })}
-          <div className="contextMenuDivider" />
-          <div className="contextMenuTitle">账号操作</div>
-          <button
-            className="contextMenuItem"
-            disabled={busy}
-            type="button"
-            role="menuitem"
-            onClick={() =>
-              noteAccountFromContextMenu(accountContextMenu.account, accountContextMenu.returnFocusElement)
-            }
-          >
-            <MessageSquareText aria-hidden="true" size={14} />
-            <span className="contextMenuItemLabel">{accountContextMenu.account.note ? "编辑备注" : "写备注"}</span>
-          </button>
-          <button
-            className="contextMenuItem"
-            disabled={busy}
-            type="button"
-            role="menuitem"
-            onClick={() =>
-              markAccountFromContextMenu(accountContextMenu.account, accountContextMenu.returnFocusElement)
-            }
-          >
-            <span
-              className="contextMarkDot"
-              style={markColorStyle(accountContextMenu.account.mark_color)}
-              aria-hidden="true"
-            />
-            <span className="contextMenuItemLabel">{accountContextMenu.account.marked ? "编辑标记" : "标记"}</span>
-          </button>
-          {accountContextMenu.account.marked ? (
-            <button
-              className="contextMenuItem"
-              disabled={busy}
-              type="button"
-              role="menuitem"
-              onClick={() => void clearAccountMarkFromContextMenu(accountContextMenu.account)}
-            >
-              <span
-                className="contextMarkDot clear"
-                style={markColorStyle(accountContextMenu.account.mark_color)}
-                aria-hidden="true"
-              />
-              <span className="contextMenuItemLabel">取消标记</span>
-            </button>
-          ) : null}
-          <button
-            className="contextMenuItem"
-            disabled={busy}
-            type="button"
-            role="menuitem"
-            onClick={() =>
-              renameAccountFromContextMenu(accountContextMenu.account, accountContextMenu.returnFocusElement)
-            }
-          >
-            <Pencil size={14} />
-            <span className="contextMenuItemLabel">重命名</span>
-          </button>
-          <button
-            className="contextMenuItem danger"
-            disabled={busy}
-            type="button"
-            role="menuitem"
-            onClick={() =>
-              deleteAccountFromContextMenu(accountContextMenu.account, accountContextMenu.returnFocusElement)
-            }
-          >
-            <Trash2 size={14} />
-            <span className="contextMenuItemLabel">{accountContextMenu.account.trashed ? "彻底删除" : "删除"}</span>
-          </button>
-        </div>
+        <AccountContextMenu
+          key={`${accountContextMenu.account.profile_id}:${accountContextMenu.x}:${accountContextMenu.y}`}
+          menu={accountContextMenu}
+          groups={groupOptions}
+          busy={busy}
+          onClose={() => setAccountContextMenu(null)}
+          onMove={value => void moveAccountFromContextMenu(accountContextMenu.account, value)}
+          onRestore={() => { setAccountContextMenu(null); void restoreAccount(accountContextMenu.account); }}
+          onNote={() => noteAccountFromContextMenu(accountContextMenu.account, accountContextMenu.returnFocusElement)}
+          onMark={() => markAccountFromContextMenu(accountContextMenu.account, accountContextMenu.returnFocusElement)}
+          onClearMark={() => void clearAccountMarkFromContextMenu(accountContextMenu.account)}
+          onRename={() => renameAccountFromContextMenu(accountContextMenu.account, accountContextMenu.returnFocusElement)}
+          onTrash={() => deleteAccountFromContextMenu(accountContextMenu.account, accountContextMenu.returnFocusElement)}
+          onPermanentDelete={() => { openDialog({ kind: "permanentDelete", account: accountContextMenu.account }, accountContextMenu.returnFocusElement); setAccountContextMenu(null); }}
+        />
       ) : null}
 
       {/* A stale list looks exactly like a current one, so this stays until the
@@ -3961,6 +3793,93 @@ export default function App() {
       ) : null}
     </main>
   );
+}
+
+function AccountContextMenu({ menu, groups, busy, onClose, onMove, onRestore, onNote, onMark, onClearMark, onRename, onTrash, onPermanentDelete }: {
+  menu: AccountContextMenuState; groups: GroupOption[]; busy: boolean;
+  onClose: () => void; onMove: (value: string) => void; onRestore: () => void;
+  onNote: () => void; onMark: () => void; onClearMark: () => void;
+  onRename: () => void; onTrash: () => void; onPermanentDelete: () => void;
+}) {
+  const [submenu, setSubmenu] = useState<{ x: number; y: number; side: "left" | "right" } | null>(null);
+  const trigger = useRef<HTMLButtonElement | null>(null);
+  const closeTimer = useRef<number | null>(null);
+  function keepSubmenu() {
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  }
+  useEffect(() => () => {
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+  }, []);
+  function closeSubmenuLater() {
+    keepSubmenu();
+    closeTimer.current = window.setTimeout(() => setSubmenu(null), 180);
+  }
+  function openSubmenu(focus = false) {
+    if (!trigger.current || busy) return;
+    keepSubmenu();
+    const parent = trigger.current.closest(".contextMenu")!.getBoundingClientRect();
+    const row = trigger.current.getBoundingClientRect();
+    const width = 220;
+    const height = Math.min(groups.length * 30 + 12, window.innerHeight - 16);
+    const side = parent.right + width + 4 <= window.innerWidth - contextMenuViewportPadding ? "right" : "left";
+    const position = placeContextMenu(side === "right" ? parent.right + 4 : parent.left - width - 4, row.top - 4, width, height);
+    setSubmenu({ ...position, side });
+    if (focus) window.requestAnimationFrame(() => document.querySelector<HTMLButtonElement>("#account-group-submenu button:not(:disabled)")?.focus());
+  }
+  function closeAndFocus() {
+    onClose();
+    window.requestAnimationFrame(() => {
+      const target = menu.returnFocusElement.isConnected ? menu.returnFocusElement : document.querySelector<HTMLElement>(".accountRow.selected");
+      target?.focus();
+    });
+  }
+  function navigate(event: KeyboardEvent<HTMLDivElement>, nested = false) {
+    if (event.key === "Escape" || (nested && event.key === "ArrowLeft")) {
+      event.preventDefault(); event.stopPropagation();
+      if (nested) { keepSubmenu(); setSubmenu(null); trigger.current?.focus(); }
+      else closeAndFocus();
+      return;
+    }
+    if (event.key === "ArrowRight" && document.activeElement === trigger.current) {
+      event.preventDefault(); openSubmenu(true); return;
+    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+    if (!items.length) return;
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    const index = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (current + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length;
+    items[index]?.focus();
+  }
+  const account = menu.account;
+  const activeGroup = account.group?.trim() || "";
+  return <>
+    <div className="contextMenu accountContextMenu" role="menu" aria-label={`${account.name} 账号菜单`}
+      style={{ left: menu.x, top: menu.y }} onClick={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}
+      onKeyDown={event => navigate(event)} onMouseLeave={closeSubmenuLater}
+      onMouseOver={event => { const button = (event.target as HTMLElement).closest("button"); if (button && button !== trigger.current) setSubmenu(null); }}>
+      {account.trashed && <><button autoFocus type="button" role="menuitem" className="contextMenuItem" disabled={busy} onClick={onRestore}><ArchiveRestore size={14} /><span className="contextMenuItemLabel">恢复</span></button><div className="contextMenuDivider" /></>}
+      <button ref={trigger} autoFocus={!account.trashed} type="button" role="menuitem" className={`contextMenuItem ${submenu ? "active" : ""}`} disabled={busy}
+        aria-haspopup="menu" aria-expanded={Boolean(submenu)} aria-controls="account-group-submenu" onMouseEnter={() => openSubmenu()} onClick={() => openSubmenu(true)}>
+        <Folder size={14} /><span className="contextMenuItemLabel">移动分组</span><ChevronRight size={13} />
+      </button>
+      <div className="contextMenuDivider" />
+      <button type="button" role="menuitem" className="contextMenuItem" disabled={busy} onClick={onNote}><MessageSquareText size={14} /><span className="contextMenuItemLabel">{account.note ? "编辑备注" : "写备注"}</span></button>
+      <button type="button" role="menuitem" className="contextMenuItem" disabled={busy} onClick={onMark}><span className="contextMarkDot" style={markColorStyle(account.mark_color)} /><span className="contextMenuItemLabel">{account.marked ? "编辑标记" : "标记"}</span></button>
+      {account.marked && <button type="button" role="menuitem" className="contextMenuItem" disabled={busy} onClick={onClearMark}><span className="contextMarkDot clear" style={markColorStyle(account.mark_color)} /><span className="contextMenuItemLabel">取消标记</span></button>}
+      <button type="button" role="menuitem" className="contextMenuItem" disabled={busy} onClick={onRename}><Pencil size={14} /><span className="contextMenuItemLabel">重命名</span></button>
+      <div className="contextMenuDivider" />
+      {!account.trashed && <button type="button" role="menuitem" className="contextMenuItem danger" disabled={busy} onClick={onTrash}><Trash2 size={14} /><span className="contextMenuItemLabel">移入回收站</span></button>}
+      <button type="button" role="menuitem" className="contextMenuItem danger" disabled={busy} onClick={onPermanentDelete}><Trash2 size={14} /><span className="contextMenuItemLabel">彻底删除</span></button>
+    </div>
+    {submenu && <div id="account-group-submenu" className="contextMenu accountGroupSubmenu" role="menu" aria-label="选择目标分组" data-side={submenu.side}
+      style={{ left: submenu.x, top: submenu.y }} onMouseEnter={keepSubmenu} onMouseLeave={closeSubmenuLater}
+      onKeyDown={event => navigate(event, true)} onClick={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}>
+      {groups.map(group => <button key={group.value} type="button" role="menuitem" className={`contextMenuItem ${group.value === activeGroup ? "active" : ""}`} disabled={busy} aria-pressed={group.value === activeGroup} title={group.label}
+        onClick={() => group.value === activeGroup ? onClose() : onMove(group.value)}><Folder size={14} /><span className="contextMenuItemLabel">{group.label}</span>{group.value === activeGroup && <Check size={14} />}</button>)}
+    </div>}
+  </>;
 }
 
 function AccountDropPlaceholder() {
@@ -5957,6 +5876,15 @@ function IconButton({
   );
 }
 
+function BulkActionCard({ icon, label, description, disabled, danger, primary, onClick }: {
+  icon: ReactNode; label: string; description: string; disabled?: boolean; danger?: boolean; primary?: boolean;
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void;
+}) {
+  return <button className={`bulkActionButton ${danger ? "danger" : primary ? "primary" : ""}`} type="button" aria-label={label} disabled={disabled} onClick={onClick}>
+    <span className="bulkActionIcon" aria-hidden="true">{icon}</span><span className="bulkActionText"><strong>{label}</strong><span className="bulkActionDescription" aria-hidden="true">{description}</span></span><ChevronRight size={16} aria-hidden="true" />
+  </button>;
+}
+
 function ActionButton({
   icon,
   label,
@@ -6467,8 +6395,8 @@ function clampNumber(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
-function accountContextMenuHeight(optionCount: number, marked: boolean) {
-  return Math.min(accountContextMenuMaxHeight, 70 + optionCount * 32 + 132 + (marked ? 32 : 0));
+function accountContextMenuHeight(marked: boolean, trashed: boolean) {
+  return Math.min(accountContextMenuMaxHeight, 218 + (marked ? 30 : 0) + (trashed ? 9 : 0));
 }
 
 function placeContextMenu(x: number, y: number, width: number, height: number) {

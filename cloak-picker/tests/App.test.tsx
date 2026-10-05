@@ -54,7 +54,7 @@ function buttonWithText(text: string, scope: ParentNode = document): HTMLButtonE
   const button = Array.from(scope.querySelectorAll<HTMLButtonElement>("button")).find(
     (candidate) => {
       const label = candidate.cloneNode(true) as HTMLElement;
-      label.querySelectorAll("small").forEach(count => count.remove());
+      label.querySelectorAll("small, .bulkActionDescription").forEach(count => count.remove());
       return label.textContent?.trim() === text;
     },
   );
@@ -296,6 +296,29 @@ describe("Cloak Picker dialog regressions", () => {
     expect(document.querySelector('[aria-label="账号工作区"]')).not.toBeNull();
   });
 
+  it("restores a trash account from the primary context menu without opening account details", async () => {
+    await click(buttonWithText("授权与续期"));
+    await click(buttonWithText("回收站"));
+    await click(accountRow("demo-gamma"));
+    const header = document.querySelector('.workbenchAccountHeader')!;
+    await openContextMenu(accountRow("demo-gamma"));
+    const menu = document.querySelector('.accountContextMenu')!;
+    const restore = buttonWithText("恢复", menu);
+    expect(restore.closest('.accountGroupSubmenu')).toBeNull();
+    expect(buttonWithText("彻底删除", menu)).toBeTruthy();
+    expect(buttonWithText("临时启动", header)).toBeTruthy();
+    expect(document.querySelector('#workbench-details')).toHaveProperty("hidden", true);
+    await click(restore);
+    await settle(220);
+    expect(mockCommandCountForTest("restore_account")).toBe(1);
+    expect(document.querySelector('#cloak-account-active-tab')?.getAttribute("aria-selected")).toBe("true");
+    expect(document.querySelector('.workbenchAccountHeader h1')?.textContent).toBe("demo-gamma");
+    expect(buttonWithText("启动", header)).toBeTruthy();
+    expect(document.querySelector('.accountContextMenu')).toBeNull();
+    expect(document.querySelector('.brokerAuthStatus')?.textContent).toContain("浏览器账号");
+    expect(buttonWithText("授权与续期").getAttribute("aria-selected")).toBe("true");
+  });
+
   it("filters invalidated grants across all environments and shows their text badges", async () => {
     const remote = (name: string, error: string | null): BrokerMetadata => ({
       key: name, email: name, account_id: name, plan_type: "plus", expires_at: 1_900_000_000,
@@ -426,10 +449,7 @@ describe("Cloak Picker dialog regressions", () => {
   }
 
   async function openManageDialog(section: "管理分组" | "管理标签" = "管理分组") {
-    await click(buttonWithText("管理"));
-    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="管理选项"]');
-    expect(menu).not.toBeNull();
-    await click(buttonWithText(section, menu ?? document));
+    await click(buttonWithText(section, document.querySelector('[aria-label="工作区工具"]')!));
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
     expect(dialog).not.toBeNull();
     return dialog as HTMLElement;
@@ -482,13 +502,11 @@ describe("Cloak Picker dialog regressions", () => {
     expect(document.activeElement).toBe(origin);
   });
 
-  it("keeps account-list refresh and management beside the account heading", async () => {
+  it("keeps account-list refresh beside the account heading and avoids duplicate management menus", async () => {
     const sidebarHeader = document.querySelector<HTMLElement>(".sidebarHeader");
-    const manageButton = buttonWithText("管理");
     const refreshButton = document.querySelector<HTMLButtonElement>('button[aria-label="重新读取账号列表"]');
     expect(sidebarHeader).not.toBeNull();
-    expect(manageButton.closest(".sidebarHeader")).toBe(sidebarHeader);
-    expect(manageButton.closest(".topActions")).toBeNull();
+    expect(document.querySelector(".sidebarManageButton")).toBeNull();
     expect(refreshButton?.closest(".sidebarHeader")).toBe(sidebarHeader);
     expect(refreshButton?.title).toBe("重新读取账号列表");
     expect(document.querySelector('.topActions button[aria-label="重新读取账号列表"]')).toBeNull();
@@ -498,15 +516,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(mockCommandCountForTest("list_accounts")).toBe(1);
     expect(mockCommandCountForTest("list_trashed_accounts")).toBe(1);
 
-    expect(manageButton.getAttribute("aria-haspopup")).toBe("menu");
-    await click(manageButton);
-
-    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="管理选项"]');
-    expect(menu).not.toBeNull();
-    expect(buttonWithText("管理分组", menu ?? document)).toBeTruthy();
-    expect(buttonWithText("管理标签", menu ?? document)).toBeTruthy();
-
-    await click(buttonWithText("管理分组", menu ?? document));
+    await click(buttonWithText("管理分组", document.querySelector('[aria-label="工作区工具"]')!));
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
     expect(dialog?.textContent).toContain("集中维护首页使用的分组和常用标签");
     expect(buttonWithText("分组", dialog ?? document).getAttribute("aria-selected")).toBe("true");
@@ -519,10 +529,7 @@ describe("Cloak Picker dialog regressions", () => {
   });
 
   it("exports an encrypted workspace and previews renamed imports before restoring", async () => {
-    await click(buttonWithText("管理"));
-    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="管理选项"]');
-    expect(buttonWithText("工作区备份", menu ?? document)).toBeTruthy();
-    await click(buttonWithText("工作区备份", menu ?? document));
+    await click(buttonWithText("工作区备份", document.querySelector('[aria-label="工作区工具"]')!));
 
     let dialog = document.querySelector<HTMLElement>('[role="dialog"]');
     expect(dialog?.textContent).toContain("加密备份与恢复");
@@ -583,9 +590,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(trashTab?.tabIndex).toBe(0);
     expect(document.querySelector("#cloak-account-trash-panel[role=\"tabpanel\"]")).not.toBeNull();
 
-    await click(buttonWithText("管理"));
-    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="管理选项"]');
-    await click(buttonWithText("工作区备份", menu ?? document));
+    await click(buttonWithText("工作区备份", document.querySelector('[aria-label="工作区工具"]')!));
     const exportTab = document.querySelector<HTMLButtonElement>("#cloak-workspace-export-tab");
     const importTab = document.querySelector<HTMLButtonElement>("#cloak-workspace-import-tab");
     expect(exportTab?.getAttribute("aria-controls")).toBe("cloak-workspace-export-panel");
@@ -602,9 +607,7 @@ describe("Cloak Picker dialog regressions", () => {
   });
 
   it("counts workspace passphrases like Rust Unicode scalar values", async () => {
-    await click(buttonWithText("管理"));
-    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="管理选项"]');
-    await click(buttonWithText("工作区备份", menu ?? document));
+    await click(buttonWithText("工作区备份", document.querySelector('[aria-label="工作区工具"]')!));
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
     const passwords = dialog?.querySelectorAll<HTMLInputElement>('input[type="password"]');
 
@@ -618,9 +621,7 @@ describe("Cloak Picker dialog regressions", () => {
   });
 
   it("cancels a workspace export without reporting a partial backup", async () => {
-    await click(buttonWithText("管理"));
-    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="管理选项"]');
-    await click(buttonWithText("工作区备份", menu ?? document));
+    await click(buttonWithText("工作区备份", document.querySelector('[aria-label="工作区工具"]')!));
 
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
     const passwords = dialog?.querySelectorAll<HTMLInputElement>('input[type="password"]');
@@ -652,6 +653,9 @@ describe("Cloak Picker dialog regressions", () => {
     expect(alpha.getAttribute("aria-pressed")).toBe("true");
     expect(beta.getAttribute("aria-pressed")).toBe("true");
     expect(document.querySelector(".bulkSelectionCount")?.textContent).toBe("已选 2");
+    expect(document.querySelectorAll('.bulkActionButton')).toHaveLength(4);
+    expect(Array.from(document.querySelectorAll('.bulkSelectedPreview li > span'), element => element.textContent)).toEqual(["demo-alpha@example.test", "demo-beta"]);
+
     expect(alpha.querySelector(".accountSelectionCheckbox.checked")).not.toBeNull();
 
     await act(async () => {
@@ -817,6 +821,51 @@ describe("Cloak Picker dialog regressions", () => {
       "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-alpha@example.test",
     );
     expect(copyButton?.title).toBe("已复制");
+  });
+
+  it("opens the group flyout on hover and moves only the right-clicked account", async () => {
+    await openContextMenu(accountRow("demo-beta"));
+    const menu = document.querySelector('.accountContextMenu')!;
+    const move = buttonWithText("移动分组", menu);
+    expect(move.getAttribute("aria-haspopup")).toBe("menu");
+    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(6);
+    expect(buttonWithText("彻底删除", menu)).toBeTruthy();
+    expect(document.querySelector('.accountGroupSubmenu')).toBeNull();
+    await act(async () => move.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    const submenu = document.querySelector('.accountGroupSubmenu')!;
+    expect(submenu).not.toBeNull();
+    expect(buttonWithText("codex", submenu).getAttribute("aria-pressed")).toBe("true");
+    await click(buttonWithText("antigravity", submenu));
+    await settle(240);
+    expect(mockCommandCountForTest("set_group")).toBe(1);
+    expect(document.querySelector('.accountContextMenu')).toBeNull();
+    expect(accountRow("demo-beta").closest('.accountGroup')?.getAttribute('data-account-group')).toBe("antigravity");
+    expect(accountRow("demo-alpha@example.test").closest('.accountGroup')?.getAttribute('data-account-group')).toBe("codex");
+  });
+
+  it("flips the group flyout at the window edge and supports keyboard return", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function(this: HTMLElement) {
+      return this.classList.contains("accountContextMenu") ? new DOMRect(850, 650, 184, 218) : new DOMRect(854, 654, 176, 30);
+    });
+    await openContextMenu(accountRow("demo-beta"));
+    const trigger = buttonWithText("移动分组", document.querySelector('.accountContextMenu')!);
+    trigger.focus();
+    await pressKeyOn(trigger, "ArrowRight");
+    await settle(30);
+    const submenu = document.querySelector<HTMLElement>('.accountGroupSubmenu')!;
+    expect(submenu.dataset.side).toBe("left");
+    expect(Number.parseFloat(submenu.style.left)).toBeGreaterThanOrEqual(8);
+    expect(Number.parseFloat(submenu.style.top)).toBeLessThanOrEqual(window.innerHeight - 132 - 8);
+    expect(submenu.contains(document.activeElement)).toBe(true);
+    await pressKeyOn(document.activeElement as HTMLElement, "ArrowLeft");
+    expect(document.querySelector('.accountGroupSubmenu')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(document.querySelector('.accountContextMenu')).not.toBeNull();
+    await click(buttonWithText("彻底删除", document.querySelector('.accountContextMenu')!));
+    expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
+    expect(mockCommandCountForTest("permanently_delete_account")).toBe(0);
+    await pressKey("Escape");
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
   });
 
   it("writes, finds, edits, and clears a multiline note from an account context menu", async () => {
@@ -1093,7 +1142,8 @@ describe("Cloak Picker dialog regressions", () => {
 
     const menu = document.querySelector<HTMLElement>('[role="menu"]');
     expect(menu).not.toBeNull();
-    await click(buttonWithText("antigravity", menu ?? document));
+    await click(buttonWithText("移动分组", menu ?? document));
+    await click(buttonWithText("antigravity", document.querySelector('.accountGroupSubmenu')!));
     await settle(220);
 
     expect(mockCommandCountForTest("set_group")).toBe(1);
@@ -1394,7 +1444,9 @@ describe("Cloak Picker dialog regressions", () => {
 
     expect(document.querySelector(".detail")?.textContent).toContain("已移入回收站");
     expect(buttonWithText("临时启动")).toBeTruthy();
-    expect(buttonWithText("恢复")).toBeTruthy();
+    await openContextMenu(accountRow("demo-gamma"));
+    expect(buttonWithText("恢复", document.querySelector('.accountContextMenu')!)).toBeTruthy();
+    await pressKey("Escape");
     expect(buttonWithText("彻底删除")).toBeTruthy();
 
     await settle(120);

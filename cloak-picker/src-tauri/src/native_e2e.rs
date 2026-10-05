@@ -236,6 +236,17 @@ const NATIVE_E2E_DRIVER: &str = r#"
       if (temporary) {
         const trashed = await invoke('list_trashed_accounts');
         if (!trashed.some(account => account.name === name)) throw new Error('临时启动恢复了回收站账号');
+        const rowBounds = row.getBoundingClientRect();
+        row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: rowBounds.left + 20, clientY: rowBounds.top + 10 }));
+        const menu = await waitFor(() => document.querySelector('.accountContextMenu'), '一级账号右键菜单');
+        const restore = Array.from(menu.querySelectorAll('button')).find(control => control.textContent.trim() === '恢复');
+        if (!restore || restore.disabled || restore.closest('.accountGroupSubmenu')) throw new Error('恢复未直接显示在一级右键菜单');
+        if (!Array.from(menu.querySelectorAll('button')).some(control => control.textContent.trim() === '彻底删除')) throw new Error('回收站右键菜单缺少彻底删除');
+        restore.click();
+        await waitFor(() => document.querySelector('#cloak-account-active-tab[aria-selected="true"]') && header.querySelector('h1')?.textContent === name && !header.textContent.includes('临时启动'), '从授权页恢复账号并保留选中');
+        const restored = await invoke('list_accounts');
+        if (!restored.some(account => account.name === name)) throw new Error('账号未实际恢复到活跃列表');
+        if (document.querySelector('.brokerAuthStatus')?.textContent.includes('回收站账号')) throw new Error('恢复后授权页仍显示旧回收站状态');
       }
     };
     await verifyHeaderLaunch('native-e2e-account', false);
@@ -347,6 +358,41 @@ const NATIVE_E2E_DRIVER: &str = r#"
       throw new Error('关闭后运行状态没有归零');
     }
     checks.push('close-all-native-command');
+
+    const accountRow = document.querySelector('.accountRow[data-account-name="native-e2e-account"]');
+    const accountBounds = accountRow.getBoundingClientRect();
+    accountRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: accountBounds.left + 20, clientY: accountBounds.top + 10 }));
+    const accountMenu = await waitFor(() => document.querySelector('.accountContextMenu'), '紧凑账号菜单');
+    const moveGroup = Array.from(accountMenu.querySelectorAll('button')).find(button => button.textContent.trim() === '移动分组');
+    if (!moveGroup || document.querySelector('.accountGroupSubmenu')) throw new Error('分组未收纳为子菜单入口');
+    moveGroup.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    const groupMenu = await waitFor(() => document.querySelector('.accountGroupSubmenu'), '悬停打开分组子菜单');
+    await waitFor(() => Number(getComputedStyle(groupMenu).opacity) > 0.9, '分组子菜单展开动画');
+    const flyoutBounds = groupMenu.getBoundingClientRect();
+    if (flyoutBounds.left < 0 || flyoutBounds.top < 0 || flyoutBounds.right > innerWidth || flyoutBounds.bottom > innerHeight) throw new Error('分组子菜单越出窗口');
+    const codexGroup = Array.from(groupMenu.querySelectorAll('button')).find(button => button.textContent.trim() === 'codex');
+    if (!codexGroup) throw new Error('子菜单缺少实际分组');
+    codexGroup.click();
+    await waitFor(() => !document.querySelector('.accountContextMenu') && document.querySelector('.accountRow[data-account-name="native-e2e-account"]')?.dataset.accountGroup === 'codex', '右键移动分组完成');
+    if (!(await invoke('list_accounts')).some(account => account.name === 'native-e2e-account' && account.group === 'codex')) throw new Error('分组未实际保存');
+    if (document.querySelector('.sidebarManageButton')) throw new Error('重复管理入口仍然存在');
+    checks.push('account-context-submenu-and-restore');
+
+    const multiSelect = await waitFor(() => {
+      const button = document.querySelector('.sidebarSelectButton');
+      return button && !button.disabled ? button : null;
+    }, '多选入口');
+    multiSelect.click();
+    await waitFor(() => document.querySelectorAll('.accountRow.selectionMode').length === 2, '多选账号列表');
+    document.querySelectorAll('.accountRow.selectionMode').forEach(row => row.click());
+    await waitFor(() => document.querySelectorAll('.bulkSelectedPreview li').length === 2, '完整所选账号预览');
+    const bulkActions = document.querySelectorAll('.bulkActionButton');
+    if (bulkActions.length < 3 || Array.from(bulkActions).some(button => button.getBoundingClientRect().height < 72)) throw new Error('批量操作按钮过小或缺失');
+    const exitSelection = Array.from(document.querySelectorAll('.bulkWorkspace button')).find(button => button.textContent.trim() === '退出多选');
+    if (!exitSelection) throw new Error('批量工作区没有退出入口');
+    exitSelection.click();
+    await waitFor(() => !document.querySelector('.bulkWorkspace'), '退出多选');
+    checks.push('bulk-workspace-large-actions');
 
     const visibleTools = Array.from(document.querySelectorAll('.workspaceTool strong'))
       .map((node) => node.textContent?.trim())
