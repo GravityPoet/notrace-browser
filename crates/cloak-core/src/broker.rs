@@ -60,6 +60,8 @@ pub enum BrokerError {
     RecoveryRequired,
     #[error("CPA 存在未托管的同名凭据，未覆盖")]
     ConsumerConflict,
+    #[error("CPA 托管凭据已被删除，自动同步已暂停")]
+    ConsumerMissing,
     #[error("额度暂时无法读取，上游未提供有效数据")]
     QuotaUnavailable,
 }
@@ -114,6 +116,8 @@ pub struct BrokerMetadata {
     pub cpa_enabled: bool,
     pub cpa_synced_generation: Option<u64>,
     pub cpa_sync_error: Option<BrokerError>,
+    #[serde(default)]
+    pub cpa_sync_suspended: bool,
     pub cockpit_synced_generation: Option<u64>,
 }
 
@@ -190,6 +194,8 @@ struct Grant {
     #[serde(default)]
     cpa_sync_error: Option<BrokerError>,
     #[serde(default)]
+    cpa_sync_suspended: bool,
+    #[serde(default)]
     cockpit_synced_generation: Option<u64>,
 }
 impl Grant {
@@ -219,6 +225,7 @@ impl Grant {
             cpa_enabled: self.cpa_enabled,
             cpa_synced_generation: self.cpa_synced_generation,
             cpa_sync_error: self.cpa_sync_error,
+            cpa_sync_suspended: self.cpa_sync_suspended,
             cockpit_synced_generation: self.cockpit_synced_generation,
         }
     }
@@ -460,6 +467,11 @@ impl BrokerStore {
             return Err(BrokerError::Config);
         }
         current.cpa_enabled = enabled;
+        current.cpa_sync_suspended = false;
+        if enabled {
+            current.cpa_synced_generation = None;
+            current.cpa_sync_error = None;
+        }
         self.save(&path, &current)?;
         Ok(current.metadata())
     }
@@ -468,6 +480,9 @@ impl BrokerStore {
         let _guard = acquire_lock(&path.with_extension("lock"))?;
         let mut grant = self.load(&path)?;
         if !grant.cpa_enabled {
+            return Ok(grant.metadata());
+        }
+        if grant.cpa_sync_suspended {
             return Ok(grant.metadata());
         }
         if matches!(
@@ -488,6 +503,12 @@ impl BrokerStore {
         reject_link(directory)?;
         let result = (|| {
             let (destination, existing, legacy) = cpa_destination(directory, key, &grant)?;
+            if existing.is_none()
+                && legacy.is_none()
+                && grant.cpa_synced_generation.is_some()
+            {
+                return Err(BrokerError::ConsumerMissing);
+            }
             if grant.expires_at <= crate::current_epoch_secs() {
                 return Err(BrokerError::ReauthRequired);
             }
@@ -517,6 +538,11 @@ impl BrokerStore {
             Ok(()) => {
                 grant.cpa_synced_generation = Some(grant.generation);
                 grant.cpa_sync_error = None;
+            }
+            Err(BrokerError::ConsumerMissing) => {
+                grant.cpa_enabled = false;
+                grant.cpa_sync_suspended = true;
+                grant.cpa_sync_error = Some(BrokerError::ConsumerMissing);
             }
             Err(error) => grant.cpa_sync_error = Some(error),
         }
@@ -940,6 +966,7 @@ fn parse_grant(key: &str, body: &str) -> BrokerResult<Grant> {
         cpa_enabled: false,
         cpa_synced_generation: None,
         cpa_sync_error: None,
+        cpa_sync_suspended: false,
         cockpit_synced_generation: None,
     })
 }
