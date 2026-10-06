@@ -349,6 +349,7 @@ let mockChallengeAuditCancelled = false;
 let mockWorkspaceCancellation = false;
 const mockRunningAccounts = new Set<string>();
 const mockBrokerAccounts = new Map<string, BrokerMetadata>();
+const mockCreatedAccounts = new Map<string, Account>();
 let mockCloseSeats: ForceCloseResult["seats"] = { active: 0, limit: 1 };
 
 export function setMockCloseSeatsForTest(seats: ForceCloseResult["seats"]) {
@@ -374,6 +375,7 @@ export function resetMockCommandsForTest() {
   mockWorkspaceCancellation = false;
   mockRunningAccounts.clear();
   mockBrokerAccounts.clear();
+  mockCreatedAccounts.clear();
   mockCloseSeats = { active: 0, limit: 1 };
 }
 
@@ -700,7 +702,7 @@ export default function App() {
     && visibleAccounts.every((account) => bulkSelectedNameSet.has(account.name));
   const someVisibleAccountsSelected = visibleAccounts.some((account) => bulkSelectedNameSet.has(account.name));
 
-  async function refresh(preferredName?: string, view: AccountView = accountView) {
+  async function refresh(preferredName?: string, view: AccountView = accountView, preferredAccount?: Account) {
     setError("");
     let nextActiveAccounts: Account[];
     let nextTrashedAccounts: Account[];
@@ -716,6 +718,13 @@ export default function App() {
       return;
     }
     setLoadError("");
+    // A successful create/restore can race the list watcher by one tick. Keep
+    // the returned account visible for this refresh instead of falling back to
+    // whichever older row happens to be first; the next normal poll reconciles
+    // it with disk.
+    if (preferredAccount && view === "active" && !nextActiveAccounts.some(account => account.name === preferredAccount.name)) {
+      nextActiveAccounts = [preferredAccount, ...nextActiveAccounts];
+    }
     setActiveAccounts(nextActiveAccounts);
     setTrashedAccounts(nextTrashedAccounts);
     const nextViewAccounts = view === "all" ? [...nextActiveAccounts, ...nextTrashedAccounts] : view === "trash" ? nextTrashedAccounts : nextActiveAccounts;
@@ -1321,10 +1330,19 @@ export default function App() {
         if (group) {
           setHiddenGroups((current) => current.filter((label) => label !== group));
           setGroupOrder((current) => appendNewGroup(current, groupFilters, group));
+          setCollapsedGroups((current) => current.filter((label) => label !== group));
         }
         setDialog(null);
+        exitBulkSelection();
         setAccountView("active");
-        await refresh(account.name, "active");
+        setAccountSearch("");
+        setAuthorizationFilter("all");
+        setSelectedGroup(allGroupsValue);
+        setSelectedName(account.name);
+        await refresh(account.name, "active", account);
+        // Keep the explicit post-create selection even if a list watcher
+        // completed between the create response and the refresh.
+        setSelectedName(account.name);
       }
       return;
     }
@@ -6569,6 +6587,20 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
     mockBrokerAccounts.set(requestedName, metadata);
     return metadata as T;
   }
+  if (command === "broker_quota_snapshot") {
+    return {
+      account_id: requestedName,
+      email: requestedName,
+      fetched_at: Math.floor(Date.now() / 1000),
+      generation: mockBrokerAccounts.get(requestedName)?.generation ?? 1,
+      windows: [
+        { name: "5 小时", used_percent: 25, remaining_percent: 75, reset_at: Math.floor(Date.now() / 1000) + 3600, window_minutes: 300 },
+        { name: "周", used_percent: 50, remaining_percent: 50, reset_at: Math.floor(Date.now() / 1000) + 86400, window_minutes: 10080 },
+      ],
+      reset_count: null,
+      reset_count_available: false,
+    } as T;
+  }
   if (command === "list_accounts") return accounts.filter((account) => !account.archived && !account.trashed) as T;
   if (command === "list_trashed_accounts") return accounts.filter((account) => account.trashed || account.archived) as T;
   if (command === "launch_dry_run" || command === "launch_preflight") {
@@ -6617,9 +6649,14 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
     } as T;
   }
   if (command === "create_account") {
-    return {
+    const createdName = String(args?.name ?? "new");
+    const createdId = `ntp_${createdName.replace(/[^a-zA-Z0-9_-]+/g, "_")}`;
+    const created = {
       ...accounts[0],
-      name: String(args?.name ?? "new"),
+      name: createdName,
+      profile_id: createdId,
+      profile_path: `/Users/example/Library/Application Support/NoTrace Browser/Accounts/${createdName}`,
+      serial: Math.max(...accounts.map(account => account.serial), 0) + 1,
       created_at: Date.now() * 1000,
       archived: false,
       trashed: false,
@@ -6629,7 +6666,9 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
       mark_note: null,
       mark_color: null,
       note: null,
-    } as T;
+    } as Account;
+    mockCreatedAccounts.set(created.name, created);
+    return created as T;
   }
   if (command === "rename_account") return { ...accounts[0], name: String(args?.newName ?? "renamed") } as T;
   if (command === "delete_account") {
@@ -6778,6 +6817,7 @@ function mockAccounts(): Account[] {
       has_proxy: false,
     },
   ];
+  accounts.push(...mockCreatedAccounts.values());
   return accounts.map((account) => {
     const group = mockGroupOverrides.has(account.name)
       ? mockGroupOverrides.get(account.name) ?? null

@@ -1,0 +1,12 @@
+diff --git a/patches/0209-display-native-screen-regressions.patch b/patches/0209-display-native-screen-regressions.patch
+--- a/patches/0209-display-native-screen-regressions.patch
++++ b/patches/0209-display-native-screen-regressions.patch
+@@ -541,7 +541,7 @@
+ +  EXPECT_FLOAT_EQ(1.f, Window().devicePixelRatio());
+  }
+  
+- // Since std::unique_ptr<InputHandlerProxy::DidOverscrollParams> isn't copyable
++ const char EVENT_LISTENER_RESULT_HISTOGRAM[] = "Event.PassiveListeners";
+ @@ -1744,6 +2260,49 @@
+    EXPECT_FALSE(listener->GetInvokedStateAndReset());
+  }

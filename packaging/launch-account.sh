@@ -58,7 +58,7 @@ if [[ ! -x "$BIN" ]]; then
   for fallback_bin in "$CB"/chromium-*/Chromium.app/Contents/MacOS/Chromium; do
     [[ -x "$fallback_bin" ]] || continue
     fallback_name="$(basename "${fallback_bin%/Chromium.app/Contents/MacOS/Chromium}")"
-    if [[ ! "$fallback_name" =~ ^chromium-[0-9]+([.][0-9]+){3,4}(-pro)?(-notrace)?$ ]]; then
+    if [[ ! "$fallback_name" =~ ^chromium-[0-9]+([.][0-9]+){3,4}(-pro)?(-native)?(-notrace)?$ ]]; then
       continue
     fi
     fallback_distribution="${fallback_name%-notrace}"
@@ -176,8 +176,10 @@ if [[ -z "$CLOAK_CHROME_MAJOR" ]]; then
 fi
 
 CLOAK_DISTRIBUTION_VERSION="$(printf '%s\n' "$BIN" | sed -E -n \
-  's#^.*/chromium-([0-9]+([.][0-9]+){3,4})(-pro)?(-notrace)?/Chromium[.]app/.*#\1#p')"
+  's#^.*/chromium-([0-9]+([.][0-9]+){3,4})(-pro)?(-native)?(-notrace)?/Chromium[.]app/.*#\1#p')"
 CLOAK_NATIVE_IDENTITY=0
+CLOAK_KEYLESS_MACOS_145=0
+[[ "$CLOAK_DISTRIBUTION_VERSION" == "145.0.7632.109.2" ]] && CLOAK_KEYLESS_MACOS_145=1
 NOTRACE_INDEPENDENT_ENGINE=0
 if (( CLOAK_CHROME_MAJOR >= 150 )); then
   CLOAK_NATIVE_IDENTITY=1
@@ -943,7 +945,7 @@ args=(
   "--fingerprint=$seed"
   "--fingerprint-platform=macos"
 )
-if [[ "$CLOAK_NATIVE_IDENTITY" == "0" && "$NOTRACE_INDEPENDENT_ENGINE" == "0" ]]; then
+if [[ "$CLOAK_NATIVE_IDENTITY" == "0" && "$NOTRACE_INDEPENDENT_ENGINE" == "0" && "$CLOAK_KEYLESS_MACOS_145" == "0" ]]; then
   args+=("--user-agent=$CLOAK_USER_AGENT")
 fi
 args+=(
@@ -976,12 +978,29 @@ fi
 [[ -n "${TZ:-}" ]] && args+=("--fingerprint-timezone=$TZ")
 if [[ -n "$accept_lang" ]]; then
   primary_locale="${accept_lang%%,*}"
-  args+=("--lang=$primary_locale" "--fingerprint-locale=$primary_locale" "--accept-lang=$accept_lang")
+  native_accept_lang="$accept_lang"
+  if [[ "$CLOAK_KEYLESS_MACOS_145" == "1" ]]; then
+    native_accept_lang="$(printf '%s' "$accept_lang" | sed -E 's/;q=[0-9.]+//g')"
+  fi
+  args+=("--lang=$primary_locale" "--fingerprint-locale=$primary_locale" "--accept-lang=$native_accept_lang")
+  if [[ "$CLOAK_KEYLESS_MACOS_145" == "1" ]]; then
+    args+=("-AppleLanguages" "($native_accept_lang)" "-AppleLocale" "${primary_locale//-/_}")
+  fi
+  if [[ "$NOTRACE_INDEPENDENT_ENGINE" == "1" ]]; then
+    independent_languages="$(printf '%s' "$accept_lang" | sed -E 's/;q=[0-9.]+//g')"
+    args+=("--uxr-languages=$independent_languages")
+  fi
 fi
 if [[ "$NOTRACE_INDEPENDENT_ENGINE" == "1" ]]; then
-  args+=("--uxr-synthetic-device-tests=true" "--fingerprint-hardware-concurrency=8" "--fingerprint-device-memory=8" "--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
+  args+=("--uxr-synthetic-device-tests=true" "--uxr-native-fingerprint-noise=true" "--fingerprint-hardware-concurrency=8" "--fingerprint-device-memory=8" "--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
+elif [[ "$CLOAK_KEYLESS_MACOS_145" == "1" ]]; then
+  args+=("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
 elif [[ -n "$exit_ip" ]]; then
   args+=("--fingerprint-webrtc-ip=$exit_ip")
+fi
+if [[ "$CLOAK_KEYLESS_MACOS_145" == "1" ]]; then
+  display_metrics="$(/usr/bin/xcrun swift "$ROOT/packaging/print-display-metrics.swift")"
+  args+=("--fingerprint-screen-width=${display_metrics%% *}" "--fingerprint-screen-height=${display_metrics##* }")
 fi
 
 proxy_server_arg=""
@@ -1136,11 +1155,19 @@ if [[ "$(/usr/bin/uname -s)" == "Darwin" ]] && [[ "$BIN" == */Contents/MacOS/* ]
   open_args=(-W -n --stdin /dev/null --stdout /dev/null --stderr /dev/null)
   [[ -n "${TZ:-}" ]] && open_args+=(--env "TZ=$TZ")
   open_args+=("$browser_app" --args)
+  initial_args=("${args[@]}")
+  if [[ "$CLOAK_KEYLESS_MACOS_145" == "1" && -n "$accept_lang" ]]; then
+    initial_args=()
+    for ((i = 0; i < ${#args[@]} - 2; i++)); do
+      initial_args+=("${args[$i]}")
+    done
+    initial_args+=("--no-startup-window")
+  fi
   if [[ -n "$LICENSE_STATUS_FILE" ]]; then
     CLOAKBROWSER_LICENSE_STATUS_FILE="$LICENSE_STATUS_FILE" \
-      /usr/bin/open "${open_args[@]}" "${args[@]}" &
+      /usr/bin/open "${open_args[@]}" "${initial_args[@]}" &
   else
-    /usr/bin/open "${open_args[@]}" "${args[@]}" &
+    /usr/bin/open "${open_args[@]}" "${initial_args[@]}" &
   fi
   browser_pid=$!
 else
@@ -1198,6 +1225,11 @@ fi
 
 if [[ "${CLOAK_PREFLIGHT:-off}" == "async" ]]; then
   run_browser_selftest
+fi
+
+if [[ "$CLOAK_KEYLESS_MACOS_145" == "1" && -n "$accept_lang" ]]; then
+  [[ -S "$UDD/SingletonSocket" ]] || { printf 'error: 原生语言初始化未建立账号通信通道\n' >&2; exit 1; }
+  "$BIN" "--user-data-dir=$UDD" --new-window "$launch_url" >/dev/null 2>&1
 fi
 
 while kill -0 "$browser_pid" 2>/dev/null; do

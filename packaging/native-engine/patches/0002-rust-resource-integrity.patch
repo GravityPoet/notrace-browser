@@ -1,0 +1,10 @@
+diff --git a/downloads-arm64.ini b/downloads-arm64.ini
+--- a/downloads-arm64.ini
++++ b/downloads-arm64.ini
+@@ -25,5 +25,6 @@
+ version = 2026-06-16
+ url = https://static.rust-lang.org/dist/%(version)s/rust-nightly-aarch64-apple-darwin.tar.xz
+ download_filename = rust-nightly-%(version)s-aarch64-apple-darwin.tar.xz
++sha256 = 8b5933fa6319cc2b4a83098562731eff4c16cb982be44282aef51c17a43fe7e6
+ output_path = third_party/rust-toolchain
+ strip_leading_dirs = rust-nightly-aarch64-apple-darwin

@@ -61,6 +61,14 @@ export function nativeEngineIdentitySupported(version) {
   return current.length > 0;
 }
 
+export function keylessMacos145(version) {
+  return !version?.independent && version?.distribution === "145.0.7632.109.2";
+}
+
+export function nativeUserAgentSupported(version) {
+  return Boolean(version?.independent || nativeEngineIdentitySupported(version) || keylessMacos145(version));
+}
+
 export function independentEngineMetadata(binary) {
   const app = dirname(dirname(dirname(binary)));
   const marker = join(dirname(app), ".notrace-independent-engine.json");
@@ -93,12 +101,19 @@ export function independentFingerprintArgs(seed) {
   const bucket = createHash("sha256").update(`gpu:${seed}`).digest().readUInt32BE(0) % 4 + 1;
   return [
     "--uxr-synthetic-device-tests=true",
+    "--uxr-native-fingerprint-noise=true",
     "--fingerprint-hardware-concurrency=8",
     "--fingerprint-device-memory=8",
     "--fingerprint-gpu-vendor=Google Inc. (Apple)",
     `--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M${bucket}, Unspecified Version)`,
     "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
   ];
+}
+
+export function independentLanguageArgs(acceptLanguage) {
+  const languages = String(acceptLanguage || "").split(",")
+    .map(item => item.split(";", 1)[0].trim()).filter(Boolean).join(",");
+  return languages ? [`--uxr-languages=${languages}`] : [];
 }
 
 export function companionPageSpoofEnabled(env = process.env) {

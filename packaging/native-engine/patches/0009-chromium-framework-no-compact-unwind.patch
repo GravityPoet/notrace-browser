@@ -1,0 +1,19 @@
+diff --git a/chrome/BUILD.gn b/chrome/BUILD.gn
+--- a/chrome/BUILD.gn
++++ b/chrome/BUILD.gn
+@@ -1277,6 +1277,15 @@
+       "-current_version",
+       chrome_dylib_version,
+     ]
++
++    # Apple ld cannot encode Rust, C++, Objective-C, and Chromium's custom
++    # CallWithEHFrame personality routines in one compact-unwind table. Keep
++    # DWARF __eh_frame and the existing custom exception boundary, but disable
++    # only this framework's compact table. Runtime startup and EH probes remain
++    # required before this candidate can be promoted.
++    if (is_apple && !use_lld) {
++      ldflags += [ "-Wl,-no_compact_unwind" ]
++    }
+ 
+     if (!is_component_build) {
+       # Specify a sensible install_name for static builds. The library is

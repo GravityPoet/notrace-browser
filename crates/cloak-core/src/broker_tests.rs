@@ -274,6 +274,116 @@ fn export_projection_preserves_refresh_token_only_when_requested() {
 }
 
 #[test]
+fn quota_snapshot_reads_usage_without_refreshing_or_writing_cpa() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let provider = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 4096];
+        let bytes = stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..bytes]);
+        assert!(request.starts_with("GET /usage HTTP/1.1"));
+        assert!(request.to_ascii_lowercase().contains("authorization: bearer "));
+        assert!(request.to_ascii_lowercase().contains("originator: codex desktop"));
+        let body = json!({
+            "rate_limit": {
+                "primary_window": {"used_percent": 25, "limit_window_seconds": 18000, "reset_at": now() + 3600},
+                "secondary_window": {"used_percent": 60, "limit_window_seconds": 604800, "reset_after_seconds": 7200}
+            },
+            "rate_limit_reset_credits": {"available_count": 2}
+        }).to_string();
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let config = BrokerConfig {
+        root: dir.path().into(),
+        cpa_auth_dir: None,
+        proxy_url: None,
+        token_url: format!("http://{address}"),
+    };
+    let store = BrokerStore::new(config, [21; 32]).unwrap();
+    store
+        .import_grant(
+            "alpha",
+            &grant_body("alpha@example.test", "acct-1", "refresh-a", now() + 3600),
+        )
+        .unwrap();
+    let snapshot = store.quota_snapshot("alpha").unwrap();
+    assert_eq!(snapshot.windows.len(), 2);
+    assert_eq!(snapshot.windows[0].remaining_percent, Some(75.0));
+    assert_eq!(snapshot.windows[0].window_minutes, Some(300));
+    assert_eq!(snapshot.windows[1].remaining_percent, Some(40.0));
+    assert_eq!(snapshot.windows[1].window_minutes, Some(10080));
+    assert_eq!(snapshot.reset_count, Some(2));
+    assert!(snapshot.reset_count_available);
+    assert_eq!(store.list().unwrap()[0].refresh_count, 0);
+    provider.join().unwrap();
+}
+
+#[test]
+fn quota_snapshot_counts_available_reset_credit_details_when_count_is_omitted() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let provider = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 4096];
+        let bytes = stream.read(&mut request).unwrap();
+        assert!(String::from_utf8_lossy(&request[..bytes]).starts_with("GET /usage HTTP/1.1"));
+        let body = json!({
+            "rate_limit": {},
+            "rate_limit_reset_credits": {"credits": [
+                {"status": "available"},
+                {"status": "redeemed"},
+                {"status": "available", "expires_at": now() - 1}
+            ]}
+        }).to_string();
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let store = BrokerStore::new(BrokerConfig {
+        root: dir.path().into(), cpa_auth_dir: None, proxy_url: None,
+        token_url: format!("http://{address}"),
+    }, [23; 32]).unwrap();
+    store.import_grant("alpha", &grant_body("alpha@example.test", "acct-1", "refresh-a", now() + 3600)).unwrap();
+    let snapshot = store.quota_snapshot("alpha").unwrap();
+    assert_eq!(snapshot.reset_count, Some(1));
+    assert!(snapshot.reset_count_available);
+    provider.join().unwrap();
+}
+
+#[test]
+fn terminal_grant_cannot_be_reenabled_for_cpa_until_reauthorization() {
+    let dir = tempfile::tempdir().unwrap();
+    let cpa = tempfile::tempdir().unwrap();
+    let store = BrokerStore::new(
+        BrokerConfig {
+            root: dir.path().into(),
+            cpa_auth_dir: Some(cpa.path().into()),
+            proxy_url: None,
+            token_url: TOKEN_URL.into(),
+        },
+        [22; 32],
+    )
+    .unwrap();
+    store
+        .import_grant(
+            "alpha",
+            &grant_body("alpha@example.test", "acct-1", "refresh-a", now() + 3600),
+        )
+        .unwrap();
+    let path = store.path("alpha").unwrap();
+    let mut grant = store.load(&path).unwrap();
+    grant.error = Some(BrokerError::ReauthRequired);
+    grant.cpa_enabled = false;
+    store.save(&path, &grant).unwrap();
+    assert!(matches!(
+        store.set_cpa_enabled("alpha", true),
+        Err(BrokerError::ReauthRequired)
+    ));
+    assert!(!store.list().unwrap()[0].cpa_enabled);
+}
+
+#[test]
 fn repeated_handoff_is_idempotent_and_identity_change_is_rejected() {
     let (_dir, store) = store();
     let first = grant_body("alpha@example.test", "acct-1", "refresh-a", now() + 3600);

@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "platform": "macos-arm64",
+  "chromium_version": "152.0.7977.82",
+  "build_workspace": ".build/native-engine/work",
+  "output_directory": "src/out/Default",
+  "parallelism": "host-default; reduce only after observed resource failure",
+  "sources": [
+    {"name": "chromix-build-baseline", "repository": "https://github.com/xiaozhou26/Chromix.git", "commit": "f1e41d82ca3fb9e83cedc06e22ff5f3073e8c542", "license": "BSD-3-Clause", "role": "macOS source preparation and audited native integration"},
+    {"name": "ungoogled-chromium", "repository": "https://github.com/ungoogled-software/ungoogled-chromium.git", "commit": "e71b91c6e336d0f25cfc6b9ef09298a9d2506e24", "license": "BSD-3-Clause", "role": "privacy platform baseline"},
+    {"name": "ungoogled-chromium-macos", "repository": "https://github.com/ungoogled-software/ungoogled-chromium-macos.git", "commit": "038db2b41f7aeb00bbceb2f5a56912b26eb5b284", "license": "BSD-3-Clause", "role": "macOS build and platform integration"},
+    {"name": "fingerprint-chromium-public-patches", "repository": "https://github.com/adryfish/fingerprint-chromium.git", "commit": "13b89eae304123f0710f2d33fd0816a2f61d7ffc", "license": "BSD-3-Clause", "role": "reviewed patch references; not an automatically applied full stack"},
+    {"name": "esbuild-source-tool", "repository": "https://github.com/evanw/esbuild.git", "commit": "6bfc1c13b4d986b86e8bc2035f00c337b0c1d007", "version": "v0.25.1", "go_module_sum": "h1:u/16OWK0l4ymFFuHOApuv/xXg8U0P3QYBSMToll89HI=", "license": "MIT", "role": "locally built DevTools generator, not the browser fingerprint implementation"}
+  ],
+  "build_recipe_overlays": [
+    {"path": "packaging/native-engine/patches/0001-macos152-test-context.patch", "target": "chromix-build-baseline", "reason": "Rebase only the trailing test context of Chromix 0209 onto pinned macOS Chromium 152; production behavior unchanged"},
+    {"path": "packaging/native-engine/patches/0002-rust-resource-integrity.patch", "target": "ungoogled-chromium-macos", "reason": "Pin Rust archive SHA256 from its official rust-lang.org release checksum"},
+    {"path": "packaging/native-engine/patches/0003-bindgen-macos-sdk-linker.patch", "target": "chromium-source", "reason": "Use Apple's native linker for macOS bindgen and embed relocatable library RPATHs; LLVM 23 LLD cannot parse the local Xcode 27 arm64e.x1 SDK target"},
+    {"path": "packaging/native-engine/patches/0007-stable-native-rendering.patch", "target": "chromium-source", "reason": "Actual font-cache scaling for main/Worker rendering, bounded idempotent Canvas read/encode noise and launch-stable DOM factors; remote Canvas Bridge disabled"},
+    {"path": "packaging/native-engine/patches/0008-v8-context-snapshot-no-compact-unwind.patch", "target": "chromium-source", "reason": "Disable compact unwind on the build-only V8 snapshot generator when Apple ld cannot encode four mixed runtime personalities; browser runtime settings unchanged"},
+    {"path": "packaging/native-engine/patches/0009-chromium-framework-no-compact-unwind.patch", "target": "chromium-source", "reason": "Disable only Chromium Framework compact unwind while retaining DWARF unwind and CallWithEHFrame custom personality; validate exception boundary and normal startup"},
+    {"path": "packaging/native-engine/patches/0010-native-rendering-warning-cleanup.patch", "target": "chromium-source", "reason": "Remove obsolete 32-bit seed temporaries after native helper migration; behavior unchanged"}
+  ],
+  "patch_tool": "GNU patch (gpatch), fuzz=0; Apple BSD patch is incompatible with patch 0053 on this host",
+  "exclusions": ["Cloak proprietary C++ patches", "license/session bypass", "remote canvas bridge requiring sandbox removal", "real-account test data"],
+  "status": "source-preparation; native privacy repair and runtime acceptance pending"
+}

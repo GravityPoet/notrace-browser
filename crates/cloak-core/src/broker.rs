@@ -24,6 +24,9 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+const RESET_CREDITS_URL: &str =
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const MAX_BYTES: u64 = 256 * 1024;
 const MAX_LEAD: u64 = 36 * 3600;
@@ -57,6 +60,8 @@ pub enum BrokerError {
     RecoveryRequired,
     #[error("CPA 存在未托管的同名凭据，未覆盖")]
     ConsumerConflict,
+    #[error("额度暂时无法读取，上游未提供有效数据")]
+    QuotaUnavailable,
 }
 
 #[derive(Clone)]
@@ -130,6 +135,26 @@ pub struct AccessCredential {
     pub refresh_owner: String,
     pub notrace_key: String,
     pub notrace_generation: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CodexQuotaWindow {
+    pub name: String,
+    pub used_percent: Option<f64>,
+    pub remaining_percent: Option<f64>,
+    pub reset_at: Option<u64>,
+    pub window_minutes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CodexQuotaSnapshot {
+    pub account_id: String,
+    pub email: String,
+    pub fetched_at: u64,
+    pub generation: u64,
+    pub windows: Vec<CodexQuotaWindow>,
+    pub reset_count: Option<u64>,
+    pub reset_count_available: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -352,6 +377,14 @@ impl BrokerStore {
                 } else {
                     None
                 };
+                if error == BrokerError::ReauthRequired {
+                    // A terminal OAuth failure must stop both refresh retries
+                    // and CPA projection. Keep the old CPA file untouched for
+                    // audit/recovery, but never rewrite or recreate it.
+                    current.cpa_enabled = false;
+                    current.cpa_sync_error = Some(BrokerError::ReauthRequired);
+                    current.next_retry_at = None;
+                }
                 self.save(&path, &current)?;
                 Err(error)
             }
@@ -366,6 +399,18 @@ impl BrokerStore {
             return Err(BrokerError::ReauthRequired);
         }
         Ok(value.projection())
+    }
+
+    /// Read-only Codex usage query using the current access token. It never
+    /// calls refresh(), never persists tokens, and never writes CPA files.
+    pub fn quota_snapshot(&self, key: &str) -> BrokerResult<CodexQuotaSnapshot> {
+        let grant = self.load(&self.path(key)?)?;
+        if grant.expires_at <= crate::current_epoch_secs()
+            || grant.error == Some(BrokerError::ReauthRequired)
+        {
+            return Err(BrokerError::ReauthRequired);
+        }
+        fetch_codex_quota(&self.config, &grant)
     }
     pub fn export_credential(
         &self,
@@ -400,6 +445,17 @@ impl BrokerStore {
         let path = self.path(key)?;
         let _guard = acquire_lock(&path.with_extension("lock"))?;
         let mut current = self.load(&path)?;
+        if enabled
+            && matches!(
+                current.error,
+                Some(BrokerError::ReauthRequired | BrokerError::RecoveryRequired)
+            )
+        {
+            // A terminal OAuth lineage is deliberately inert. Re-enabling CPA
+            // must not resurrect a deleted/stale account; only a fresh grant
+            // imported through explicit reauthorization may re-enable it.
+            return Err(current.error.unwrap_or(BrokerError::ReauthRequired));
+        }
         if enabled && self.config.cpa_auth_dir.is_none() {
             return Err(BrokerError::Config);
         }
@@ -412,6 +468,15 @@ impl BrokerStore {
         let _guard = acquire_lock(&path.with_extension("lock"))?;
         let mut grant = self.load(&path)?;
         if !grant.cpa_enabled {
+            return Ok(grant.metadata());
+        }
+        if matches!(
+            grant.error,
+            Some(BrokerError::ReauthRequired | BrokerError::RecoveryRequired)
+        ) {
+            grant.cpa_enabled = false;
+            grant.cpa_sync_error = Some(grant.error.unwrap_or(BrokerError::ReauthRequired));
+            self.save(&path, &grant)?;
             return Ok(grant.metadata());
         }
         let previous_sync = (grant.cpa_synced_generation, grant.cpa_sync_error);
@@ -500,7 +565,7 @@ impl BrokerStore {
                     continue;
                 }
             };
-            if current.cpa_enabled {
+            if current.cpa_enabled && current.error.is_none() && !current.in_flight {
                 match self.sync_cpa(&current.key) {
                     Err(error @ (BrokerError::Storage | BrokerError::InputTooLarge)) => {
                         storage_error = Some(error);
@@ -972,6 +1037,194 @@ fn request_refresh(config: &BrokerConfig, previous: &Grant) -> BrokerResult<Gran
     candidate.refresh_count = previous.refresh_count.saturating_add(1);
     Ok(candidate)
 }
+
+/// Resolve the usage endpoint without making the production URL configurable.
+/// A loopback token URL is used only by unit tests; production always uses the
+/// fixed ChatGPT endpoint, which prevents an imported grant from becoming an
+/// SSRF primitive.
+fn quota_endpoint(config: &BrokerConfig) -> String {
+    if let Ok(mut url) = url::Url::parse(&config.token_url) {
+        if matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1")) {
+            url.set_path("/usage");
+            url.set_query(None);
+            url.set_fragment(None);
+            return url.to_string();
+        }
+    }
+    USAGE_URL.to_string()
+}
+
+/// Query ChatGPT/Codex usage with the current access token only. This is
+/// intentionally separate from `refresh()`: opening the quota panel must not
+/// rotate a refresh token, write a grant, or synchronize CPA.
+fn fetch_codex_quota(config: &BrokerConfig, grant: &Grant) -> BrokerResult<CodexQuotaSnapshot> {
+    let mut builder = Client::builder()
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(proxy) = &config.proxy_url {
+        builder = builder.proxy(reqwest::Proxy::all(proxy).map_err(|_| BrokerError::Config)?);
+    }
+    let client = builder.build().map_err(|_| BrokerError::QuotaUnavailable)?;
+    let response = client
+        .get(quota_endpoint(config))
+        .header("Accept", "application/json")
+        .header("Authorization", format!("Bearer {}", grant.access_token))
+        .header("User-Agent", "Codex Desktop")
+        .header("originator", "Codex Desktop")
+        .send()
+        .map_err(|_| BrokerError::QuotaUnavailable)?;
+    let status = response.status();
+    let mut body = String::new();
+    response
+        .take(MAX_BYTES + 1)
+        .read_to_string(&mut body)
+        .map_err(|_| BrokerError::QuotaUnavailable)?;
+    if body.len() as u64 > MAX_BYTES || !status.is_success() {
+        // Do not persist or return upstream bodies; they may contain account
+        // metadata and are not useful to the Picker.
+        return Err(BrokerError::QuotaUnavailable);
+    }
+    let root: Value = serde_json::from_str(&body).map_err(|_| BrokerError::QuotaUnavailable)?;
+    let rate_limit = root.get("rate_limit").and_then(Value::as_object);
+    let mut windows = Vec::new();
+    for (name, window) in [
+        ("5 小时", rate_limit.and_then(|v| v.get("primary_window"))),
+        ("周", rate_limit.and_then(|v| v.get("secondary_window"))),
+    ] {
+        let Some(window) = window.and_then(Value::as_object) else {
+            continue;
+        };
+        let used_percent = number_f64(window.get("used_percent"));
+        let remaining_percent = used_percent.map(|value| (100.0 - value).clamp(0.0, 100.0));
+        let reset_at = window
+            .get("reset_at")
+            .and_then(timestamp_seconds)
+            .or_else(|| {
+                window
+                    .get("reset_after_seconds")
+                    .and_then(Value::as_i64)
+                    .filter(|seconds| *seconds >= 0)
+                    .map(|seconds| crate::current_epoch_secs().saturating_add(seconds as u64))
+            });
+        let window_minutes = window
+            .get("limit_window_seconds")
+            .and_then(Value::as_i64)
+            .filter(|seconds| *seconds > 0)
+            .map(|seconds| ((seconds + 59) / 60) as u64);
+        windows.push(CodexQuotaWindow {
+            name: name.to_string(),
+            used_percent,
+            remaining_percent,
+            reset_at,
+            window_minutes,
+        });
+    }
+    let mut reset_count = root
+        .get("rate_limit_reset_credits")
+        .and_then(|value| value.get("available_count"))
+        .and_then(Value::as_u64)
+        .or_else(|| root.get("available_count").and_then(Value::as_u64))
+        .or_else(|| count_available_reset_credits(&root));
+    if reset_count.is_none() {
+        reset_count = fetch_reset_credits_count(config, grant);
+    }
+    Ok(CodexQuotaSnapshot {
+        account_id: grant.account_id.clone(),
+        email: grant.email.clone(),
+        fetched_at: crate::current_epoch_secs(),
+        generation: grant.generation,
+        windows,
+        reset_count,
+        reset_count_available: reset_count.is_some(),
+    })
+}
+
+fn count_available_reset_credits(root: &Value) -> Option<u64> {
+    let credits = root
+        .get("rate_limit_reset_credits")
+        .and_then(|value| value.get("credits"))
+        .or_else(|| root.get("credits"))
+        .or_else(|| root.get("data").and_then(|value| value.get("credits")))
+        .and_then(Value::as_array)?;
+    let now = crate::current_epoch_secs();
+    Some(
+        credits
+            .iter()
+            .filter(|credit| {
+                let status = credit
+                    .get("status")
+                    .or_else(|| credit.get("state"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("available")
+                    .to_ascii_lowercase();
+                if matches!(status.as_str(), "redeemed" | "used" | "consumed" | "expired") {
+                    return false;
+                }
+                credit
+                    .get("expires_at")
+                    .or_else(|| credit.get("expire_at"))
+                    .and_then(timestamp_seconds)
+                    .is_none_or(|expires_at| expires_at > now)
+            })
+            .count() as u64,
+    )
+}
+
+fn fetch_reset_credits_count(config: &BrokerConfig, grant: &Grant) -> Option<u64> {
+    let endpoint = if let Ok(mut url) = url::Url::parse(&config.token_url) {
+        if matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1")) {
+            url.set_path("/reset-credits");
+            url.set_query(None);
+            url.set_fragment(None);
+            url.to_string()
+        } else {
+            RESET_CREDITS_URL.to_string()
+        }
+    } else {
+        RESET_CREDITS_URL.to_string()
+    };
+    let mut builder = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(proxy) = &config.proxy_url {
+        builder = builder.proxy(reqwest::Proxy::all(proxy).ok()?);
+    }
+    let client = builder.build().ok()?;
+    let response = client
+        .get(endpoint)
+        .header("Accept", "application/json")
+        .header("Authorization", format!("Bearer {}", grant.access_token))
+        .header("User-Agent", "Codex Desktop")
+        .header("originator", "Codex Desktop")
+        .send()
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let mut body = String::new();
+    response.take(MAX_BYTES).read_to_string(&mut body).ok()?;
+    let root: Value = serde_json::from_str(&body).ok()?;
+    root.get("available_count")
+        .or_else(|| root.get("data").and_then(|data| data.get("available_count")))
+        .and_then(Value::as_u64)
+        .or_else(|| count_available_reset_credits(&root))
+}
+
+fn number_f64(value: Option<&Value>) -> Option<f64> {
+    value.and_then(|value| value.as_f64().or_else(|| value.as_i64().map(|v| v as f64)))
+}
+
+fn timestamp_seconds(value: &Value) -> Option<u64> {
+    let value = value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|v| u64::try_from(v).ok()))?;
+    Some(if value > 1_000_000_000_000 {
+        value / 1000
+    } else {
+        value
+    })
+}
+
 fn identity_matches(a: &Grant, b: &Grant) -> BrokerResult<()> {
     if !a.email.eq_ignore_ascii_case(&b.email) || a.account_id != b.account_id {
         Err(BrokerError::IdentityMismatch)

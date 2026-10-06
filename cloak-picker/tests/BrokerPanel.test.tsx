@@ -1,7 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import { BrokerPanel, type BrokerMetadata, type BrokerOverview } from "../src/BrokerPanel";
+import { BrokerPanel, type BrokerMetadata, type BrokerOverview, type CodexQuotaSnapshot } from "../src/BrokerPanel";
 import type { AuthCall } from "../src/AuthPanel";
 
 declare global { var IS_REACT_ACT_ENVIRONMENT: boolean; }
@@ -44,6 +44,75 @@ describe("统一授权续期窗口", () => {
     expect(document.body.textContent).not.toContain("9 次");
     expect(document.body.textContent).toContain("使用导出 JSON 导入");
     expect(document.body.textContent).not.toContain("refresh_token");
+  });
+
+  it("reads five-hour and weekly quota without exposing refresh credentials", async () => {
+    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, refresh_count: 3, automatic_refresh_count: 2, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const calls: string[] = [];
+    const call: AuthCall = async function call<T>(command: string): Promise<T> {
+      calls.push(command);
+      if (command === "broker_quota_snapshot") return {
+        account_id: "acct-1", email: "demo@example.test", fetched_at: 1_899_000_000, generation: 9,
+        windows: [
+          { name: "5 小时", used_percent: 25, remaining_percent: 75, reset_at: 1_899_100_000, window_minutes: 300 },
+          { name: "周", used_percent: 60, remaining_percent: 40, reset_at: 1_899_200_000, window_minutes: 10080 },
+        ], reset_count: null, reset_count_available: false,
+      } as T;
+      return overview(remote) as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    const button = [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("读取额度"));
+    expect(button).toBeTruthy();
+    await act(async () => button?.click());
+    await settle();
+    expect(document.body.textContent).toContain("5 小时剩余");
+    expect(document.body.textContent).toContain("75%");
+    expect(document.body.textContent).toContain("周剩余");
+    expect(document.body.textContent).toContain("40%");
+    expect(document.body.textContent).toContain("上游未提供");
+    expect(calls).toContain("broker_quota_snapshot");
+    expect(calls).not.toContain("broker_refresh_account");
+  });
+
+  it("finishes asynchronous workbench quota once and keeps late results on their account", async () => {
+    const remote: BrokerMetadata = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const data = overview(remote);
+    data.accounts.push({ ...data.accounts[0], name: "other@example.test", profile_id: "profile-2", remote: { ...remote, key: "profile-2", email: "other@example.test", account_id: "acct-2" } });
+    const pending = new Map<string, (value: CodexQuotaSnapshot) => void>();
+    const requests: string[] = [];
+    const call: AuthCall = async function call<T>(command: string, args: Record<string, unknown>): Promise<T> {
+      if (command === "broker_overview") return data as T;
+      if (command === "broker_quota_snapshot") {
+        const profileId = String(args.profileId);
+        requests.push(profileId);
+        return new Promise<CodexQuotaSnapshot>(resolve => pending.set(profileId, resolve)) as Promise<T>;
+      }
+      return null as T;
+    };
+    const snapshot = (accountId: string, email: string, percent: number): CodexQuotaSnapshot => ({
+      account_id: accountId, email, fetched_at: 1_899_000_000, generation: 9,
+      windows: [{ name: "5 小时", used_percent: 100 - percent, remaining_percent: percent, reset_at: null, window_minutes: 300 }],
+      reset_count: 0, reset_count_available: true,
+    });
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    expect(requests).toEqual(["profile-1"]);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-2" })));
+    await act(async () => pending.get("profile-1")?.(snapshot("acct-1", remote.email, 75)));
+    await settle();
+    expect(document.body.textContent).not.toContain("75%");
+    expect(requests).toEqual(["profile-1", "profile-2"]);
+    await act(async () => pending.get("profile-2")?.(snapshot("acct-2", "other@example.test", 42)));
+    await settle();
+    expect(document.querySelector('[aria-label="账号额度"]')?.textContent).toContain("42%");
+    expect([...document.querySelectorAll("button")].find(button => button.textContent === "读取额度")?.disabled).toBe(false);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    expect(document.querySelector('[aria-label="账号额度"]')?.textContent ?? "").not.toContain("42%");
+    expect(requests).toEqual(["profile-1", "profile-2"]);
   });
 
   it("offers reauthorization when the Broker grant needs a new OAuth chain", async () => {

@@ -1,0 +1,315 @@
+--- a/base/BUILD.gn
++++ b/base/BUILD.gn
+@@ -1012,6 +1012,7 @@
+     "types/zip.h",
+     "unguessable_token.cc",
+     "unguessable_token.h",
++    "notrace_render_privacy.h",
+     "uxr_config.cc",
+     "uxr_config.h",
+     "uuid.cc",
+--- a/base/uxr_config.h
++++ b/base/uxr_config.h
+@@ -85,6 +85,8 @@
+   bool GetInt(const std::string& key, int* out) const;
+   bool GetDouble(const std::string& key, double* out) const;
+   bool GetUint64(const std::string& key, uint64_t* out) const;
++  // Validated launch-scoped seed for native rendering paths.
++  uint64_t NativeFingerprintSeed() const;
+ 
+   // Synthetic hardware/display templates derived from "uxr-canvas-seed".
+   // Zero/false selects the caller's native fallback when no valid seed exists.
+@@ -105,6 +107,7 @@
+   UxrGpuBackendPolicy gpu_backend_policy_;
+   std::atomic<int> timer_resolution_ms_{0};
+   std::atomic<uint64_t> audio_isolation_seed_{0};
++  std::atomic<uint64_t> native_fingerprint_seed_{0};
+   bool initialized_ = false;
+   std::string validation_error_;
+ };
+--- a/base/uxr_config.cc
++++ b/base/uxr_config.cc
+@@ -103,10 +103,16 @@
+     policy->native = it->second == "native";
+   }
+   const bool allow_synthetic = !policy->native && synthetic_tests;
++  const auto native_noise = cfg.find("uxr-native-fingerprint-noise");
++  const bool native_fingerprint_noise =
++      native_noise != cfg.end() && native_noise->second == "true";
+   const bool noise_disabled = cfg.contains("uxr-disable-fingerprint-noise");
+-  policy->canvas_pixel_noise = allow_synthetic && !noise_disabled;
+-  policy->canvas_text_noise = !policy->native && !noise_disabled;
+-  policy->canvas_bridge = allow_synthetic;
++  policy->canvas_pixel_noise = (allow_synthetic || native_fingerprint_noise) &&
++                               !noise_disabled;
++  policy->canvas_text_noise = false;
++  // This build has no remote rendering service and retains the renderer
++  // sandbox; identity selection never implicitly enables a canvas bridge.
++  policy->canvas_bridge = false;
+   policy->capability_overrides = !policy->native;
+   return true;
+ }
+@@ -297,6 +303,26 @@
+   }
+   int timer_resolution_ms = 0;
+   uint64_t audio_isolation_seed = 0;
++  uint64_t native_fingerprint_seed = 0;
++  if (const auto mode = cfg.find("uxr-native-fingerprint-noise");
++      mode != cfg.end()) {
++    if (mode->second != "true" && mode->second != "false") {
++      validation_error_ = "invalid native fingerprint noise policy";
++      return false;
++    }
++    if (mode->second == "true" && !cfg.contains("uxr-disable-fingerprint-noise")) {
++      auto value = cfg.find("uxr-fingerprint-seed");
++      if (value == cfg.end() || value->second.empty())
++        value = cfg.find("uxr-canvas-seed");
++      if (value == cfg.end() || value->second.empty() ||
++          value->second.find_first_not_of("0123456789") != std::string::npos ||
++          !StringToUint64(value->second, &native_fingerprint_seed) ||
++          native_fingerprint_seed == 0) {
++        validation_error_ = "invalid native fingerprint seed";
++        return false;
++      }
++    }
++  }
+   if (!ValidateWebPreferences(cfg) ||
+       !ValidateFontPolicy(cfg) ||
+       !ValidateCodecPolicy(cfg) ||
+@@ -320,6 +346,7 @@
+   gpu_backend_policy_ = gpu_backend_policy;
+   timer_resolution_ms_.store(timer_resolution_ms, std::memory_order_relaxed);
+   audio_isolation_seed_.store(audio_isolation_seed, std::memory_order_relaxed);
++  native_fingerprint_seed_.store(native_fingerprint_seed, std::memory_order_relaxed);
+   initialized_ = true;
+   validation_error_.clear();
+   return true;
+@@ -361,6 +388,10 @@
+   return audio_isolation_seed_.load(std::memory_order_relaxed);
+ }
+ 
++uint64_t UxrConfig::NativeFingerprintSeed() const {
++  return native_fingerprint_seed_.load(std::memory_order_relaxed);
++}
++
+ std::string UxrConfig::ValidationError() const {
+   AutoLock locker(lock_);
+   return validation_error_;
+--- /dev/null
++++ b/base/notrace_render_privacy.h
+@@ -0,0 +1,81 @@
++// Copyright 2026 NoTrace contributors. SPDX-License-Identifier: BSD-3-Clause
++#ifndef BASE_NOTRACE_RENDER_PRIVACY_H_
++#define BASE_NOTRACE_RENDER_PRIVACY_H_
++
++#include <cstdint>
++#include <string_view>
++
++namespace base::notrace {
++
++constexpr uint64_t Mix64(uint64_t value) {
++  value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
++  value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
++  return value ^ (value >> 31);
++}
++
++// Real font size, not a getter-only lie. The caller quantizes the result using
++// the same key precision used to cache and render that font in every realm.
++constexpr double FontScale(uint64_t seed) {
++  return seed == 0 ? 1.0 :
++      1.0 + (static_cast<double>(Mix64(seed) & 0xffffu) / 65535.0 - 0.5) * 0.006;
++}
++
++constexpr uint64_t ScopeHash(std::string_view scope) {
++  uint64_t hash = 1469598103934665603ULL;
++  for (char character : scope) {
++    hash ^= static_cast<unsigned char>(character);
++    hash *= 1099511628211ULL;
++  }
++  return hash;
++}
++
++constexpr double RectFactor(uint64_t seed, std::string_view scope,
++                            uint64_t salt) {
++  if (!seed)
++    return 1.0;
++  const double unit = static_cast<double>(Mix64(seed ^ ScopeHash(scope) ^ salt) &
++                                         0xffffffffu) /
++                      4294967295.0;
++  return 1.0 + (unit - 0.5) * 0.000003;
++}
++
++constexpr uint32_t FoldCanvasSeed(uint64_t seed) {
++  const uint64_t high = Mix64(seed >> 32);
++  return static_cast<uint32_t>(seed) ^ static_cast<uint32_t>(high) ^
++         static_cast<uint32_t>(high >> 32);
++}
++
++// At most one integer level; endpoints and alpha are preserved by the caller.
++// The key depends on the two-value bin, not on its low bit. Therefore F(F(v))
++// equals F(v): reading, serializing, and drawing back a lossless bitmap cannot
++// repeatedly accumulate this perturbation. Coordinates are absolute canvas
++// coordinates, so full reads and cropped reads use the same key.
++constexpr uint8_t CanvasChannel(uint64_t seed, uint32_t x, uint32_t y,
++                                uint32_t channel, uint8_t value) {
++  if (seed == 0 || value == 0 || value == 255)
++    return value;
++  const uint32_t bin = static_cast<uint32_t>(value) & ~1u;
++  uint32_t hash = FoldCanvasSeed(seed) ^ (x * 374761393u) ^
++                  (y * 668265263u) ^ (channel * 0x9e3779b9u) ^
++                  (bin * 2654435761u);
++  hash ^= hash >> 16;
++  hash *= 0x85ebca6bu;
++  hash ^= hash >> 13;
++  hash *= 0xc2b2ae35u;
++  hash ^= hash >> 16;
++  return static_cast<uint8_t>(bin | (hash & 1u));
++}
++
++// Shader output factors are bounded and do not fabricate GPU capabilities.
++// Applying them before framebuffer storage lets CPU, PBO, float and texture
++// consumers observe the same actual rendered values and native pack layout.
++constexpr double ShaderChannelScale(uint64_t seed, uint32_t channel) {
++  return seed == 0 ? 1.0 :
++      1.0 + (static_cast<double>(Mix64(seed ^
++          (uint64_t{channel + 1} * 0x9e3779b97f4a7c15ULL)) & 0xffffu) /
++          65535.0 - 0.5) * 0.012;
++}
++
++}  // namespace base::notrace
++
++#endif  // BASE_NOTRACE_RENDER_PRIVACY_H_
+--- a/third_party/blink/renderer/core/dom/document.cc
++++ b/third_party/blink/renderer/core/dom/document.cc
+@@ -41,10 +41,12 @@
+ #include "base/i18n/time_formatting.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/notreached.h"
++#include "base/notrace_render_privacy.h"
+ #include "base/rand_util.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/time/time.h"
+ #include "base/trace_event/trace_event.h"
++#include "base/uxr_config.h"
+ #include "cc/animation/animation_host.h"
+ #include "cc/animation/animation_timeline.h"
+ #include "cc/input/overscroll_behavior.h"
+@@ -1052,10 +1054,22 @@
+       data_(MakeGarbageCollected<DocumentData>(GetExecutionContext())) {
+   TRACE_EVENT("blink", "Document::Document", perfetto::Flow::FromPointer(this));
+   DCHECK(agent_);
+-  if (RuntimeEnabledFeatures::FingerprintingClientRectsNoiseEnabled()) {
++  const uint64_t native_seed =
++      base::UxrConfig::GetInstance().NativeFingerprintSeed();
++  if (RuntimeEnabledFeatures::FingerprintingClientRectsNoiseEnabled() || native_seed) {
+     // Precompute -0.0003% to 0.0003% noise factor for get*ClientRect*() fingerprinting
+-    noise_factor_x_ = 1 + (base::RandDouble() - 0.5) * 0.000003;
+-    noise_factor_y_ = 1 + (base::RandDouble() - 0.5) * 0.000003;
++    if (native_seed) {
++      std::string scope;
++      if (const auto* context = GetExecutionContext()) {
++        if (const auto* origin = context->GetSecurityOrigin())
++          scope = origin->RegistrableDomain().Utf8();
++      }
++      noise_factor_x_ = base::notrace::RectFactor(native_seed, scope, 0x636c69656e74782dULL);
++      noise_factor_y_ = base::notrace::RectFactor(native_seed, scope, 0x636c69656e74792dULL);
++    } else {
++      noise_factor_x_ = 1 + (base::RandDouble() - 0.5) * 0.000003;
++      noise_factor_y_ = 1 + (base::RandDouble() - 0.5) * 0.000003;
++    }
+   }
+   if (base::FeatureList::IsEnabled(features::kDelayAsyncScriptExecution) &&
+       features::kDelayAsyncScriptExecutionDelayByDefaultParam.Get()) {
+--- a/third_party/blink/renderer/platform/fonts/font_description.cc
++++ b/third_party/blink/renderer/platform/fonts/font_description.cc
+@@ -34,7 +34,9 @@
+ #include "base/compiler_specific.h"
+ #include "base/memory/values_equivalent.h"
+ #include "base/notreached.h"
++#include "base/notrace_render_privacy.h"
+ #include "base/strings/to_string.h"
++#include "base/uxr_config.h"
+ #include "build/build_config.h"
+ #include "third_party/blink/public/platform/web_font_description.h"
+ #include "third_party/blink/renderer/platform/geometry/evaluation_input.h"
+@@ -276,6 +278,10 @@
+   float computed_or_adjusted_size =
+       HasSizeAdjust() || fields_.has_size_adjust_descriptor_ ? AdjustedSize()
+                                                              : ComputedSize();
++  // Shared actual font size: layout, drawing and metrics in page/Worker use
++  // this cache precision rather than a post-hoc measureText getter override.
++  computed_or_adjusted_size *= base::notrace::FontScale(
++      base::UxrConfig::GetInstance().NativeFingerprintSeed());
+   return floorf(computed_or_adjusted_size *
+                 FontCacheKey::PrecisionMultiplier()) /
+          FontCacheKey::PrecisionMultiplier();
+--- a/third_party/blink/renderer/platform/graphics/image_data_buffer.cc
++++ b/third_party/blink/renderer/platform/graphics/image_data_buffer.cc
+@@ -34,6 +34,7 @@
+ 
+ #include "base/compiler_specific.h"
+ #include "base/memory/ptr_util.h"
++#include "base/notrace_render_privacy.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/uxr_config.h"
+ #include "third_party/blink/renderer/platform/image-encoders/image_encoder_utils.h"
+@@ -95,17 +96,9 @@
+       for (uint32_t ch = 0; ch < 3; ++ch) {
+         const size_t index = ct == kBGRA_8888_SkColorType ? 2 - ch : ch;
+         const uint32_t v = pixel[index];
+-        uint32_t z = seed ^ (static_cast<uint32_t>(x) * 374761393u) ^
+-                     (static_cast<uint32_t>(y) * 668265263u) ^
+-                     (ch * 0x9e3779b9u) ^ (v * 2654435761u);
+-        z ^= z >> 16;
+-        z *= 0x85ebca6bu;
+-        z ^= z >> 13;
+-        z *= 0xc2b2ae35u;
+-        z ^= z >> 16;
+-        const int nv = static_cast<int>(v) + ((z & 1u) ? 1 : -1);
+-        pixel[index] =
+-            static_cast<uint8_t>(nv < 0 ? 0 : (nv > 255 ? 255 : nv));
++        pixel[index] = base::notrace::CanvasChannel(
++            seed64, static_cast<uint32_t>(x), static_cast<uint32_t>(y), ch,
++            static_cast<uint8_t>(v));
+       }
+     }
+   }
+--- a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
++++ b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+@@ -23,6 +23,7 @@
+ #include "base/check.h"
+ #include "base/containers/span.h"
+ #include "base/check_op.h"
++#include "base/notrace_render_privacy.h"
+ #include "base/location.h"
+ #include "base/memory/scoped_refptr.h"
+ #include "base/memory/weak_ptr.h"
+@@ -800,16 +801,8 @@
+             for (uint32_t ch = 0; ch < 3; ++ch) {
+               const size_t index = ph_ct == kBGRA_8888_SkColorType ? 2 - ch : ch;
+               const uint32_t v = ph_pixel[index];
+-              uint32_t z = ph_seed ^ (ax * 374761393u) ^ (ay * 668265263u) ^
+-                           (ch * 0x9e3779b9u) ^ (v * 2654435761u);
+-              z ^= z >> 16;
+-              z *= 0x85ebca6bu;
+-              z ^= z >> 13;
+-              z *= 0xc2b2ae35u;
+-              z ^= z >> 16;
+-              const int nv = static_cast<int>(v) + ((z & 1u) ? 1 : -1);
+-              ph_pixel[index] =
+-                  static_cast<uint8_t>(nv < 0 ? 0 : (nv > 255 ? 255 : nv));
++              ph_pixel[index] = base::notrace::CanvasChannel(
++                  ph_seed64, ax, ay, ch, static_cast<uint8_t>(v));
+             }
+           }
+         }
+@@ -1546,7 +1539,8 @@
+   }
+ 
+   // Scale text metrics if enabled
+-  if (base::UxrConfig::GetInstance().GpuBackendPolicy().canvas_text_noise &&
++  if (!base::UxrConfig::GetInstance().NativeFingerprintSeed() &&
++      base::UxrConfig::GetInstance().GpuBackendPolicy().canvas_text_noise &&
+       RuntimeEnabledFeatures::FingerprintingCanvasMeasureTextNoiseEnabled()) {
+     if (HostAsOffscreenCanvas()) {
+       if (auto* window = DynamicTo<LocalDOMWindow>(GetTopExecutionContext())) {

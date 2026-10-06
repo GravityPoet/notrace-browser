@@ -25,8 +25,11 @@ import {
   companionPageSpoofEnabled,
   distributionVersionFromPath,
   nativeEngineIdentitySupported,
+  nativeUserAgentSupported,
+  keylessMacos145,
   independentEngineMetadata,
   independentFingerprintArgs,
+  independentLanguageArgs,
   parseChromiumVersion,
 } from "./browser-contract.mjs";
 
@@ -333,7 +336,7 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
     "--remote-allow-origins=*",
   ];
   if (!nativeEngineIdentitySupported(BROWSER_VERSION)) {
-    if (!BROWSER_VERSION.independent) args.push(`--user-agent=${BROWSER_IDENTITY.userAgent}`);
+    if (!nativeUserAgentSupported(BROWSER_VERSION)) args.push(`--user-agent=${BROWSER_IDENTITY.userAgent}`);
     args.push(
       `--fingerprint-brand=${BROWSER_VERSION.independent ? "Google Chrome" : "Chrome"}`,
       `--fingerprint-brand-version=${BROWSER_IDENTITY.uaData.uaFullVersion}`,
@@ -341,6 +344,20 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
     );
   }
   if (BROWSER_VERSION.independent) args.push(...independentFingerprintArgs(seed));
+  const keyless145 = keylessMacos145(BROWSER_VERSION);
+  if (keyless145) {
+    args.push("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
+    let display = [1440, 900];
+    if (!opts.headless && process.platform === "darwin") {
+      const result = spawnSync("/usr/bin/xcrun", ["swift", join(dirname(__dir), "packaging/print-display-metrics.swift")], { encoding: "utf8" });
+      if (result.status !== 0) throw new Error("could not read host display dimensions");
+      display = result.stdout.trim().split(/\s+/).map(Number);
+      if (display.length !== 2 || !display.every(value => Number.isInteger(value) && value > 0 && value <= 16384)) {
+        throw new Error("invalid host display dimensions");
+      }
+    }
+    args.push(`--fingerprint-screen-width=${display[0]}`, `--fingerprint-screen-height=${display[1]}`);
+  }
   if (opts.headless) {
     args.push("--headless=new", "--window-size=1440,900", "--force-device-scale-factor=2");
   }
@@ -349,13 +366,18 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
   }
   if (opts.acceptLang) {
     const primaryLocale = opts.acceptLang.split(",", 1)[0].trim();
-    args.push(`--lang=${primaryLocale}`, `--fingerprint-locale=${primaryLocale}`, `--accept-lang=${opts.acceptLang}`);
+    const nativeAcceptLang = keyless145 ? opts.acceptLang.split(",").map(item => item.split(";", 1)[0].trim()).filter(Boolean).join(",") : opts.acceptLang;
+    args.push(`--lang=${primaryLocale}`, `--fingerprint-locale=${primaryLocale}`, `--accept-lang=${nativeAcceptLang}`);
+    if (keyless145 && process.platform === "darwin") {
+      args.push("-AppleLanguages", `(${nativeAcceptLang})`, "-AppleLocale", primaryLocale.replaceAll("-", "_"));
+    }
+    if (BROWSER_VERSION.independent) args.push(...independentLanguageArgs(opts.acceptLang));
   }
-  if (opts.expectIp && !BROWSER_VERSION.independent) args.push(`--fingerprint-webrtc-ip=${opts.expectIp}`);
+  if (opts.expectIp && !BROWSER_VERSION.independent && !keyless145) args.push(`--fingerprint-webrtc-ip=${opts.expectIp}`);
   args.push("about:blank");
 
   const childEnv = { ...process.env, TZ: opts.tz };
-  if (BROWSER_VERSION.independent) {
+  if (BROWSER_VERSION.independent || keyless145) {
     delete childEnv.CLOAKBROWSER_LICENSE_KEY;
     delete childEnv.CLOAKBROWSER_LICENSE_STATUS_FILE;
   }

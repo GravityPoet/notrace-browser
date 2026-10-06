@@ -1,0 +1,19 @@
+diff --git a/tools/v8_context_snapshot/BUILD.gn b/tools/v8_context_snapshot/BUILD.gn
+--- a/tools/v8_context_snapshot/BUILD.gn
++++ b/tools/v8_context_snapshot/BUILD.gn
+@@ -107,6 +107,15 @@
+         "//v8:external_startup_data",
+         ":disable_icf",
+       ]
++
++      # This build-only generator links Rust, C++, and Objective-C runtime
++      # personalities. Apple ld cannot encode all four in compact unwind.
++      # Disable that table for the generator only; no browser target inherits
++      # this flag. Verify snapshot generation before proceeding with packaging.
++      # Runtime unwind behavior is not certified by generator link success.
++      if (is_apple && !use_lld) {
++        ldflags = [ "-Wl,-no_compact_unwind" ]
++      }
+     }
+   }
+ 

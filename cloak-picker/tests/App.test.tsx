@@ -1030,6 +1030,10 @@ describe("Cloak Picker dialog regressions", () => {
     expect(mockCommandCountForTest("create_account")).toBe(1);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(groupFilterLabels()).toEqual([...initialGroupOrder, "client-a"]);
+    const createdRow = accountRow("work-client");
+    expect(createdRow.classList.contains("selected")).toBe(true);
+    expect(document.querySelector(".workbenchAccountHeader h1")?.textContent).toBe("work-client");
+    expect(buttonWithText("启动", document.querySelector(".workbenchAccountHeader") as HTMLElement)).toBeTruthy();
   });
 
   it("defaults new accounts to the codex group", async () => {

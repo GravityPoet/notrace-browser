@@ -12,6 +12,14 @@ export type BrokerMetadata = {
   cpa_enabled: boolean; cpa_synced_generation: number | null; cpa_sync_error: string | null;
   cockpit_synced_generation: number | null;
 };
+export type CodexQuotaWindow = {
+  name: string; used_percent: number | null; remaining_percent: number | null;
+  reset_at: number | null; window_minutes: number | null;
+};
+export type CodexQuotaSnapshot = {
+  account_id: string; email: string; fetched_at: number; generation: number;
+  windows: CodexQuotaWindow[]; reset_count: number | null; reset_count_available: boolean;
+};
 export type BrokerRow = { name: string; profile_id: string; trashed: boolean; local: AuthStatus; remote: BrokerMetadata | null };
 export type BrokerOverview = { configured: boolean; endpoint: string | null; connected: boolean; message: string | null; accounts: BrokerRow[]; unmatched: BrokerMetadata[] };
 type BrokerJsonFormat = "cockpit_tools" | "auth_json" | "cpa" | "sub2api";
@@ -50,6 +58,9 @@ function syncLabel(enabled: boolean, synced: number | null, generation: number, 
 function refreshCountLabel(count: number | undefined) {
   return count === undefined ? "服务端尚未统计" : `${count} 次`;
 }
+function quotaPercent(value: number | null | undefined) {
+  return value === null || value === undefined ? "—" : `${Math.round(value)}%`;
+}
 export function authorizationState(row: BrokerRow): BrokerAuthorizationState {
   if (row.remote) {
     return row.remote.error === "reauth_required" || row.remote.error === "recovery_required"
@@ -78,6 +89,11 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState("");
   const [cpaAction, setCpaAction] = useState<{ profileId: string; enabled: boolean; pending: boolean } | null>(null);
+  const [quotaByProfile, setQuotaByProfile] = useState<Record<string, CodexQuotaSnapshot>>({});
+  const [quotaLoadingProfile, setQuotaLoadingProfile] = useState<string | null>(null);
+  const quotaRequestProfile = useRef<string | null>(null);
+  const quotaAttempted = useRef(new Set<string>());
+  const [quotaErrors, setQuotaErrors] = useState<Record<string, string>>({});
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [errorTarget, setErrorTarget] = useState("");
@@ -105,6 +121,11 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     if (next.configured && !next.connected && previous?.endpoint === next.endpoint) {
       const previousRows = new Map(previous.accounts.map(row => [row.profile_id, row]));
       next = { ...next, accounts: next.accounts.map(row => ({ ...row, remote: row.remote ?? previousRows.get(row.profile_id)?.remote ?? null })) };
+    }
+    if (previous && previous.endpoint !== next.endpoint) {
+      setQuotaByProfile({});
+      setQuotaErrors({});
+      quotaAttempted.current.clear();
     }
     overviewRef.current = next;
     setOverview(next);
@@ -186,6 +207,32 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       throw caught;
     }
   }
+  const readQuota = useCallback(async (row: BrokerRow) => {
+    const remote = row.remote;
+    if (!remote || quotaRequestProfile.current) return;
+    const endpointAtStart = overviewRef.current?.endpoint;
+    quotaAttempted.current.add(`${endpointAtStart}:${row.profile_id}:${remote.generation}`);
+    quotaRequestProfile.current = row.profile_id;
+    setQuotaLoadingProfile(row.profile_id);
+    setQuotaErrors(current => ({ ...current, [row.profile_id]: "" }));
+    try {
+      const snapshot = await call<CodexQuotaSnapshot>("broker_quota_snapshot", { profileId: row.profile_id });
+      const latest = overviewRef.current?.accounts.find(account => account.profile_id === row.profile_id)?.remote;
+      if (overviewRef.current?.endpoint !== endpointAtStart || latest?.generation !== remote.generation) return;
+      if (snapshot.account_id !== remote.account_id || snapshot.email.toLowerCase() !== remote.email.toLowerCase()
+        || snapshot.generation !== remote.generation || !Array.isArray(snapshot.windows)) {
+        throw new Error("额度与当前账号授权不一致，请重新读取授权状态后重试");
+      }
+      if (mounted.current) setQuotaByProfile(current => ({ ...current, [row.profile_id]: snapshot }));
+    } catch (caught) {
+      if (mounted.current && overviewRef.current?.endpoint === endpointAtStart) {
+        setQuotaErrors(current => ({ ...current, [row.profile_id]: String(caught) }));
+      }
+    } finally {
+      if (quotaRequestProfile.current === row.profile_id) quotaRequestProfile.current = null;
+      if (mounted.current) setQuotaLoadingProfile(current => current === row.profile_id ? null : current);
+    }
+  }, [call]);
   async function cancelAuthorization(name: string) {
     cancelRequested.current = true;
     setLogin(current => current && { ...current, cancelling: true });
@@ -266,6 +313,18 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       return difference || left.name.localeCompare(right.name, "zh-CN");
     });
   }, [accountFilter, accountSearch, accountSort, authorized, authorizationTime, expiryTime, overview?.accounts, workbench, selectedProfileId, selectedAccount, accountVisible]);
+  const brokerConnected = overview?.connected ?? false;
+  useEffect(() => {
+    // The workbench represents one selected account, so one bounded read is
+    // useful after authorization. The all-account list remains opt-in to avoid
+    // issuing hundreds of upstream usage requests at once.
+    if (!workbench || !accountVisible || !brokerConnected || busy || activeAuth || visibleAccounts.length !== 1) return;
+    const row = visibleAccounts[0];
+    if (!row.remote || authorizationState(row) === "reauth_required" || quotaRequestProfile.current) return;
+    const attemptKey = `${overview?.endpoint}:${row.profile_id}:${row.remote.generation}`;
+    if (quotaAttempted.current.has(attemptKey)) return;
+    void readQuota(row);
+  }, [accountVisible, brokerConnected, busy, activeAuth, overview?.endpoint, quotaLoadingProfile, readQuota, visibleAccounts, workbench]);
   const filterLabels: Array<{ value: BrokerAccountFilter; label: string }> = [
     { value: "all", label: `全部 ${accountCounts.all}` },
     { value: "authorized", label: `已授权 ${accountCounts.authorized}` },
@@ -275,7 +334,6 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   const visibleLogin = login ?? (activeAuth ? { name: activeAuth.account, phase: activeAuth.phase, cancelling: activeAuth.cancelling } : null);
   const loginLabel = visibleLogin ? visibleLogin.cancelling ? "正在取消授权…" : visibleLogin.phase === "handoff" ? "授权成功，正在交给 Broker…" : authProgressLabels[visibleLogin.phase] : "";
   const activity = visibleLogin && (<div className="brokerRowFeedback" role="status"><strong>{visibleLogin.name}</strong><p><Loader2 className="spin" size={14} /> {loginLabel}</p>{visibleLogin.phase !== "handoff" && <button className="secondaryButton" type="button" disabled={visibleLogin.cancelling} onClick={() => void cancelAuthorization(visibleLogin.name)}>取消授权</button>}</div>);
-  const brokerConnected = overview?.connected ?? false;
   const importAccount = importPreview?.accounts[importAccountIndex];
   const importEmail = importAccount?.email?.toLocaleLowerCase() ?? "";
   const importTargets = (overview?.accounts ?? []).filter(row => Boolean(importEmail) && (
@@ -337,6 +395,10 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       const externalGrant = !canManage && !needsLogin && !needsReauthLocal;
       const grantEmail = remote?.email ?? row.local.email;
       const rowBusy = busy === row.profile_id;
+      const cachedQuota = quotaByProfile[row.profile_id];
+      const quota = remote && cachedQuota?.generation === remote.generation
+        && cachedQuota.account_id === remote.account_id && !historicalAuthorization ? cachedQuota : undefined;
+      const quotaLoading = quotaLoadingProfile === row.profile_id;
       const cpaSynced = remote?.cpa_enabled && !remote.cpa_sync_error && remote.cpa_synced_generation === remote.generation;
       const rowCpaAction = cpaAction?.profileId === row.profile_id ? cpaAction : null;
       const cpaButtonLabel = rowCpaAction?.pending
@@ -360,6 +422,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
             <button className={workbench && historicalAuthorization ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected} title="打开此账号的登录环境，重新取得授权凭据" onClick={() => void run(row.profile_id, () => reauthorize(row))}><KeyRound size={14} />重新授权</button>
             {!historicalAuthorization && <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { try { await call("broker_refresh_account", { profileId: row.profile_id }); } catch (caught) { await read(); throw caught; } await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>}
             <button className={workbench && !historicalAuthorization && !cpaSynced ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected || (historicalAuthorization && !remote.cpa_enabled)} onClick={() => void run(row.profile_id, () => updateCpa(row, historicalAuthorization ? false : !cpaSynced))}>{cpaButtonLabel}</button>
+            <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected || quotaLoadingProfile !== null || historicalAuthorization} title="仅读取上游 Codex 额度，不会刷新授权或消耗主动重置次数" onClick={() => void readQuota(row)}>{quotaLoading ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}{quotaLoading ? "读取中…" : "读取额度"}</button>
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => { setPreserveRefreshToken(false); setImportPreview(null); setExportRow(row); setJsonFormat("auth_json"); }}><Download size={14} />导出 JSON</button>
           </> : <button className={workbench ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, () => externalGrant ? reauthorize(row) : manage(row))}>{rowBusy ? <Loader2 className="spin" size={14} /> : needsLogin || needsReauthLocal || externalGrant ? <KeyRound size={14} /> : <UploadCloud size={14} />}{rowBusy ? "授权处理中…" : needsLogin ? "授权并纳管" : needsReauthLocal || externalGrant ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
         </div>
@@ -367,8 +430,9 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
         {!workbench && error && errorTarget === row.profile_id && <div className="brokerRowFeedback error" role="alert"><strong>操作未完成</strong><p>{error}</p><span>请按上方原因处理后，重新点击此账号的操作按钮。</span></div>}
         {historicalAuthorization && <div className="brokerRowFeedback error" role="status"><strong>{remote?.error === "reauth_required" ? "授权已失效" : "授权链需要重新授权"}</strong><p>{remote?.error === "reauth_required" ? "refresh_token 已失效，当前账号已移入“未授权”。" : "上次刷新结果无法安全确认，当前账号已移入“未授权”。"}</p><span>点击“重新授权”获取新的授权链。</span></div>}
         {externalGrant && <p className="brokerJsonHint">重新授权会打开此账号的浏览器，获取新的授权链后纳入统一续期。</p>}
+        {quotaErrors[row.profile_id] && <p className="brokerError" role="alert">额度读取未完成：{quotaErrors[row.profile_id]}{quota ? "（保留上次快照，以查询时间为准）" : ""}</p>}
         {workbench && !remote && row.local.expires_at && <div className="brokerStatus"><span>访问凭据到期<b>{time(row.local.expires_at)}</b></span><span>最近更新<b>{time(row.local.last_refresh_at)}</b></span><span>当前管理工具<b>{authorityNames[row.local.authority]}</b></span></div>}
-        {remote && <><div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span title="从启用统计起累计，只计成功续期；首次授权、重新授权和失败重试不计入。">成功续期<b>{refreshCountLabel(remote.refresh_count)}</b>{remote.refresh_count !== undefined && remote.automatic_refresh_count !== undefined && <small>自动 {remote.automatic_refresh_count} 次 · 手动 {Math.max(0, remote.refresh_count - remote.automatic_refresh_count)} 次</small>}<small>启用统计后累计</small></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? "已确认" : "使用导出 JSON 导入"}</b></span></div>{remote.error && !historicalAuthorization && <p className="brokerError brokerTransientError">{errors[remote.error] ?? "授权操作未完成"}</p>}</>}
+        {remote && <><div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span title="从启用统计起累计，只计成功续期；首次授权、重新授权和失败重试不计入。">成功续期<b>{refreshCountLabel(remote.refresh_count)}</b>{remote.refresh_count !== undefined && remote.automatic_refresh_count !== undefined && <small>自动 {remote.automatic_refresh_count} 次 · 手动 {Math.max(0, remote.refresh_count - remote.automatic_refresh_count)} 次</small>}<small>启用统计后累计</small></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? "已确认" : "使用导出 JSON 导入"}</b></span></div>{quota && <div className="brokerQuota" aria-label="账号额度"><div><span>5 小时剩余</span><b>{quotaPercent(quota.windows.find(window => window.name === "5 小时")?.remaining_percent)}</b><small>重置 {time(quota.windows.find(window => window.name === "5 小时")?.reset_at ?? null)}</small></div><div><span>周剩余</span><b>{quotaPercent(quota.windows.find(window => window.name === "周")?.remaining_percent)}</b><small>重置 {time(quota.windows.find(window => window.name === "周")?.reset_at ?? null)}</small></div><div><span>主动重置次数</span><b>{quota.reset_count_available ? `${quota.reset_count ?? 0} 次` : "上游未提供"}</b><small>查询于 {time(quota.fetched_at)}</small></div></div>}{remote.error && !historicalAuthorization && <p className="brokerError brokerTransientError">{errors[remote.error] ?? "授权操作未完成"}</p>}</>}
       </article>;
     })}</div>
     {overview && visibleAccounts.length === 0 && (!workbench || accountVisible) && <p className="brokerEmpty">{workbench ? "在左侧选择账号，或在上方搜索邮箱后授权。" : "当前筛选没有匹配账号。可以切换“全部”或清空搜索。"}</p>}
