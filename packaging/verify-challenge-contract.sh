@@ -35,7 +35,7 @@ engine_dir="${bin_dir%/Chromium.app/Contents/MacOS}"
 if [[ -e "$engine_dir/.notrace-independent-engine.json" ]]; then
   node "$ROOT/packaging/verify-independent-runtime.mjs" "$engine_dir"
   unset CLOAKBROWSER_LICENSE_KEY CLOAKBROWSER_LICENSE_STATUS_FILE
-else
+elif [[ "$engine_dir" == *-pro || "$engine_dir" == *-pro-notrace ]]; then
   license_file="${CLOAKBROWSER_LICENSE_FILE:-${CLOAKBROWSER_CACHE_DIR:-$HOME/.cloakbrowser}/license.key}"
   if [[ -z "${CLOAKBROWSER_LICENSE_KEY:-}" && -f "$license_file" && ! -L "$license_file" ]]; then
     IFS= read -r CLOAKBROWSER_LICENSE_KEY < "$license_file" || true
@@ -86,9 +86,10 @@ assert((plan.privacy_failures || []).length === 0, "core launch privacy prefligh
 assert(argv.some((arg) => arg.startsWith("--fingerprint=")), "missing --fingerprint");
 assert(argv.includes("--fingerprint-platform=macos"), "missing --fingerprint-platform=macos");
 const independent = argv.includes("--uxr-synthetic-device-tests=true");
-const nativeIdentity = !independent && !argv.some((arg) => arg.startsWith("--user-agent="));
-fs.writeFileSync(process.argv[3], independent ? "independent\n" : nativeIdentity ? "native\n" : "legacy\n");
-if (nativeIdentity || independent) {
+const keyless145 = plan.identity?.engine_version === "145.0.7632.109.2";
+const nativeIdentity = !independent && !keyless145 && !argv.some((arg) => arg.startsWith("--user-agent="));
+fs.writeFileSync(process.argv[3], independent ? "independent\n" : keyless145 ? "keyless145\n" : nativeIdentity ? "native\n" : "legacy\n");
+if (nativeIdentity || independent || keyless145) {
   assert(!argv.some((arg) => arg.startsWith("--user-agent=")), "modern engine must keep native --user-agent");
 } else {
   assert(argv.some((arg) => arg.startsWith("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")), "legacy engine missing coherent macOS --user-agent");
@@ -104,12 +105,24 @@ assert(argv.some((arg) => arg.startsWith("--fingerprint-timezone=")), "missing -
 assert(argv.some((arg) => arg.startsWith("--lang=")), "missing --lang");
 assert(argv.some((arg) => arg.startsWith("--fingerprint-locale=")), "missing --fingerprint-locale");
 assert(argv.some((arg) => arg.startsWith("--accept-lang=")), "missing --accept-lang");
+assert(!argv.includes("--no-sandbox"), "Chromium sandbox must remain enabled");
+if (keyless145) {
+  const tags = String(plan.locale || "").split(",").map(item => item.split(";", 1)[0].trim()).filter(Boolean).join(",");
+  assert(tags && argv.includes(`--accept-lang=${tags}`), "keyless 145 language list contains HTTP quality weights");
+  assert(argv.some(arg => /^--fingerprint-screen-width=\d+$/.test(arg)), "missing native screen width alignment");
+  assert(argv.some(arg => /^--fingerprint-screen-height=\d+$/.test(arg)), "missing native screen height alignment");
+}
 if (independent) {
+  const languages = String(plan.locale || "").split(",").map(item => item.split(";", 1)[0].trim()).filter(Boolean).join(",");
+  assert(languages && argv.includes(`--uxr-languages=${languages}`), "independent locale lost fallback languages");
   assert(argv.includes("--fingerprint-hardware-concurrency=8"), "missing independent hardware profile");
   assert(argv.includes("--fingerprint-device-memory=8"), "missing independent memory profile");
   assert(argv.includes("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"), "missing independent WebRTC guard");
   assert(!argv.some((arg) => arg.startsWith("--fingerprint-webrtc-ip=")), "unsupported independent WebRTC override");
   assert(!argv.includes("--no-sandbox"), "independent runtime must retain Chromium sandbox");
+} else if (keyless145) {
+  assert(argv.includes("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"), "missing keyless proxy-only UDP guard");
+  assert(!argv.some(arg => arg.startsWith("--fingerprint-webrtc-ip=")), "keyless runtime claims unverified exit-IP rewriting");
 } else {
   assert(argv.some((arg) => arg.startsWith("--fingerprint-webrtc-ip=")), "missing --fingerprint-webrtc-ip");
 }
@@ -146,7 +159,7 @@ if LC_ALL=C grep -aq -- "--disable-extensions-except=" "$tmpdir/bash-dry-run.txt
   fail "Bash dry-run blocks Web Store installs with --disable-extensions-except"
 fi
 identity_mode="$(awk 'NR == 1 { print $1 }' "$tmpdir/identity-mode")"
-if [[ "$identity_mode" == "native" || "$identity_mode" == "independent" ]]; then
+if [[ "$identity_mode" == "native" || "$identity_mode" == "independent" || "$identity_mode" == "keyless145" ]]; then
   if LC_ALL=C grep -aq -- "--user-agent=" "$tmpdir/bash-dry-run.txt"; then
     fail "Bash dry-run overrides modern engine user-agent"
   fi
@@ -164,11 +177,18 @@ fi
 LC_ALL=C grep -aq -- "--disable-blink-features=AutomationControlled" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing AutomationControlled blink feature guard"
 LC_ALL=C grep -aq -- "--fingerprint-timezone=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --fingerprint-timezone"
 if [[ "$identity_mode" == "independent" ]]; then
-  for flag in --uxr-synthetic-device-tests=true --fingerprint-hardware-concurrency=8 --fingerprint-device-memory=8 --force-webrtc-ip-handling-policy=disable_non_proxied_udp; do
+  LC_ALL=C grep -aq -- "--uxr-languages=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing full independent language list"
+  for flag in --uxr-synthetic-device-tests=true --uxr-native-fingerprint-noise=true --fingerprint-hardware-concurrency=8 --fingerprint-device-memory=8 --force-webrtc-ip-handling-policy=disable_non_proxied_udp; do
     LC_ALL=C grep -Fq -- "$flag" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing $flag"
   done
   if LC_ALL=C grep -aq -- "--fingerprint-webrtc-ip=" "$tmpdir/bash-dry-run.txt"; then
     fail "Bash dry-run advertises unsupported independent WebRTC override"
+  fi
+elif [[ "$identity_mode" == "keyless145" ]]; then
+  LC_ALL=C grep -Fq -- "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing keyless UDP guard"
+  LC_ALL=C grep -Fq -- "--fingerprint-screen-width=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing keyless screen alignment"
+  if LC_ALL=C grep -aq -- "--fingerprint-webrtc-ip=" "$tmpdir/bash-dry-run.txt"; then
+    fail "Bash dry-run claims unverified keyless exit-IP rewriting"
   fi
 else
   LC_ALL=C grep -aq -- "--fingerprint-webrtc-ip=" "$tmpdir/bash-dry-run.txt" || fail "Bash dry-run missing --fingerprint-webrtc-ip"

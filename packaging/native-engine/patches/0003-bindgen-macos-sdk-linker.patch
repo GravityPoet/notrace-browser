@@ -1,0 +1,25 @@
+diff --git a/tools/rust/build_bindgen.py b/tools/rust/build_bindgen.py
+--- a/tools/rust/build_bindgen.py
++++ b/tools/rust/build_bindgen.py
+@@ -127,8 +127,9 @@
+     else:
+         linker = os.path.join(clang_bins_dir, 'clang')
+-        env['LDFLAGS'] += ' -fuse-ld=lld'
+-        env['RUSTFLAGS'] += ' -Clink-arg=-fuse-ld=lld'
++        if sys.platform != 'darwin':
++            env['LDFLAGS'] += ' -fuse-ld=lld'
++            env['RUSTFLAGS'] += ' -Clink-arg=-fuse-ld=lld'
+     env['LD'] = linker
+     env['RUSTFLAGS'] += f' -Clinker={linker}'
+ 
+     if sys.platform.startswith('linux'):
+@@ -156,6 +157,9 @@
+         env['CXXFLAGS'] += f' -isysroot {sdk_path}'
+         env['LDFLAGS'] += f' -isysroot {sdk_path}'
+         env['RUSTFLAGS'] += f' -Clink-arg=-isysroot -Clink-arg={sdk_path}'
++        env['RUSTFLAGS'] += (
++            ' -Clink-arg=-Wl,-rpath,@executable_path/../lib'
++            ' -Clink-arg=-Wl,-rpath,@executable_path/../../llvm-build/Release+Asserts/lib')
+ 
+     # This will `fail_hard` and not return if `cargo` reports problems.
+     RunCommand([cargo_bin] + cargo_args, setenv=True, env=env)

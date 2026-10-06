@@ -4,6 +4,7 @@ use cloak_core::{
     broker_import_json as core_broker_import_json, broker_overview as core_broker_overview,
     broker_preview_json as core_broker_preview_json,
     broker_push_account as core_broker_push_account,
+    broker_quota_snapshot as core_broker_quota_snapshot,
     broker_refresh_account as core_broker_refresh_account, broker_set_cpa as core_broker_set_cpa,
     build_launch_plan, create_account_with_group as core_create_account_with_group,
     delete_account as core_delete_account,
@@ -24,6 +25,7 @@ use cloak_core::{
     set_region as core_set_region, toggle_locale as core_toggle_locale, Account, AuthAuthority,
     AuthLoginProgress, AuthRefreshSummary, AuthStatus, BrokerJsonImportPreview,
     BrokerJsonImportSummary, BrokerJsonTransferSummary, BrokerMetadata, BrokerOverview,
+    CodexQuotaSnapshot,
     CloakConfig, ForceCloseResult, LaunchOptions, LaunchPlan, LaunchResult, SeatUsage,
     WorkspaceExportSummary, WorkspaceImportMapping, WorkspaceImportPreview, WorkspaceImportSummary,
     WorkspacePickerState,
@@ -732,6 +734,14 @@ async fn broker_refresh_account(profile_id: String) -> Result<BrokerMetadata, St
 }
 
 #[tauri::command]
+async fn broker_quota_snapshot(profile_id: String) -> Result<CodexQuotaSnapshot, String> {
+    run_blocking(move || {
+        core_broker_quota_snapshot(&config()?, &profile_id).map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
 async fn broker_set_cpa(profile_id: String, enabled: bool) -> Result<BrokerMetadata, String> {
     run_blocking(move || {
         core_broker_set_cpa(&config()?, &profile_id, enabled).map_err(|err| err.to_string())
@@ -1345,6 +1355,7 @@ pub fn run() {
             broker_overview,
             save_broker_connection,
             broker_push_account,
+            broker_quota_snapshot,
             broker_refresh_account,
             broker_set_cpa,
             choose_broker_json_import_path,

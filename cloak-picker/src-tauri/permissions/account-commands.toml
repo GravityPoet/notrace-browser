@@ -25,6 +25,7 @@ commands.allow = [
   "broker_overview",
   "save_broker_connection",
   "broker_push_account",
+  "broker_quota_snapshot",
   "broker_refresh_account",
   "broker_set_cpa",
   "choose_broker_json_import_path",

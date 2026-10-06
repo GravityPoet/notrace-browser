@@ -8,10 +8,12 @@ mod broker_client;
 mod broker_transfer;
 pub use broker::{
     push_local_grant, AccessCredential, BrokerConfig, BrokerError, BrokerMetadata, BrokerStore,
+    CodexQuotaSnapshot, CodexQuotaWindow,
 };
 pub use broker_client::{
     broker_convert_json, broker_export_json, broker_import_json, broker_overview,
-    broker_preview_json, broker_push_account, broker_refresh_account, broker_set_cpa,
+    broker_preview_json, broker_push_account, broker_quota_snapshot, broker_refresh_account,
+    broker_set_cpa,
     save_broker_connection, BrokerJsonImportSummary, BrokerJsonTransferSummary, BrokerOverview,
 };
 pub use broker_transfer::{
@@ -160,6 +162,14 @@ struct ResolvedBrowser {
 }
 
 impl EngineVersion {
+    fn is_keyless_macos_145(&self) -> bool {
+        !self.independent && self.distribution == "145.0.7632.109.2"
+    }
+
+    fn uses_native_user_agent(&self) -> bool {
+        self.independent || self.uses_native_identity() || self.is_keyless_macos_145()
+    }
+
     fn fallback() -> Self {
         Self {
             major: CLOAK_CHROME_MAJOR_FALLBACK.to_string(),
@@ -241,7 +251,7 @@ fn numeric_version_components(version: &str) -> Vec<u64> {
 /// the final packaging revision even when that revision contains fingerprint
 /// fixes. `-notrace` identifies the locally signed TCC-ready runtime copy.
 fn extract_version_from_path(path: &Path) -> Option<EngineVersion> {
-    let re = Regex::new(r"^chromium[-_](\d+(?:\.\d+){0,4})(?:-pro)?(?:-notrace)?$").ok()?;
+    let re = Regex::new(r"^chromium[-_](\d+(?:\.\d+){0,4})(?:-pro)?(?:-native)?(?:-notrace)?$").ok()?;
     for ancestor in path.ancestors() {
         let name = ancestor.file_name()?.to_string_lossy();
         if let Some(caps) = re.captures(&name) {
@@ -1296,13 +1306,10 @@ fn build_launch_plan_for_url(
         format!("--fingerprint={seed}"),
         format!("--fingerprint-platform={}", fingerprint_platform()),
     ];
-    // CloakBrowser 150+ derives a coherent UA, Client Hints, platform and GPU
-    // identity inside the engine. Re-supplying the legacy overrides can create
-    // conflicts with those native patches. Keep them only for the installed 145
-    // compatibility line.
-    // Chromix fills native UA-CH metadata. Chromium's raw --user-agent override
-    // clears high-entropy hints there, so it must not be used for that runtime.
-    if !engine.uses_native_identity() && !engine.independent {
+    // A raw UA override clears high-entropy hints, including bitness, on both
+    // the verified keyless 145 and Chromix. Keep their engine-generated UA;
+    // 145 still needs the separate legacy brand/platform/GPU flags below.
+    if !engine.uses_native_user_agent() {
         let user_agent = browser_identity
             .get("userAgent")
             .and_then(Value::as_str)
@@ -1333,6 +1340,7 @@ fn build_launch_plan_for_url(
         &identity,
     );
     append_window_geometry_args(&mut argv, &profile_path);
+    append_legacy_host_display_args(&mut argv, &engine);
     if let Some(proxy_arg) = &proxy_config.browser_arg {
         argv.push(format!("--proxy-server={proxy_arg}"));
     }
@@ -1539,20 +1547,16 @@ fn launch_plan(
             launch_ms: duration_millis(launch_started.elapsed()),
             runtime: plan.runtime.clone(),
             capabilities: launch_capabilities(
-                !plan.argv.iter().any(|arg| arg.starts_with("--user-agent="))
-                    && !plan
-                        .argv
-                        .iter()
-                        .any(|arg| arg == "--uxr-synthetic-device-tests=true"),
+                plan.identity.template == IdentityTemplate::HostNative,
                 is_local_notrace_runtime(&plan.browser_binary),
             )
             .into_iter()
             .filter(|capability| {
                 capability != "webrtc-exit-ip-binding"
-                    || !plan
+                    || plan
                         .argv
                         .iter()
-                        .any(|arg| arg == "--uxr-synthetic-device-tests=true")
+                        .any(|arg| arg.starts_with("--fingerprint-webrtc-ip="))
             })
             .collect(),
         },
@@ -1586,6 +1590,23 @@ fn launch_browser_process(
         );
     };
 
+    let locale_bootstrap = argv.iter().any(|arg| arg == "-AppleLanguages");
+    let deferred_url = locale_bootstrap.then(|| argv.last().cloned().unwrap_or_default());
+    let initial_argv = if locale_bootstrap {
+        // Cocoa needs paired language arguments, but Chromium also treats
+        // their values as startup URLs. Initialize the profile without a
+        // window, then send only the real URL through its normal singleton.
+        let mut initial = argv[..argv.len() - 1]
+            .iter()
+            .filter(|arg| arg.as_str() != "--new-window")
+            .cloned()
+            .collect::<Vec<_>>();
+        initial.push("--no-startup-window".to_string());
+        initial
+    } else {
+        argv.to_vec()
+    };
+
     // LaunchServices makes Chromium, rather than whichever Picker/account tile
     // happened to invoke it, the responsible process for macOS TCC. All account
     // entry points can therefore reuse one Bluetooth/passkey permission grant.
@@ -1611,7 +1632,7 @@ fn launch_browser_process(
     } else {
         command.env_remove(license::STATUS_FILE_ENV);
     }
-    command.arg(app_bundle).arg("--args").args(argv);
+    command.arg(app_bundle).arg("--args").args(&initial_argv);
     command.stdin(Stdio::null());
 
     let output = command.output()?;
@@ -1627,7 +1648,31 @@ fn launch_browser_process(
         })));
     }
 
-    wait_for_macos_browser_startup(browser_binary, profile_path, status_file, startup_policy)
+    let pid = wait_for_macos_browser_startup(
+        browser_binary,
+        profile_path,
+        status_file,
+        startup_policy,
+        locale_bootstrap,
+    )?;
+    if let Some(url) = deferred_url {
+        let status = Command::new(browser_binary)
+            .arg(format!("--user-data-dir={}", profile_path.display()))
+            .arg("--new-window")
+            .arg(url)
+            .env_remove("CLOAKBROWSER_LICENSE_KEY")
+            .env_remove(license::STATUS_FILE_ENV)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        if !status.success() {
+            return Err(CloakError::BrowserStartup(
+                "原生语言已初始化，但正常页面窗口启动失败".into(),
+            ));
+        }
+    }
+    Ok(pid)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1770,6 +1815,7 @@ fn wait_for_macos_browser_startup(
     profile_path: &Path,
     status_file: Option<&Path>,
     startup_policy: StartupPolicy,
+    locale_bootstrap: bool,
 ) -> Result<u32> {
     let deadline = Instant::now() + BROWSER_STARTUP_TIMEOUT;
     let mut stable_pid: Option<u32> = None;
@@ -1790,11 +1836,15 @@ fn wait_for_macos_browser_startup(
                 stable_pid = Some(pid);
                 stable_since.get_or_insert_with(Instant::now);
                 missing_since = None;
-                let ready = match startup_policy {
-                    StartupPolicy::Fast => macos_process_finished_launching(pid),
-                    StartupPolicy::Conservative => stable_since
-                        .map(|started| started.elapsed() >= BROWSER_STARTUP_STABILITY)
-                        .unwrap_or(false),
+                let ready = if locale_bootstrap {
+                    profile_path.join("SingletonSocket").exists()
+                } else {
+                    match startup_policy {
+                        StartupPolicy::Fast => macos_process_finished_launching(pid),
+                        StartupPolicy::Conservative => stable_since
+                            .map(|started| started.elapsed() >= BROWSER_STARTUP_STABILITY)
+                            .unwrap_or(false),
+                    }
                 };
                 if ready {
                     if let Some(code) = status_file.and_then(license::read_denial_code) {
@@ -3240,6 +3290,7 @@ fn resolve_browser(config: &CloakConfig) -> Result<ResolvedBrowser> {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             let distribution = name.strip_suffix("-notrace").unwrap_or(name.as_ref());
+            let distribution = distribution.strip_suffix("-native").unwrap_or(distribution);
             if distribution.ends_with("-pro") && !licensed_binary_available {
                 continue;
             }
@@ -3389,8 +3440,15 @@ fn independent_runtime_marker(binary: &Path) -> Option<PathBuf> {
 struct IndependentRuntimeMetadata {
     provider: String,
     version: String,
-    archive_sha256: String,
+    #[serde(default)]
+    engine_version: Option<String>,
+    #[serde(default)]
+    archive_sha256: Option<String>,
     source_commit: String,
+    #[serde(default)]
+    source_lock_sha256: Option<String>,
+    #[serde(default)]
+    patch_stack_sha256: Option<String>,
     binary_sha256: String,
     framework_sha256: String,
 }
@@ -3405,7 +3463,7 @@ fn verify_independent_runtime(binary: &Path) -> Result<bool> {
             if marker
                 .parent()
                 .and_then(Path::file_name)
-                .is_some_and(|name| name == "chromium-152.0.7977.82-notrace")
+                .is_some_and(|name| name.to_string_lossy().starts_with("chromium-152.0.7977.82"))
             {
                 return Err(CloakError::PrivacyGate(
                     "独立内核来源标记缺失，已停止启动".into(),
@@ -3421,11 +3479,27 @@ fn verify_independent_runtime(binary: &Path) -> Result<bool> {
     }
     let metadata: IndependentRuntimeMetadata =
         serde_json::from_slice(&fs::read(&marker)?).map_err(|_| invalid())?;
-    if metadata.provider != "chromix"
-        || metadata.version != "152.0.7977.82"
-        || metadata.archive_sha256
-            != "8ceefefced9018dfe917650ce156bd1ffdaa9bc2bc6b89b70b6d021262166eb4"
-        || metadata.source_commit != "ca52ae0d01168a8bc118ccc28d484011a7eb0efb"
+    let source_contract_valid = match metadata.provider.as_str() {
+        "chromix" => {
+            metadata.archive_sha256.as_deref()
+                == Some("8ceefefced9018dfe917650ce156bd1ffdaa9bc2bc6b89b70b6d021262166eb4")
+                && metadata.source_commit == "ca52ae0d01168a8bc118ccc28d484011a7eb0efb"
+        }
+        "notrace-native" => {
+            metadata.engine_version.as_deref() == Some("152.0.7977.82")
+                && metadata.source_commit.len() == 40
+                && metadata.source_commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && metadata.source_lock_sha256.as_deref().is_some_and(|value| {
+                    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+                && metadata.patch_stack_sha256.as_deref().is_some_and(|value| {
+                    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+        }
+        _ => false,
+    };
+    if metadata.version != "152.0.7977.82"
+        || !source_contract_valid
         || sha256_file(binary)? != metadata.binary_sha256
     {
         return Err(invalid());
@@ -3507,6 +3581,8 @@ fn version_sort_key(path: &Path) -> (Vec<u64>, bool, bool) {
         };
         let local_runtime = rest.ends_with("-notrace");
         let distribution = rest.strip_suffix("-notrace").unwrap_or(rest);
+        let native = distribution.ends_with("-native");
+        let distribution = distribution.strip_suffix("-native").unwrap_or(distribution);
         let pro = distribution.ends_with("-pro");
         let numeric = distribution.strip_suffix("-pro").unwrap_or(distribution);
         let parts: Vec<u64> = numeric
@@ -3514,7 +3590,7 @@ fn version_sort_key(path: &Path) -> (Vec<u64>, bool, bool) {
             .map(|part| part.parse::<u64>().unwrap_or(0))
             .collect();
         if !parts.is_empty() {
-            return (parts, pro, local_runtime);
+            return (parts, pro, local_runtime || native);
         }
     }
     (Vec::new(), false, false)
@@ -3672,6 +3748,15 @@ fn primary_locale_from_accept_language(accept_language: &str) -> &str {
         .trim()
 }
 
+fn language_tags_from_accept_language(accept_language: &str) -> String {
+    accept_language
+        .split(',')
+        .map(|item| item.split(';').next().unwrap_or(item).trim())
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn append_native_fingerprint_args(
     argv: &mut Vec<String>,
     geo: &GeoPlan,
@@ -3687,22 +3772,53 @@ fn append_native_fingerprint_args(
         let primary_locale = primary_locale_from_accept_language(locale);
         argv.push(format!("--lang={primary_locale}"));
         argv.push(format!("--fingerprint-locale={primary_locale}"));
-        argv.push(format!("--accept-lang={locale}"));
+        let languages = language_tags_from_accept_language(locale);
+        // The keyless 145 parser treats this switch as navigator language
+        // tags, then generates HTTP q weights itself. Sending a weighted
+        // header produces invalid tags and duplicate weights.
+        argv.push(format!(
+            "--accept-lang={}",
+            if engine.is_keyless_macos_145() {
+                &languages
+            } else {
+                locale
+            }
+        ));
+        if engine.independent {
+            // Chromix normalizes fingerprint-locale to uxr-languages and then
+            // replaces accept-lang. Supply the full tag list first so the
+            // primary locale alias cannot truncate fallback languages.
+            argv.push(format!("--uxr-languages={languages}"));
+        } else if engine.is_keyless_macos_145() {
+            // Process-scoped Cocoa defaults initialize the native ICU locale;
+            // no global preference writes or JavaScript Intl proxy is needed.
+            argv.extend([
+                "-AppleLanguages".to_string(),
+                format!("({languages})"),
+                "-AppleLocale".to_string(),
+                primary_locale.replace('-', "_"),
+            ]);
+        }
     }
     if let Some(exit_ip) = geo
         .exit_ip
         .as_deref()
-        .filter(|value| !value.is_empty() && !engine.independent)
+        .filter(|value| !value.is_empty() && !engine.independent && !engine.is_keyless_macos_145())
     {
         argv.push(format!("--fingerprint-webrtc-ip={exit_ip}"));
     }
     if engine.independent {
         argv.extend([
             "--uxr-synthetic-device-tests=true".to_string(),
+            "--uxr-native-fingerprint-noise=true".to_string(),
             "--fingerprint-hardware-concurrency=8".to_string(),
             "--fingerprint-device-memory=8".to_string(),
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string(),
         ]);
+    } else if engine.is_keyless_macos_145() {
+        // This older Mac build has no verified exit-IP rewrite. Apply the
+        // browser's native proxy-only UDP policy, not an unsupported switch.
+        argv.push("--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string());
     }
     if engine.uses_native_identity() {
         return;
@@ -3799,6 +3915,46 @@ fn append_window_geometry_args(argv: &mut Vec<String>, profile_path: &Path) {
     };
     argv.push(format!("--window-position={left},{top}"));
     argv.push(format!("--window-size={width},{height}"));
+}
+
+fn append_legacy_host_display_args(argv: &mut Vec<String>, engine: &EngineVersion) {
+    if !engine.is_keyless_macos_145() {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        #[repr(C)]
+        struct DisplayBounds {
+            x: f64,
+            y: f64,
+            width: f64,
+            height: f64,
+        }
+        #[link(name = "CoreGraphics", kind = "framework")]
+        unsafe extern "C" {
+            fn CGMainDisplayID() -> u32;
+            fn CGDisplayBounds(display: u32) -> DisplayBounds;
+        }
+        // CoreGraphics returns display bounds in the same logical points used
+        // by CSS device dimensions. These read-only APIs are thread-safe.
+        let bounds = unsafe { CGDisplayBounds(CGMainDisplayID()) };
+        if bounds.width.is_finite()
+            && bounds.height.is_finite()
+            && (1.0..=16384.0).contains(&bounds.width)
+            && (1.0..=16384.0).contains(&bounds.height)
+        {
+            argv.push(format!(
+                "--fingerprint-screen-width={}",
+                bounds.width.round() as u32
+            ));
+            argv.push(format!(
+                "--fingerprint-screen-height={}",
+                bounds.height.round() as u32
+            ));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = argv;
 }
 
 fn launch_capabilities(native_identity: bool, local_tcc_runtime: bool) -> Vec<String> {
@@ -5550,6 +5706,44 @@ mod tests {
     }
 
     #[test]
+    fn keyless_145_preserves_native_ua_and_uses_unweighted_language_tags() {
+        let engine = EngineVersion {
+            major: "145".into(),
+            full: "145.0.7632.109".into(),
+            distribution: "145.0.7632.109.2".into(),
+            independent: false,
+        };
+        assert!(engine.uses_native_user_agent());
+        assert!(!engine.uses_native_identity());
+        let metadata = ProfileMetadata::new_for_test(1, "profile-id", "bucket-m3");
+        let identity = identity_contract_for(&metadata, &engine, "27.2.0");
+        let mut argv = Vec::new();
+        append_native_fingerprint_args(
+            &mut argv,
+            &GeoPlan {
+                exit_ip: Some("203.0.113.24".into()),
+                timezone: Some("Asia/Tokyo".into()),
+                ..GeoPlan::default()
+            },
+            Some("ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7"),
+            &engine,
+            &identity,
+        );
+        assert!(argv.contains(&"--accept-lang=ja-JP,ja,en-US,en".to_string()));
+        assert!(argv.contains(&"--fingerprint-brand-version=145.0.7632.109".to_string()));
+        assert!(
+            argv.contains(&"--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string())
+        );
+        assert!(!argv
+            .iter()
+            .any(|arg| arg.starts_with("--fingerprint-webrtc-ip=")));
+        assert!(argv.iter().any(|arg| arg.contains("Apple M3")));
+        assert!(argv
+            .windows(2)
+            .any(|pair| pair == ["-AppleLanguages", "(ja-JP,ja,en-US,en)"]));
+    }
+
+    #[test]
     fn native_fingerprint_args_follow_cloakbrowser_wrapper_contract() {
         let mut argv = Vec::new();
         let engine = EngineVersion::fallback();
@@ -5609,12 +5803,14 @@ mod tests {
                 timezone: Some("Asia/Tokyo".into()),
                 ..GeoPlan::default()
             },
-            Some("ja-JP"),
+            Some("ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7"),
             &engine,
             &identity,
         );
         for required in [
             "--uxr-synthetic-device-tests=true",
+            "--uxr-native-fingerprint-noise=true",
+            "--uxr-languages=ja-JP,ja,en-US,en",
             "--fingerprint-brand=Google Chrome",
             "--fingerprint-hardware-concurrency=8",
             "--fingerprint-device-memory=8",

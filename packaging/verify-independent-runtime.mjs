@@ -15,18 +15,27 @@ const marker = join(root, '.notrace-independent-engine.json');
 const stat = lstatSync(marker);
 assert.ok(stat.isFile() && stat.size < 4096, 'Invalid independent runtime marker');
 const data = JSON.parse(readFileSync(marker, 'utf8'));
-assert.deepEqual(Object.keys(data).sort(), ['provider', 'version', 'archive_sha256', 'source_commit', 'binary_sha256', 'framework_sha256'].sort());
-assert.equal(data.provider, 'chromix');
+const allowedKeys = ['provider', 'version', 'engine_version', 'archive_sha256', 'source_commit', 'source_lock_sha256', 'patch_stack_sha256', 'binary_sha256', 'framework_sha256'];
+assert.ok(Object.keys(data).every(key => allowedKeys.includes(key)), 'Unknown runtime marker field');
 assert.equal(data.version, '152.0.7977.82');
-assert.equal(data.archive_sha256, '8ceefefced9018dfe917650ce156bd1ffdaa9bc2bc6b89b70b6d021262166eb4');
-assert.equal(data.source_commit, 'ca52ae0d01168a8bc118ccc28d484011a7eb0efb');
+if (data.provider === 'chromix') {
+  assert.equal(data.archive_sha256, '8ceefefced9018dfe917650ce156bd1ffdaa9bc2bc6b89b70b6d021262166eb4');
+  assert.equal(data.source_commit, 'ca52ae0d01168a8bc118ccc28d484011a7eb0efb');
+} else {
+  assert.equal(data.provider, 'notrace-native');
+  assert.equal(data.engine_version, '152.0.7977.82');
+  assert.match(data.source_commit, /^[0-9a-f]{40}$/);
+  assert.match(data.source_lock_sha256, /^[0-9a-f]{64}$/);
+  assert.match(data.patch_stack_sha256, /^[0-9a-f]{64}$/);
+}
 const app = join(root, 'Chromium.app');
 for (const key of ['NSMicrophoneUsageDescription', 'NSCameraUsageDescription', 'NSBluetoothAlwaysUsageDescription']) {
   const value = execFileSync('/usr/libexec/PlistBuddy', ['-c', `Print :${key}`, join(app, 'Contents/Info.plist')], { encoding: 'utf8' });
   assert.ok(value.trim(), `Missing ${key}`);
 }
 const binary = join(app, 'Contents/MacOS/Chromium');
-const framework = join(app, `Contents/Frameworks/Chromium Framework.framework/Versions/${data.version}/Chromium Framework`);
+const frameworkVersion = data.engine_version || data.version;
+const framework = join(app, `Contents/Frameworks/Chromium Framework.framework/Versions/${frameworkVersion}/Chromium Framework`);
 const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 assert.equal(hash(binary), data.binary_sha256, 'Independent runtime binary changed');
 assert.equal(hash(framework), data.framework_sha256, 'Independent runtime framework changed');

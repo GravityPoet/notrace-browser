@@ -2,7 +2,7 @@
 //! cross the frontend IPC boundary; all returns are metadata only.
 use crate::{
     format_access_credentials, AccessCredential, AuthStatus, BrokerJsonFormat,
-    BrokerJsonImportPreview, BrokerMetadata, CloakConfig, CloakError, Result,
+    BrokerJsonImportPreview, BrokerMetadata, CodexQuotaSnapshot, CloakConfig, CloakError, Result,
 };
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -147,6 +147,21 @@ pub fn broker_refresh_account(config: &CloakConfig, profile_id: &str) -> Result<
             segment(profile_id)?
         ),
         Some(json!({})),
+    )
+}
+
+/// Read-only usage/quota query. The Broker uses the current access token and
+/// never refreshes or synchronizes CPA as part of this request.
+pub fn broker_quota_snapshot(
+    config: &CloakConfig,
+    profile_id: &str,
+) -> Result<CodexQuotaSnapshot> {
+    let connection = load(config)?.ok_or_else(|| CloakError::Auth("请先连接 Broker".into()))?;
+    request(
+        &connection,
+        "GET",
+        &format!("/v1/admin/accounts/{}/quota", segment(profile_id)?),
+        None,
     )
 }
 pub fn broker_set_cpa(
@@ -454,6 +469,7 @@ fn request<T: serde::de::DeserializeOwned>(
                 (409, Some("recovery_required")) => "授权链状态不确定，需要重新授权",
                 (409, Some("service_unavailable")) => "授权服务暂不可用，稍后重试",
                 (409, Some("consumer_conflict")) => "CPA 存在未托管凭据，未覆盖",
+                (503, Some("quota_unavailable")) => "上游额度暂时无法读取，请稍后重试",
                 (409, _) => "授权或同步状态需要检查，请查看账号详情",
                 (423, _) => "账号正在授权或刷新",
                 _ => "Broker 操作未完成",

@@ -8,6 +8,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CB="${CLOAK_BROWSER_ROOT:-$HOME/.cloakbrowser}"
 ACCOUNTS="${CLOAK_ACCOUNT_BASE:-$HOME/Library/Application Support/NoTrace Browser/Accounts}"
 mode="${1:-activate}"
+candidate="${2:-chromix}"
 stage=""
 cleanup() { if [[ -n "$stage" && -d "$stage" ]]; then /bin/rm -rf "$stage"; fi; }
 trap cleanup EXIT
@@ -42,8 +43,15 @@ current_version="${current_dir##*/chromium-}"
 case "$mode" in
   backup|activate)
     if [[ "$mode" == activate ]]; then
-      node "$ROOT/packaging/verify-independent-runtime.mjs" "$CB/chromium-152.0.7977.82-notrace"
-      if [[ "$current_version" == '152.0.7977.82-notrace' ]]; then
+      if [[ "$candidate" == native ]]; then
+        target_version='152.0.7977.82-native-notrace'
+      elif [[ "$candidate" == chromix ]]; then
+        target_version='152.0.7977.82-notrace'
+      else
+        die '候选类型仅支持 chromix 或 native'
+      fi
+      node "$ROOT/packaging/verify-independent-runtime.mjs" "$CB/chromium-$target_version"
+      if [[ "$current_version" == "$target_version" ]]; then
         printf '%s\n' '独立内核已启用；不重复切换或创建快照'
         exit 0
       fi
@@ -71,7 +79,7 @@ fs.writeFileSync(path.join(process.argv[2], 'snapshot.json'), JSON.stringify({sc
 JS
     assert_idle
     if [[ "$mode" == activate ]]; then
-      CLOAKBROWSER_DIR="$CB" bash "$ROOT/packaging/rollback-chromium.sh" 152.0.7977.82-notrace
+      CLOAKBROWSER_DIR="$CB" bash "$ROOT/packaging/rollback-chromium.sh" "$target_version"
     fi
     printf '账号快照：%s\n' "$snapshot"
     ;;
@@ -84,7 +92,7 @@ const fs=require('node:fs');
 const file=process.argv[2],stat=fs.lstatSync(file);
 if(!stat.isFile()||stat.size>4096)throw Error('Invalid snapshot metadata');
 const data=JSON.parse(fs.readFileSync(file,'utf8'));
-if(data.schema!==1||data.account_base!==process.argv[3]||!/^\d+(\.\d+){3,4}(-pro)?(-notrace)?$/.test(data.previous_version)||! /^[a-f0-9]{64}$/.test(data.accounts_sha256))throw Error('Snapshot belongs to another workspace or has no integrity digest');
+if(data.schema!==1||data.account_base!==process.argv[3]||!/^\d+(\.\d+){3,4}(-pro)?(-native)?(-notrace)?$/.test(data.previous_version)||! /^[a-f0-9]{64}$/.test(data.accounts_sha256))throw Error('Snapshot belongs to another workspace or has no integrity digest');
 console.log(data.previous_version);
 JS
 )"
@@ -113,5 +121,5 @@ JS
     fi
     printf '旧内核与账号快照已恢复；切换后数据另存于：%s\n' "$preserved"
     ;;
-  *) die '用法：switch-independent-engine.sh [activate|backup|restore <快照目录>]' ;;
+  *) die '用法：switch-independent-engine.sh [activate [chromix|native]|backup|restore <快照目录>' ;;
 esac

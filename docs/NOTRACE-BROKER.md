@@ -108,6 +108,23 @@ counts without adding them twice. Legacy grants start at zero; earlier history
 is not inferred from `generation`. The Picker labels the counts as accumulated
 since statistics were enabled.
 
+### Read-only Codex quota
+
+The Picker's **读取额度** action calls the Broker admin endpoint
+`GET /v1/admin/accounts/<account>/quota`. It uses the current access token to
+query ChatGPT's usage service and never calls `POST /refresh`, persists a token,
+or writes a CPA projection. The response contains the primary five-hour window,
+the secondary weekly window, each reset time, and the active banked reset count
+when the upstream returns either `available_count` or a `credits[]` detail list.
+Expired, redeemed, or consumed detail entries are not counted. If neither form
+is returned, the UI says **上游未提供**; Broker refresh counts are never shown as
+quota reset counts.
+
+The read is deliberately on demand for the all-account list and bounded to the
+currently selected workbench account. A 401/403 or malformed upstream response
+is surfaced as an unavailable quota read and does not change the grant's
+reauthorization state.
+
 ## Current migration boundary
 
 CPA synchronization is opt-in per account and refuses to overwrite an existing

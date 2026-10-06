@@ -115,6 +115,7 @@ try {
   const plans = await Promise.all(names.map(name => runCli(["launch", name, "--dry-run", "--skip-geo", "--json"])));
   for (const plan of plans) {
     assert.ok(plan.argv.includes("--uxr-synthetic-device-tests=true"), "Selected runtime is not independent");
+    assert.ok(plan.argv.includes("--uxr-native-fingerprint-noise=true"), "Independent runtime lacks native noise policy");
     assert.deepEqual(plan.privacy_failures, []);
     assert.ok(!plan.argv.some(arg => arg.startsWith("--user-agent=")), "Raw UA override clears independent high-entropy hints");
   }

@@ -12,7 +12,10 @@ import {
   distributionVersionFromPath,
   independentEngineMetadata,
   independentFingerprintArgs,
+  independentLanguageArgs,
   nativeEngineIdentitySupported,
+  nativeUserAgentSupported,
+  keylessMacos145,
   parseChromiumVersion,
   redactProxyCredentials,
 } from "./browser-contract.mjs";
@@ -53,6 +56,14 @@ test("new engine generations keep native identity surfaces authoritative", () =>
   );
 });
 
+test("verified keyless 145 keeps native UA without claiming the newer complete identity engine", () => {
+  const version = { major: "145", distribution: "145.0.7632.109.2" };
+  assert.equal(keylessMacos145(version), true);
+  assert.equal(nativeUserAgentSupported(version), true);
+  assert.equal(nativeEngineIdentitySupported(version), false);
+  assert.equal(nativeUserAgentSupported({ major: "145" }), false);
+});
+
 test("companion page spoof is opt-in", () => {
   assert.equal(companionPageSpoofEnabled({}), false);
   assert.equal(companionPageSpoofEnabled({ CLOAK_COMPANION_PAGE_SPOOF: "1" }), true);
@@ -68,10 +79,18 @@ test("independent runtime selects tested native flags without disabling the sand
   const args = independentFingerprintArgs("24680");
   assert.deepEqual(args, independentFingerprintArgs("24680"));
   assert.ok(args.includes("--uxr-synthetic-device-tests=true"));
+  assert.ok(args.includes("--uxr-native-fingerprint-noise=true"));
   assert.ok(args.some(arg => arg.includes("Apple M3")));
   assert.ok(args.includes("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"));
   assert.ok(!args.includes("--no-sandbox"));
   assert.ok(!args.some(arg => arg.startsWith("--fingerprint-webrtc-ip=")));
+});
+
+test("independent locale keeps fallback tags without passing HTTP quality weights to ICU", () => {
+  assert.deepEqual(independentLanguageArgs("ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7"),
+    ["--uxr-languages=ja-JP,ja,en-US,en"]);
+  assert.deepEqual(independentLanguageArgs("en-US,en;q=0.9"), ["--uxr-languages=en-US,en"]);
+  assert.deepEqual(independentLanguageArgs(""), []);
 });
 
 test("independent provenance rejects framework changes, unknown fields and symlink markers", () => {

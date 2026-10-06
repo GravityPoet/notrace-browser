@@ -1,0 +1,17 @@
+# Development candidate only. Production/release settings need a separate gate.
+target_cpu = "arm64"
+v8_target_cpu = "arm64"
+target_os = "mac"
+is_official_build = false
+is_unsafe_developer_build = false
+is_debug = false
+is_component_build = false
+symbol_level = 0
+blink_symbol_level = 0
+v8_symbol_level = 0
+enable_dsyms = false
+enable_stripping = false
+enable_precompiled_headers = false
+chrome_pgo_phase = 0
+use_thin_lto = false
+use_lld = false

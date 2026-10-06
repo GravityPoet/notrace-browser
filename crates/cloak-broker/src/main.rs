@@ -157,6 +157,7 @@ fn handle(mut request: Request, store: &BrokerStore, keys: &Keys) {
                 BrokerError::ReauthRequired
                 | BrokerError::RecoveryRequired
                 | BrokerError::ConsumerConflict => 409,
+                BrokerError::QuotaUnavailable => 503,
                 _ => 503,
             };
             respond(
@@ -186,13 +187,18 @@ fn route(
             .decode_utf8()
             .map_err(|_| BrokerError::Config)?;
         if method == "GET" && action == "credential" {
-            let _ = store.refresh(&key, false);
+            // Credential reads are side-effect free. OAuth rotation belongs to
+            // the explicit POST /refresh path and the scheduler only.
             let include_refresh_token = url.split('?').nth(1).is_some_and(|query| {
                 query
                     .split('&')
                     .any(|item| item == "include_refresh_token=1")
             });
             return serde_json::to_value(store.export_credential(&key, include_refresh_token)?)
+                .map_err(|_| BrokerError::Storage);
+        }
+        if method == "GET" && action == "quota" {
+            return serde_json::to_value(store.quota_snapshot(&key)?)
                 .map_err(|_| BrokerError::Storage);
         }
         let metadata = match (method, action) {
@@ -232,7 +238,6 @@ fn route(
             .decode_utf8()
             .map_err(|_| BrokerError::Config)?;
         if method == "GET" && parts[3] == "credential" {
-            let _ = store.refresh(&key, false);
             return serde_json::to_value(store.access_credential(&key)?)
                 .map_err(|_| BrokerError::Storage);
         }

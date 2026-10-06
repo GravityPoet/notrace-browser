@@ -158,7 +158,7 @@ binary_for_dir() {
 
 parse_distribution_name() {
   local name="$1"
-  if [[ ! "$name" =~ ^chromium-([0-9]+([.][0-9]+){3,4})(-pro)?(-notrace)?$ ]]; then
+  if [[ ! "$name" =~ ^chromium-([0-9]+([.][0-9]+){3,4})(-pro)?(-native)?(-notrace)?$ ]]; then
     return 1
   fi
   DIST_VERSION="${BASH_REMATCH[1]}"
