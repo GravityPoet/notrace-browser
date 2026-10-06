@@ -957,9 +957,6 @@ pub fn permanently_delete_account(config: &CloakConfig, name: &str) -> Result<()
     if !profile.exists() {
         return Err(CloakError::AccountMissing(name.to_string()));
     }
-    if !profile.join(".cloak-trashed").exists() && !profile.join(".cloak-archived").exists() {
-        return Err(CloakError::AccountNotTrashed(name.to_string()));
-    }
     if account_profile_is_running(&profile)? {
         return Err(CloakError::AccountRunning(name.to_string()));
     }
@@ -5665,7 +5662,7 @@ mod tests {
     }
 
     #[test]
-    fn permanent_delete_only_removes_trashed_accounts() {
+    fn permanent_delete_removes_owned_active_trashed_and_archived_accounts() {
         let dir = tempfile::tempdir().unwrap();
         let config = CloakConfig {
             repo_root: dir.path().to_path_buf(),
@@ -5676,9 +5673,19 @@ mod tests {
         fs::create_dir_all(&config.extension_source).unwrap();
 
         create_account(&config, "active").unwrap();
-        let error = permanently_delete_account(&config, "active").unwrap_err();
-        assert!(matches!(error, CloakError::AccountNotTrashed(name) if name == "active"));
-        assert!(config.profile_dir("active").exists());
+        create_account(&config, "keep").unwrap();
+        permanently_delete_account(&config, "active").unwrap();
+        assert!(!config.profile_dir("active").exists());
+        assert!(config.profile_dir("keep").exists());
+
+        let unowned = config.profile_dir("unowned");
+        fs::create_dir_all(&unowned).unwrap();
+        fs::write(unowned.join("keep.txt"), "not an owned profile").unwrap();
+        assert!(matches!(
+            permanently_delete_account(&config, "unowned").unwrap_err(),
+            CloakError::ProfileOwnerMismatch(_)
+        ));
+        assert!(unowned.join("keep.txt").exists());
 
         create_account(&config, "trashed").unwrap();
         delete_account(&config, "trashed").unwrap();

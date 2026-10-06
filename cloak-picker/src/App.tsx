@@ -790,7 +790,7 @@ export default function App() {
           ? `${closed}上游仍显示席位占用 ${result.seats?.active}/${result.seats?.limit}。选择器会自动复查，席位释放后再启动。`
           : result.seats
             ? `${closed}席位已可用，可以重新启动或新建账号。`
-            : `${closed}可以重新启动或新建账号；上游席位暂时无法查询。`);
+            : `${closed}上游席位暂时无法查询，尚未确认释放；重新启动时会再次检查。`);
       }
     } catch (caught) {
       setForceCloseStatus("");
@@ -953,7 +953,7 @@ export default function App() {
           setForceCloseStatus("上游席位已释放，可以启动浏览器了。");
         } else {
           setSeatRecovery(next);
-          setForceCloseStatus(`本机已无 CloakBrowser 进程；上游仍占用席位 ${next.active}/${next.limit}。自动复查中，硬退出后的租约通常会在约 15 分钟内自动释放。`);
+          setForceCloseStatus(`本机进程已清理；上游仍占用席位 ${next.active}/${next.limit}。自动复查中，释放时间由上游决定。`);
         }
       } catch {
         // Keep the recovery state visible; a transient status-query failure
@@ -1946,7 +1946,8 @@ export default function App() {
 
   function deleteAccountFromContextMenu(account: Account, trigger: HTMLElement) {
     setAccountContextMenu(null);
-    openDialog(account.trashed ? { kind: "permanentDelete", account } : { kind: "delete", account }, trigger);
+    if (account.trashed) openDialog({ kind: "permanentDelete", account }, trigger);
+    else void confirmDeleteAccount(account);
   }
 
   function openAccountContextMenu(event: MouseEvent<HTMLButtonElement>, account: Account) {
@@ -2669,7 +2670,7 @@ export default function App() {
       setDialog(null);
       setPlan(null);
       exitBulkSelection();
-      await refresh(undefined, "trash");
+      await refresh(undefined, accountView);
       setBulkStatus(`已彻底删除 ${targets.length} 个账号。`);
     } catch (caught) {
       const message = deletedCount > 0
@@ -2681,7 +2682,7 @@ export default function App() {
       }
       setDialogError(message);
       setError(message);
-      await refresh(undefined, "trash");
+      await refresh(undefined, accountView);
     } finally {
       setBusy(false);
     }
@@ -2713,7 +2714,7 @@ export default function App() {
       await call<void>("permanently_delete_account", { name: account.name });
       setDialog(null);
       setPlan(null);
-      await refresh(undefined, "trash");
+      await refresh(undefined, accountView);
     } catch (caught) {
       const message = errorMessage(caught);
       setDialogError(message);
@@ -3200,14 +3201,19 @@ export default function App() {
                             type="button"
                             onClick={() => {
                               setBulkActionMenuOpen(false);
-                              openDialog(
-                                { kind: "bulkDelete", accounts: bulkSelectedAccounts },
-                                bulkActionButtonRef.current,
-                              );
+                              void confirmBulkDelete(bulkSelectedAccounts);
                             }}
                           >
                             <Trash2 aria-hidden="true" size={14} />
-                            <span className="contextMenuItemLabel">移入回收站…</span>
+                            <span className="contextMenuItemLabel">移入回收站</span>
+                          </button>
+                          <button className="contextMenuItem danger" role="menuitem" type="button"
+                            onClick={() => {
+                              setBulkActionMenuOpen(false);
+                              openDialog({ kind: "bulkPermanentDelete", accounts: bulkSelectedAccounts }, bulkActionButtonRef.current);
+                            }}>
+                            <Trash2 aria-hidden="true" size={14} />
+                            <span className="contextMenuItemLabel">彻底删除…</span>
                           </button>
                         </>
                       ) : (
@@ -3445,10 +3451,13 @@ export default function App() {
                         disabled={busy || bulkSelectedAccounts.length === 0}
                         icon={<Trash2 size={20} />}
                         label="移入回收站" description="保留浏览器环境，可随时恢复"
-                        onClick={(event) => openDialog(
-                          { kind: "bulkDelete", accounts: bulkSelectedAccounts },
-                          event.currentTarget,
-                        )}
+                        onClick={() => void confirmBulkDelete(bulkSelectedAccounts)}
+                      />
+                      <BulkActionCard
+                        danger disabled={busy || bulkSelectedAccounts.length === 0}
+                        icon={<Trash2 size={20} />}
+                        label="彻底删除" description="直接删除所选浏览器环境，需要确认"
+                        onClick={event => openDialog({ kind: "bulkPermanentDelete", accounts: bulkSelectedAccounts }, event.currentTarget)}
                       />
                     </>
                   ) : (
@@ -3516,7 +3525,8 @@ export default function App() {
                     <ActionButton icon={<Folder size={15} />} label="分组" onClick={(event) => openDialog({ kind: "group", account: selected, value: selected.group ?? "" }, event.currentTarget)} />
                     <ActionButton icon={<Globe2 size={15} />} label={selected.locale_enabled ? "关闭语言" : "开启语言"} onClick={() => void toggleLocale(selected)} />
                     <ActionButton icon={<Pencil size={15} />} label="重命名" onClick={(event) => openDialog({ kind: "rename", account: selected, value: selected.name }, event.currentTarget)} />
-                    <ActionButton danger icon={<Trash2 size={15} />} label="删除" onClick={(event) => openDialog({ kind: "delete", account: selected }, event.currentTarget)} />
+                    <ActionButton danger icon={<Trash2 size={15} />} label="移入回收站" disabled={busy} onClick={() => void confirmDeleteAccount(selected)} />
+                    <ActionButton danger icon={<Trash2 size={15} />} label="彻底删除" disabled={busy} onClick={event => openDialog({ kind: "permanentDelete", account: selected }, event.currentTarget)} />
                   </div>
                 )}
 

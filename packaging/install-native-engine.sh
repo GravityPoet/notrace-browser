@@ -34,7 +34,7 @@ trap cleanup EXIT INT TERM
 mkdir -p "$CB" "$STAGE"
 ditto "$SOURCE_APP" "$STAGE/Chromium.app"
 printf '%s\n' 'NoTrace local runtime v1; public-source native Chromium; do not redistribute' > "$STAGE/.notrace-local-runtime"
-CLOAK_BROWSER_APP="$STAGE/Chromium.app" bash "$ROOT/packaging/patch-chromium.sh"
+NOTRACE_NATIVE_BUNDLE=1 CLOAK_BROWSER_APP="$STAGE/Chromium.app" bash "$ROOT/packaging/patch-chromium.sh"
 
 source_commit="$(git -C "$CHROMIX_ROOT" rev-parse HEAD)"
 source_lock_sha256="$(shasum -a 256 "$ROOT/packaging/native-engine/source-lock.json" | awk '{print $1}')"
