@@ -193,11 +193,23 @@ const NATIVE_E2E_DRIVER: &str = r#"
     checks.push('renewal-search-authorize-seat-error');
     setter.call(search, 'native-e2e-sync-account');
     search.dispatchEvent(new Event('input', { bubbles: true }));
-    const syncRow = await waitFor(() => {
+    // React replaces the broker row after every IPC result. Keep a selector
+    // instead of retaining the first DOM node; a detached row can still carry
+    // the first failure alert even after the retry rendered a clean row.
+    const findCurrentSyncRow = () => {
       const rows = document.querySelectorAll('.brokerRow');
-      return rows.length === 1 && rows[0].textContent.includes('待同步新凭据') ? rows[0] : null;
+      return rows.length === 1 ? rows[0] : null;
+    };
+    await waitFor(() => {
+      const row = findCurrentSyncRow();
+      return row?.textContent.includes('待同步新凭据') ? row : null;
     }, '新授权等待手动同步');
-    const syncButton = (label) => Array.from(syncRow.querySelectorAll('button')).find(e => e.textContent.trim() === label);
+    const syncButton = (label) => {
+      const row = findCurrentSyncRow();
+      return row ? Array.from(row.querySelectorAll('button')).find(e => e.textContent.trim() === label) : null;
+    };
+    const syncErrorAlert = () => Array.from(pane.querySelectorAll('[role="alert"]'))
+      .find((alert) => alert.textContent.includes('服务器文件读写失败'));
     if (syncButton('暂停 CPA 同步')) throw new Error('新授权误显示为正在自动同步');
     const readyToSync = await waitFor(() => {
       const button = syncButton('同步到 CPA');
@@ -205,14 +217,22 @@ const NATIVE_E2E_DRIVER: &str = r#"
     }, '授权结束后恢复同步入口');
     readyToSync.click();
     await waitFor(() => syncButton('同步中…')?.disabled, '显示同步进度');
-    const retry = await waitFor(() => syncButton('重试同步'), '同步失败提供重试');
-    if (!pane.querySelector('[role="alert"]')?.textContent.includes('服务器文件读写失败')) {
-      throw new Error('同步失败没有展示具体原因');
-    }
-    await waitFor(() => !retry.disabled, '同步失败恢复操作');
+    await waitFor(() => {
+      const button = syncButton('重试同步');
+      return button && syncErrorAlert() ? button : null;
+    }, '同步失败提供具体原因和重试');
+    const retry = await waitFor(() => {
+      const button = syncButton('重试同步');
+      return button && !button.disabled ? button : null;
+    }, '同步失败恢复操作');
     retry.click();
-    await waitFor(() => syncButton('暂停 CPA 同步') && Array.from(syncRow.querySelectorAll('.brokerStatus > span')).some(e => e.textContent === 'CPA已同步'), '重试成功后开启自动同步');
-    if (pane.querySelector('[role="alert"]')) throw new Error('同步成功后仍显示旧错误');
+    await waitFor(() => {
+      const row = findCurrentSyncRow();
+      return syncButton('暂停 CPA 同步')
+        && row
+        && Array.from(row.querySelectorAll('.brokerStatus > span')).some(e => e.textContent === 'CPA已同步')
+        && !syncErrorAlert();
+    }, '重试成功后开启自动同步');
     checks.push('cpa-sync-pending-retry-success');
     const verifyHeaderLaunch = async (name, temporary) => {
       setter.call(search, '');

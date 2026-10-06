@@ -194,6 +194,13 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     }
   }
   async function updateCpa(row: BrokerRow, enabled: boolean) {
+    // A second click is a retry after the row recorded a consumer error. Clear
+    // that stale alert at the retry boundary so the real WebView cannot keep
+    // showing the first failure while the new request is already in flight.
+    if (enabled && row.remote?.cpa_sync_error) {
+      setError("");
+      setErrorTarget("");
+    }
     setCpaAction({ profileId: row.profile_id, enabled, pending: true });
     try {
       const result = await call<BrokerMetadata>("broker_set_cpa", { profileId: row.profile_id, enabled });
@@ -202,6 +209,12 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       if (enabled && result.cpa_synced_generation !== result.generation) throw new Error("CPA 尚未收到最新凭据，请重试同步");
       if (mounted.current) {
         setCpaAction(null);
+        // A retry can succeed after the previous attempt populated the shared
+        // panel error. Clear that stale failure explicitly; otherwise the row
+        // shows "CPA 已同步" and the old alert at the same time until a later
+        // unrelated operation changes state.
+        setError("");
+        setErrorTarget("");
         setMessage(enabled ? "最新凭据已同步到 CPA，后续续期将自动同步" : "已暂停 CPA 自动同步");
       }
     } catch (caught) {
