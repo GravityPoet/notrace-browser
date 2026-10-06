@@ -2,14 +2,15 @@
 
 ## 2026-10-07 收尾状态
 
-本次收尾没有把 native 候选切入生产 `current`。当前生产指针仍为
-`chromium-152.0.7977.82-notrace`（Chromix 152）；自编译候选保留在
-`chromium-152.0.7977.82-native-notrace`，可通过 `packaging/switch-independent-engine.sh`
-在完成额外批准后切换或回滚。
+本次收尾已将本机 `current` 指向自编译 native 152：
+`chromium-152.0.7977.82-native-notrace`。这是保留完整快照后的本机候选切换，
+不是把“多开成功”包装成完整无损发布批准；下表仍明确列出尚未证明的 Cloak 专有能力和
+跨接口差异。旧 Chromix 152 保留在 `chromium-152.0.7977.82-notrace`，可通过
+`packaging/switch-independent-engine.sh` 回滚。
 
 | 能力 | Cloak/现生产基线 | 自编译 native 152 当前证据 | 结论 |
 |---|---|---|---|
-| 正常 Picker/账号启动 | 已安装 `/Applications/Cloak Picker.app` | Picker 新建账号自动选中并显示启动按钮；安装 freshness、签名和 ARM64 门禁通过 | 保留 |
+| 正常 Picker/账号启动 | 已安装 `/Applications/Cloak Picker.app` | Picker 新建账号自动选中并显示启动按钮；真实安装版原生 E2E 13/13、freshness、签名和 ARM64 门禁通过 | 保留 |
 | 三会话并发 | 原 Cloak 受单席位限制 | 正常 LaunchServices 路径三进程、三可见窗口、三独立 profile；Cookie/localStorage/IndexedDB 隔离，重启保留 | 新增并发 |
 | Canvas / Offscreen / Worker | 旧实现有跨接口差异 | native 自测两 Seed 哈希区分且稳定；HTML/Offscreen/Worker 与 PNG 解码路径一致，导出后页面像素不漂移 | 已测范围保留 |
 | Audio | 原生可用；未证明按 Seed 隔离 | OfflineAudioContext 可用，两个 Seed 的合成音频哈希相同 | 原生功能保留；Seed 隔离未证明 |
@@ -22,12 +23,41 @@
 
 ### 最终裁决
 
-**结论：多会话和已测原生能力成立；完整无损替代仍为证据不足，不能切换生产内核。**
+**结论：本机已切入 native 152；多会话和已测原生能力成立，但完整无损替代仍为证据不足。**
 
-保留 native 候选和源码构建目录，不删除、不覆盖真实账号数据。恢复生产只需保持当前
-`current` 指针；若以后完成缺口验收，再按快照流程执行 `switch-independent-engine.sh activate native`。
+保留 native 候选、旧 Chromix 152、源码构建目录和账号快照，不删除、不覆盖真实账号数据。
+若出现真实网站或媒体能力退步，先停止继续扩大测试，按快照和
+`packaging/switch-independent-engine.sh` 回滚到旧 `current`；“数据保留”不等于“跨内核身份完全不变”。
 
 明确未完成/未验证：WebRTC 出口 IP 绑定等价性、真实麦克风/摄像头、远程 TURN TCP/TLS、完整 AudioWorklet/Analyser 全路径、TLS/HTTP2/3 指纹、生产登录账号连续性、生产验证码泛化，以及所有 Cloak 专有能力的逐项等价证明。
+
+## 2026-10-07 安装态证据与失败复现
+
+- 安装态：`/Applications/Cloak Picker.app`，`CFBundleIdentifier=local.cloak.picker`，
+  `cloak-picker` 为 macOS ARM64；`ChatGPT Cloak Local Code Signing` 的
+  `codesign --verify --deep --strict` 通过。全局安装门禁报告
+  `FILESYSTEM_MATCHES=1`、`SPOTLIGHT_MATCHES=1`、`LAUNCHSERVICES_MATCHES=1`、
+  `RUNNING_MATCHES=0`、`SIGNATURE=valid`、`INSTALL_STATUS=passed`。
+- 内核：`/Users/moonlitpoet/.cloakbrowser/current` 指向
+  `chromium-152.0.7977.82-native-notrace`；真实二进制输出
+  `Chromium 152.0.7977.82`。`verify-independent-runtime.mjs` 通过，
+  `current.sha256` 与当前二进制均为
+  `5b95c01591a47db3b584741f0943516d4c247507b24181b0b35eb352f7087261`。
+- 连续性：切换前完整快照为
+  `/Users/moonlitpoet/.cloakbrowser/backups/independent-engine-20261007-022709.Qy2ZDC.noindex`；
+  `snapshot.json` 的 `previous_version` 为 `152.0.7977.82-notrace`，
+  账号树摘要为 `3fc44e6c7bb07b04f10886a4e23163f7ffe312376fda4092f294d292e4496c0a`，
+  未读取或输出密码、Token、真实 Cookie。
+- Picker 运行态：`npm --prefix cloak-picker test` 通过 3 个测试文件、99 个测试；
+  安装后的 `bash packaging/test-picker-native-e2e.sh` 通过真实签名 `.app`、真实原生窗口和
+  13 项检查，使用临时合成账号/Broker/启动夹具。
+
+失败复现与修复：旧 E2E 在“首次同步失败 → 点击重试”后，先后复现过
+`同步成功后仍显示旧错误`，以及在改为只查 row 后复现“同步失败没有展示具体原因”。前者是
+React 重渲染后继续读取已脱离 DOM 的旧 row，后者是同步错误实际挂在工作区级 alert 而不是
+row 内。最终驱动每次状态变化重新查询当前 row，并在工作区按“服务器文件读写失败”具体文本
+定位错误；成功条件同时要求当前 row 已显示“CPA已同步”且该具体错误消失。修复后重新构建、
+安装并复跑，13/13 通过。
 
 用户要求：自编译版本至少比免 Key Cloak 145 更强，且保留先前相对 Cloak 151 的关键能力验收，不以版本号、补丁数或多开本身代替结论。
 
