@@ -82,14 +82,27 @@ export function independentEngineMetadata(binary) {
   }
   if (!file.isFile() || file.size > 4096) throw new Error("invalid independent engine marker");
   const data = JSON.parse(readFileSync(marker, "utf8"));
-  const fields = ["provider", "version", "archive_sha256", "source_commit", "binary_sha256", "framework_sha256"].sort();
+  const fields = data.provider === "notrace-native"
+    ? [
+      "provider", "version", "engine_version", "source_commit",
+      "source_lock_sha256", "patch_stack_sha256", "binary_sha256", "framework_sha256",
+    ].sort()
+    : ["provider", "version", "archive_sha256", "source_commit", "binary_sha256", "framework_sha256"].sort();
   if (JSON.stringify(Object.keys(data).sort()) !== JSON.stringify(fields)) {
     throw new Error("invalid independent engine fields");
   }
   const hash = path => createHash("sha256").update(readFileSync(path)).digest("hex");
-  if (data.provider !== "chromix" || data.version !== "152.0.7977.82"
-      || data.archive_sha256 !== "8ceefefced9018dfe917650ce156bd1ffdaa9bc2bc6b89b70b6d021262166eb4"
-      || data.source_commit !== "ca52ae0d01168a8bc118ccc28d484011a7eb0efb"
+  const sourceContractValid = data.provider === "chromix"
+    ? data.version === "152.0.7977.82"
+      && data.archive_sha256 === "8ceefefced9018dfe917650ce156bd1ffdaa9bc2bc6b89b70b6d021262166eb4"
+      && data.source_commit === "ca52ae0d01168a8bc118ccc28d484011a7eb0efb"
+    : data.provider === "notrace-native"
+      && data.version === "152.0.7977.82"
+      && data.engine_version === "152.0.7977.82"
+      && /^[0-9a-f]{40}$/.test(data.source_commit)
+      && /^[0-9a-f]{64}$/.test(data.source_lock_sha256)
+      && /^[0-9a-f]{64}$/.test(data.patch_stack_sha256);
+  if (!sourceContractValid
       || hash(binary) !== data.binary_sha256
       || hash(join(app, `Contents/Frameworks/Chromium Framework.framework/Versions/${data.version}/Chromium Framework`)) !== data.framework_sha256) {
     throw new Error("independent engine provenance or hash mismatch");

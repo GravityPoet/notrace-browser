@@ -184,6 +184,11 @@ window.__runProbe = function () {
         decoded.width = bitmap.width; decoded.height = bitmap.height;
         const decodedCtx = decoded.getContext("2d");
         if (!decodedCtx) return { error: "decoded canvas context unavailable" };
+        // createImageBitmap only decodes the image; it does not populate the
+        // destination canvas. Draw the bitmap before reading pixels, otherwise
+        // every decoded hash is the blank-canvas hash and the encoder parity
+        // gate can pass without testing the encoded image at all.
+        decodedCtx.drawImage(bitmap, 0, 0);
         return {
           width: bitmap.width,
           height: bitmap.height,
