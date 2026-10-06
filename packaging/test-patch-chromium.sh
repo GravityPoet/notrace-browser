@@ -85,6 +85,21 @@ CLOAKBROWSER_DIR="$OFFICIAL_ROOT" CLOAK_CODESIGN_IDENTITY=- \
 }
 /usr/bin/codesign --verify --deep --strict "$LOCAL_RUNTIME_APP"
 
+NATIVE_RUNTIME_DIR="$OFFICIAL_ROOT/chromium-152.0.7977.82-native-notrace"
+NATIVE_RUNTIME_APP="$NATIVE_RUNTIME_DIR/Chromium.app"
+mkdir -p "$NATIVE_RUNTIME_DIR"
+cp -R "$APP" "$NATIVE_RUNTIME_APP"
+printf '%s\n' 'NoTrace local runtime v1' >"$NATIVE_RUNTIME_DIR/.notrace-local-runtime"
+CLOAKBROWSER_DIR="$OFFICIAL_ROOT" CLOAK_CODESIGN_IDENTITY=- \
+  CLOAK_BROWSER_APP="$NATIVE_RUNTIME_APP" "$PATCH_SCRIPT" >/dev/null
+[[ "$("$PLISTBUDDY" -c 'Print :CFBundleIdentifier' "$NATIVE_RUNTIME_APP/Contents/Info.plist")" == local.notrace.native.chromium ]]
+[[ "$("$PLISTBUDDY" -c 'Print :CFBundleIdentifier' "$LOCAL_RUNTIME_APP/Contents/Info.plist")" == org.chromium.Chromium ]]
+native_cdhash="$(cdhash "$NATIVE_RUNTIME_APP")"
+CLOAKBROWSER_DIR="$OFFICIAL_ROOT" CLOAK_CODESIGN_IDENTITY=- \
+  CLOAK_BROWSER_APP="$NATIVE_RUNTIME_APP" "$PATCH_SCRIPT" >/dev/null
+[[ "$native_cdhash" == "$(cdhash "$NATIVE_RUNTIME_APP")" ]]
+/usr/bin/codesign --verify --deep --strict "$NATIVE_RUNTIME_APP"
+
 if cloak_codesign_identity_exists "$CLOAK_DEFAULT_CODESIGN_IDENTITY"; then
   CLOAK_BROWSER_APP="$APP" "$PATCH_SCRIPT" >/dev/null
   cloak_signature_matches_identity "$APP" "$CLOAK_DEFAULT_CODESIGN_IDENTITY" || {

@@ -408,6 +408,15 @@ describe("Cloak Picker dialog regressions", () => {
     expect(document.querySelector(".warningToast")).toBeNull();
   }, 12_000);
 
+  it("does not claim a released seat when the upstream query is unavailable", async () => {
+    setMockCloseSeatsForTest(null);
+    await click(buttonWithText("强制关闭所有窗口"));
+    await settle(150);
+    expect(document.body.textContent).toContain("尚未确认释放");
+    expect(document.body.textContent).not.toContain("席位已可用");
+    expect(document.body.textContent).not.toContain("上游席位已释放");
+  });
+
   function groupFilterLabels(): string[] {
     return Array.from(document.querySelectorAll<HTMLElement>(".groupFilterButton[data-group-label]"))
       .map((group) => group.dataset.groupLabel ?? "")
@@ -672,7 +681,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(alpha.getAttribute("aria-pressed")).toBe("true");
     expect(beta.getAttribute("aria-pressed")).toBe("true");
     expect(document.querySelector(".bulkSelectionCount")?.textContent).toBe("已选 2");
-    expect(document.querySelectorAll('.bulkActionButton')).toHaveLength(4);
+    expect(document.querySelectorAll('.bulkActionButton')).toHaveLength(5);
     expect(Array.from(document.querySelectorAll('.bulkSelectedPreview li > span'), element => element.textContent)).toEqual(["demo-alpha@example.test", "demo-beta"]);
 
     expect(alpha.querySelector(".accountSelectionCheckbox.checked")).not.toBeNull();
@@ -691,7 +700,8 @@ describe("Cloak Picker dialog regressions", () => {
     expect(menu?.textContent).toContain("2 个账号");
     expect(buttonWithText("移动到分组…", menu ?? document)).toBeTruthy();
     expect(buttonWithText("设置标记…", menu ?? document)).toBeTruthy();
-    expect(buttonWithText("移入回收站…", menu ?? document)).toBeTruthy();
+    expect(buttonWithText("移入回收站", menu ?? document)).toBeTruthy();
+    expect(buttonWithText("彻底删除…", menu ?? document)).toBeTruthy();
 
     await click(buttonWithText("移动到分组…", menu ?? document));
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
@@ -749,10 +759,7 @@ describe("Cloak Picker dialog regressions", () => {
     ).toBe(false);
     await click(buttonWithText("移入回收站", activeDetail ?? document));
 
-    const deleteDialog = document.querySelector<HTMLElement>('[role="dialog"]');
-    expect(deleteDialog?.textContent).toContain("移入回收站 2 个账号");
-    expect(deleteDialog?.querySelectorAll(".bulkDialogAccountList li")).toHaveLength(2);
-    await click(buttonWithText("移入回收站", deleteDialog ?? document));
+    expect(document.querySelector('[role="dialog"], [role="alertdialog"]')).toBeNull();
     await settle(420);
 
     expect(mockCommandCountForTest("delete_account")).toBe(2);
@@ -798,6 +805,58 @@ describe("Cloak Picker dialog regressions", () => {
     expect(mockCommandCountForTest("permanently_delete_account")).toBe(2);
     expect(document.querySelector(".bulkActionBar")).toBeNull();
     expect(document.body.textContent).toContain("回收站为空");
+  });
+
+  it("moves a single active account to trash immediately from both deletion entry points", async () => {
+    await openContextMenu(accountRow("demo-beta"));
+    const menu = document.querySelector('.accountContextMenu')!;
+    expect(buttonWithText("彻底删除", menu)).toBeTruthy();
+    await click(buttonWithText("移入回收站", menu));
+    expect(document.querySelector('[role="dialog"], [role="alertdialog"]')).toBeNull();
+    await settle(280);
+    expect(mockCommandCountForTest("delete_account")).toBe(1);
+    expect(document.querySelector('.accountRow[data-account-name="demo-beta"]')).toBeNull();
+    await click(buttonWithText("移入回收站", document.querySelector('.detailInlineActions')!));
+    expect(document.querySelector('[role="dialog"], [role="alertdialog"]')).toBeNull();
+    await settle(280);
+    expect(mockCommandCountForTest("delete_account")).toBe(2);
+    expect(mockCommandCountForTest("permanently_delete_account")).toBe(0);
+  });
+
+  it("permanently deletes an active account only after confirmation without first trashing it", async () => {
+    await openContextMenu(accountRow("demo-beta"));
+    await click(buttonWithText("彻底删除", document.querySelector('.accountContextMenu')!));
+    const dialog = document.querySelector('[role="alertdialog"]')!;
+    expect(dialog.textContent).toContain("demo-beta");
+    expect(document.activeElement?.textContent).toBe("取消");
+    expect(mockCommandCountForTest("permanently_delete_account")).toBe(0);
+    await click(buttonWithText("取消", dialog));
+    expect(accountRow("demo-beta")).toBeTruthy();
+    await openContextMenu(accountRow("demo-beta"));
+    await click(buttonWithText("彻底删除", document.querySelector('.accountContextMenu')!));
+    await click(buttonWithText("彻底删除", document.querySelector('[role="alertdialog"]')!));
+    await settle(280);
+    expect(mockCommandCountForTest("permanently_delete_account")).toBe(1);
+    expect(mockCommandCountForTest("delete_account")).toBe(0);
+    expect(document.querySelector('.accountRow[data-account-name="demo-beta"]')).toBeNull();
+    expect(accountRow("demo-alpha@example.test")).toBeTruthy();
+    expect(document.querySelector('#cloak-account-active-tab')?.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it("offers confirmed permanent batch deletion directly in the active list", async () => {
+    await click(buttonWithText("多选"));
+    await click(accountRow("demo-beta"));
+    await click(accountRow("demo-gamma-copy"));
+    await click(buttonWithText("彻底删除", document.querySelector('.bulkWorkspaceActions')!));
+    const dialog = document.querySelector('[role="alertdialog"]')!;
+    expect(dialog.textContent).toContain("彻底删除 2 个账号");
+    expect(mockCommandCountForTest("permanently_delete_account")).toBe(0);
+    await click(buttonWithText("彻底删除", dialog));
+    await settle(480);
+    expect(mockCommandCountForTest("permanently_delete_account")).toBe(2);
+    expect(mockCommandCountForTest("delete_account")).toBe(0);
+    expect(accountRow("demo-alpha@example.test")).toBeTruthy();
+    expect(document.querySelector('#cloak-account-active-tab')?.getAttribute('aria-selected')).toBe('true');
   });
 
   it("copies the complete selected account name from the detail heading", async () => {

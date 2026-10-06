@@ -7,6 +7,13 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+node - "$ROOT/cloak-picker/src-tauri/src/native_e2e.rs" <<'JS'
+const fs = require('node:fs');
+const source = fs.readFileSync(process.argv[2], 'utf8');
+const driver = source.match(/const NATIVE_E2E_DRIVER: &str = r#"([\s\S]*?)"#;/)?.[1];
+if (!driver) throw new Error('native E2E driver missing');
+new Function(driver);
+JS
 APP="${CLOAK_PICKER_INSTALL_APP:-/Applications/Cloak Picker.app}"
 [[ -d "$APP" ]] || { printf 'Picker app not found: %s\n' "$APP" >&2; exit 1; }
 /usr/bin/codesign --verify --deep --strict "$APP"
@@ -25,7 +32,7 @@ cleanup() {
     kill -TERM "$picker_pid" 2>/dev/null || true
     wait "$picker_pid" 2>/dev/null || true
   fi
-  rm -rf "$tmp"
+  if [[ "${CLOAK_PICKER_NATIVE_E2E_KEEP_TMP:-}" != "1" ]]; then rm -rf "$tmp"; else printf 'native-e2e-temp=%s\n' "$tmp" >&2; fi
 }
 trap cleanup EXIT INT TERM
 
@@ -164,6 +171,7 @@ node -e '
     "runtime-source-provenance",
     "close-all-native-command",
     "migration-tab-keyboard-aria-controls",
+    "account-delete-native-confirmation",
   ];
   const missing = required.filter((check) => !report.checks.includes(check));
   if (!report.passed || report.error || missing.length) {

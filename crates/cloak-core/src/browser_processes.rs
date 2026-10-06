@@ -116,6 +116,24 @@ mod platform {
                 .is_some_and(|name| name.to_string_lossy().starts_with("Chromium Helper"));
             (primary || helper).then_some(primary)
         }
+
+        fn classify_command(&self, executable: &Path, command: &str) -> Option<bool> {
+            let managed_profile = self
+                .profiles
+                .iter()
+                .any(|profile| crate::command_line_mentions_user_data_dir(command, profile));
+            if let Some(primary) = self.classify(executable) {
+                // A bare launch under our runtime root is also ours, but a
+                // different user's explicit profile is not. Never classify
+                // by command text alone: scripts may contain browser paths.
+                return (managed_profile || !command.contains("--user-data-dir="))
+                    .then_some(primary);
+            }
+            (managed_profile
+                && self.custom_binary.as_deref() == Some(executable)
+                && !command.contains(" --type="))
+            .then_some(true)
+        }
     }
 
     fn executable_for_pid(pid: i32) -> Option<PathBuf> {
@@ -157,6 +175,14 @@ mod platform {
             {
                 continue;
             }
+            let Some(executable) = executable_for_pid(pid) else {
+                continue;
+            };
+            if scope.classify(&executable).is_none()
+                && scope.custom_binary.as_ref() != Some(&executable)
+            {
+                continue;
+            }
             let command = Command::new("/bin/ps")
                 .args(["-ww", "-p", &pid.to_string(), "-o", "command="])
                 .output()?;
@@ -164,24 +190,7 @@ mod platform {
                 continue;
             }
             let command = String::from_utf8_lossy(&command.stdout);
-            if !scope
-                .profiles
-                .iter()
-                .any(|profile| crate::command_line_mentions_user_data_dir(&command, profile))
-            {
-                continue;
-            }
-            let Some(executable) = executable_for_pid(pid) else {
-                continue;
-            };
-            let primary = if let Some(primary) = scope.classify(&executable) {
-                primary
-            } else if scope.custom_binary.as_ref() == Some(&executable) {
-                if command.contains(" --type=") {
-                    continue;
-                }
-                true
-            } else {
+            let Some(primary) = scope.classify_command(&executable, &command) else {
                 continue;
             };
             processes.push(BrowserProcess {
@@ -309,6 +318,35 @@ mod platform {
             assert_eq!(scope.classify(Path::new("/tmp/cloak/updater")), None);
         }
 
+        #[test]
+        fn scope_includes_bare_runtime_but_excludes_external_profiles_and_path_text() {
+            let binary = Path::new("/tmp/cloak/chromium-test/Chromium.app/Contents/MacOS/Chromium");
+            let scope = Scope {
+                root: PathBuf::from("/tmp/cloak"),
+                custom_binary: None,
+                profiles: vec![crate::user_data_dir_needle(Path::new("/tmp/accounts/work"))],
+            };
+            assert_eq!(
+                scope.classify_command(binary, &binary.to_string_lossy()),
+                Some(true)
+            );
+            assert_eq!(
+                scope.classify_command(
+                    binary,
+                    "Chromium --user-data-dir=/tmp/accounts/work --fingerprint=12345"
+                ),
+                Some(true)
+            );
+            assert_eq!(
+                scope.classify_command(binary, "Chromium --user-data-dir=/tmp/accounts/work-other"),
+                None
+            );
+            assert_eq!(
+                scope.classify_command(Path::new("/bin/sh"), &binary.to_string_lossy()),
+                None
+            );
+        }
+
         struct ChildGuard(std::process::Child);
         impl Drop for ChildGuard {
             fn drop(&mut self) {
@@ -341,7 +379,7 @@ mod platform {
                 extension_source: dir.path().join("extension"),
                 cloakbrowser_root: dir.path().into(),
             };
-            for force in [false, true] {
+            for (force, bare) in [(false, false), (true, false), (false, true), (true, true)] {
                 let helper = dir.path().join("chromium-test/Chromium.app/Contents/Frameworks/Chromium Helper.app/Contents/MacOS/Chromium Helper");
                 if force {
                     std::fs::create_dir_all(helper.parent().unwrap()).unwrap();
@@ -353,7 +391,9 @@ mod platform {
                 }
                 let profile = dir.path().join("accounts/work");
                 std::fs::create_dir_all(&profile).unwrap();
-                command.arg(format!("--user-data-dir={}", profile.display()));
+                if !bare {
+                    command.arg(format!("--user-data-dir={}", profile.display()));
+                }
                 let mut browser = ChildGuard(command.spawn().unwrap());
                 thread::sleep(Duration::from_millis(100));
                 let status = status(&config).unwrap();

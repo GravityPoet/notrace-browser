@@ -84,6 +84,20 @@ if [[ -x "$LSREG" ]]; then
   if [[ "$BUILT_APP" != "$INSTALL_APP" ]]; then
     "$LSREG" -u "$BUILT_APP" >/dev/null 2>&1 || true
   fi
+  # Retained candidates and build products must not win the system's
+  # org.chromium.Chromium lookup over NoTrace's selected official runtime.
+  runtime_root="${CLOAK_BROWSER_ROOT:-${CLOAKBROWSER_DIR:-$HOME/.cloakbrowser}}"
+  if [[ -L "$runtime_root/current" && -d "$runtime_root/current/Chromium.app" ]]; then
+    current_app="$(cd "$runtime_root/current/Chromium.app" && pwd -P)"
+    for other_app in "$runtime_root"/chromium-*/Chromium.app \
+      "$ROOT/.build/native-engine/work/src/out/Default/Chromium.app"; do
+      [[ -d "$other_app" ]] || continue
+      if [[ "$(cd "$other_app" && pwd -P)" != "$current_app" ]]; then
+        "$LSREG" -u "$other_app" >/dev/null 2>&1 || true
+      fi
+    done
+    "$LSREG" -f "$current_app" >/dev/null 2>&1 || true
+  fi
 fi
 
 # Record which cloak-core source this build embeds so check-picker-fresh.sh can later

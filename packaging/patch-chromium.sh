@@ -104,6 +104,20 @@ for APP in "${APPS[@]}"; do
     PLISTS+=("$HELPER/Contents/Info.plist")
   done
 
+  # The independent native candidate must not compete with official Cloak
+  # for org.chromium.Chromium in LaunchServices. Do not alter official caches.
+  if [[ "${NOTRACE_NATIVE_BUNDLE:-}" == "1" || "$APP" == *-native-notrace/Chromium.app ]]; then
+    for PLIST in "${PLISTS[@]}"; do
+      [[ -f "$PLIST" ]] || continue
+      bundle_id="$("$PLISTBUDDY" -c 'Print :CFBundleIdentifier' "$PLIST")"
+      case "$bundle_id" in
+        org.chromium.Chromium*)
+          set_key "$PLIST" CFBundleIdentifier "local.notrace.native.chromium${bundle_id#org.chromium.Chromium}" ;;
+      esac
+    done
+    set_key "$APP/Contents/Info.plist" CFBundleDisplayName "NoTrace 原生备用"
+  fi
+
   for PLIST in "${PLISTS[@]}"; do
     [[ -f "$PLIST" ]] || continue
     set_key "$PLIST" NSMicrophoneUsageDescription "$MIC_DESC"

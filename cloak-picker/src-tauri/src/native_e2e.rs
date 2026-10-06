@@ -467,6 +467,45 @@ const NATIVE_E2E_DRIVER: &str = r#"
     }
     checks.push('migration-tab-keyboard-aria-controls');
 
+    // Both actions use the actual installed WebView and native filesystem
+    // commands, but only the runner's disposable synthetic profiles.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await waitFor(() => !document.querySelector('[role="dialog"], [role="alertdialog"]'), '关闭迁移弹窗');
+    const deleteAccountMenu = async () => {
+      const row = await waitFor(() => document.querySelector('.accountRow[data-account-name="native-e2e-account"]'), '删除测试账号行');
+      const bounds = row.getBoundingClientRect();
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: bounds.left + 20, clientY: bounds.top + 10 }));
+      return waitFor(() => document.querySelector('.accountContextMenu'), '删除测试右键菜单');
+    };
+    const enabledAction = (parent, label) => waitFor(() => {
+      const button = Array.from(parent.querySelectorAll('button')).find(button => button.textContent.trim() === label);
+      return button && !button.disabled ? button : null;
+    }, `${label}可用`);
+    (await enabledAction(await deleteAccountMenu(), '移入回收站')).click();
+    if (document.querySelector('[role="dialog"], [role="alertdialog"]')) throw new Error('移入回收站不应弹确认');
+    await waitFor(() => !document.querySelector('.accountRow[data-account-name="native-e2e-account"]'), '直接移入回收站完成');
+    if (!(await invoke('list_trashed_accounts')).some(account => account.name === 'native-e2e-account')) throw new Error('账号未实际进入回收站');
+    document.querySelector('#cloak-account-trash-tab').click();
+    (await enabledAction(await deleteAccountMenu(), '恢复')).click();
+    await waitFor(() => document.querySelector('#cloak-account-active-tab[aria-selected="true"]'), '恢复后返回活跃列表');
+    (await enabledAction(await deleteAccountMenu(), '彻底删除')).click();
+    let confirmation = await waitFor(() => document.querySelector('[role="alertdialog"]'), '活跃账号彻底删除确认');
+    if (!confirmation.textContent.includes('native-e2e-account')) throw new Error('删除确认未绑定目标账号');
+    (await enabledAction(confirmation, '取消')).click();
+    await waitFor(() => !document.querySelector('[role="alertdialog"]'), '取消永久删除');
+    if (!(await invoke('list_accounts')).some(account => account.name === 'native-e2e-account')) throw new Error('取消删除仍修改了账号');
+    (await enabledAction(await deleteAccountMenu(), '彻底删除')).click();
+    confirmation = await waitFor(() => document.querySelector('[role="alertdialog"]'), '再次确认活跃账号删除');
+    (await enabledAction(confirmation, '彻底删除')).click();
+    await waitFor(() => !document.querySelector('[role="alertdialog"]'), '直接永久删除完成');
+    const remaining = await invoke('list_accounts');
+    if (remaining.some(account => account.name === 'native-e2e-account')
+        || !remaining.some(account => account.name === 'native-e2e-sync-account')
+        || (await invoke('list_trashed_accounts')).some(account => account.name === 'native-e2e-account')) {
+      throw new Error('直接永久删除未完成或影响了其他账号');
+    }
+    checks.push('account-delete-native-confirmation');
+
     await invoke('complete_native_e2e', { checks, error: null });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

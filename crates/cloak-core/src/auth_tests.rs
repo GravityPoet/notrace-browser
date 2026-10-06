@@ -232,6 +232,16 @@ fn permanent_delete_removes_private_authorization_directory() {
     assert!(!f.home.exists());
     assert!(crate::read_account(&f.config, &f.name).is_err());
 }
+
+#[test]
+fn direct_permanent_delete_removes_active_profile_and_its_private_authorization() {
+    let f = Fixture::new();
+    f.seed(now() + 864000);
+    assert!(!crate::read_account(&f.config, &f.name).unwrap().trashed);
+    crate::permanently_delete_account(&f.config, &f.name).unwrap();
+    assert!(!f.home.exists());
+    assert!(!f.config.profile_dir(&f.name).exists());
+}
 #[test]
 fn refresh_rotates_and_persists_verified_credentials() {
     let f = Fixture::new();
