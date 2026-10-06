@@ -9,7 +9,7 @@ export type BrokerMetadata = {
   expires_at: number; last_refresh_at: number; generation: number;
   refresh_count?: number; automatic_refresh_count?: number;
   next_refresh_at: number; next_retry_at: number | null; error: string | null;
-  cpa_enabled: boolean; cpa_synced_generation: number | null; cpa_sync_error: string | null;
+  cpa_enabled: boolean; cpa_synced_generation: number | null; cpa_sync_error: string | null; cpa_sync_suspended?: boolean;
   cockpit_synced_generation: number | null;
 };
 export type CodexQuotaWindow = {
@@ -45,12 +45,14 @@ const errors: Record<string, string> = {
   identity_mismatch: "账号身份不匹配",
   storage: "服务器文件读写失败，请检查同步服务",
   unchanged: "尚未获得新的凭据",
+  consumer_missing: "CPA 托管凭据已被删除，自动同步已暂停",
 };
 const authorityNames = { no_trace: "NoTrace 本机", codex: "Codex", cockpit: "Cockpit Tools", cpa: "CPA", broker: "NoTrace Broker" };
 function time(value: number | null) {
   return value ? new Date(value * 1000).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
 }
 function syncLabel(enabled: boolean, synced: number | null, generation: number, error: string | null) {
+  if (error === "consumer_missing") return errors.consumer_missing;
   if (!enabled) return synced === generation ? "已暂停自动同步" : "待同步新凭据";
   if (error) return errors[error] ?? "同步未完成";
   return synced === generation ? "已同步" : "等待同步";

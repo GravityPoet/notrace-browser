@@ -976,6 +976,12 @@ fn scheduled_cycle_does_not_rewrite_unchanged_cpa_credentials() {
     assert_eq!(fs::read(&grant_path).unwrap(), original_grant);
     fs::remove_file(&destination).unwrap();
     store.run_cycle().unwrap();
+    let paused = store.list().unwrap().pop().unwrap();
+    assert!(!paused.cpa_enabled);
+    assert_eq!(paused.cpa_sync_error, Some(BrokerError::ConsumerMissing));
+    assert!(!destination.exists());
+    store.set_cpa_enabled("alpha", true).unwrap();
+    store.sync_cpa("alpha").unwrap();
     assert!(destination.exists());
 }
 
