@@ -224,7 +224,11 @@ impl Grant {
             },
             cpa_enabled: self.cpa_enabled,
             cpa_synced_generation: self.cpa_synced_generation,
-            cpa_sync_error: self.cpa_sync_error,
+            cpa_sync_error: if self.cpa_sync_suspended {
+                Some(BrokerError::ConsumerMissing)
+            } else {
+                self.cpa_sync_error
+            },
             cpa_sync_suspended: self.cpa_sync_suspended,
             cockpit_synced_generation: self.cockpit_synced_generation,
         }
@@ -322,6 +326,16 @@ impl BrokerStore {
         let _guard = acquire_lock(&path.with_extension("lock"))?;
         let mut current = self.load(&path)?;
         let pending = path.with_extension("pending");
+        if current.error == Some(BrokerError::ReauthRequired) {
+            if current.cpa_enabled || current.next_retry_at.is_some() || current.in_flight {
+                current.cpa_enabled = false;
+                current.next_retry_at = None;
+                current.in_flight = false;
+                current.cpa_sync_error = Some(BrokerError::ReauthRequired);
+                self.save(&path, &current)?;
+            }
+            return Err(BrokerError::ReauthRequired);
+        }
         if pending.exists() {
             let mut candidate = self.load(&pending)?;
             identity_matches(&current, &candidate)?;
@@ -339,7 +353,14 @@ impl BrokerStore {
                 Some(BrokerError::ReauthRequired | BrokerError::RecoveryRequired)
             )
         {
-            return Err(current.error.unwrap_or(BrokerError::RecoveryRequired));
+            let error = current.error.unwrap_or(BrokerError::RecoveryRequired);
+            if current.cpa_enabled || current.next_retry_at.is_some() {
+                current.cpa_enabled = false;
+                current.next_retry_at = None;
+                current.cpa_sync_error = Some(error);
+                self.save(&path, &current)?;
+            }
+            return Err(error);
         }
         let now = crate::current_epoch_secs();
         if !force && (now < current.due_at() || current.next_retry_at.is_some_and(|t| t > now)) {
@@ -452,16 +473,15 @@ impl BrokerStore {
         let path = self.path(key)?;
         let _guard = acquire_lock(&path.with_extension("lock"))?;
         let mut current = self.load(&path)?;
-        if enabled
-            && matches!(
-                current.error,
-                Some(BrokerError::ReauthRequired | BrokerError::RecoveryRequired)
-            )
+        if enabled && (current.in_flight || matches!(
+            current.error,
+            Some(BrokerError::ReauthRequired | BrokerError::RecoveryRequired)
+        ))
         {
             // A terminal OAuth lineage is deliberately inert. Re-enabling CPA
             // must not resurrect a deleted/stale account; only a fresh grant
             // imported through explicit reauthorization may re-enable it.
-            return Err(current.error.unwrap_or(BrokerError::ReauthRequired));
+            return Err(current.error.unwrap_or(BrokerError::RecoveryRequired));
         }
         if enabled && self.config.cpa_auth_dir.is_none() {
             return Err(BrokerError::Config);
@@ -479,19 +499,19 @@ impl BrokerStore {
         let path = self.path(key)?;
         let _guard = acquire_lock(&path.with_extension("lock"))?;
         let mut grant = self.load(&path)?;
-        if !grant.cpa_enabled {
-            return Ok(grant.metadata());
-        }
-        if grant.cpa_sync_suspended {
-            return Ok(grant.metadata());
-        }
-        if matches!(
+        if grant.in_flight || matches!(
             grant.error,
             Some(BrokerError::ReauthRequired | BrokerError::RecoveryRequired)
         ) {
-            grant.cpa_enabled = false;
-            grant.cpa_sync_error = Some(grant.error.unwrap_or(BrokerError::ReauthRequired));
-            self.save(&path, &grant)?;
+            if grant.cpa_enabled || grant.next_retry_at.is_some() {
+                grant.cpa_enabled = false;
+                grant.next_retry_at = None;
+                grant.cpa_sync_error = Some(grant.error.unwrap_or(BrokerError::RecoveryRequired));
+                self.save(&path, &grant)?;
+            }
+            return Ok(grant.metadata());
+        }
+        if !grant.cpa_enabled || grant.cpa_sync_suspended {
             return Ok(grant.metadata());
         }
         let previous_sync = (grant.cpa_synced_generation, grant.cpa_sync_error);
@@ -542,7 +562,10 @@ impl BrokerStore {
             Err(BrokerError::ConsumerMissing) => {
                 grant.cpa_enabled = false;
                 grant.cpa_sync_suspended = true;
-                grant.cpa_sync_error = Some(BrokerError::ConsumerMissing);
+                // Keep the encrypted grant readable by the rollback binary,
+                // whose enum predates ConsumerMissing. New metadata derives
+                // the precise reason from this additive suspension flag.
+                grant.cpa_sync_error = Some(BrokerError::ConsumerConflict);
             }
             Err(error) => grant.cpa_sync_error = Some(error),
         }
@@ -1013,6 +1036,7 @@ fn request_refresh(config: &BrokerConfig, previous: &Grant) -> BrokerResult<Gran
                 code,
                 "invalid_grant"
                     | "invalid_token"
+                    | "token_revoked"
                     | "refresh_token_expired"
                     | "refresh_token_invalidated"
                     | "refresh_token_reused"
