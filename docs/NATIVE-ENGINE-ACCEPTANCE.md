@@ -1,5 +1,34 @@
 # 自编译 NoTrace 原生内核：最低发布门槛
 
+## 2026-10-07 收尾状态
+
+本次收尾没有把 native 候选切入生产 `current`。当前生产指针仍为
+`chromium-152.0.7977.82-notrace`（Chromix 152）；自编译候选保留在
+`chromium-152.0.7977.82-native-notrace`，可通过 `packaging/switch-independent-engine.sh`
+在完成额外批准后切换或回滚。
+
+| 能力 | Cloak/现生产基线 | 自编译 native 152 当前证据 | 结论 |
+|---|---|---|---|
+| 正常 Picker/账号启动 | 已安装 `/Applications/Cloak Picker.app` | Picker 新建账号自动选中并显示启动按钮；安装 freshness、签名和 ARM64 门禁通过 | 保留 |
+| 三会话并发 | 原 Cloak 受单席位限制 | 正常 LaunchServices 路径三进程、三可见窗口、三独立 profile；Cookie/localStorage/IndexedDB 隔离，重启保留 | 新增并发 |
+| Canvas / Offscreen / Worker | 旧实现有跨接口差异 | native 自测两 Seed 哈希区分且稳定；HTML/Offscreen/Worker 与 PNG 解码路径一致，导出后页面像素不漂移 | 已测范围保留 |
+| Audio | 原生可用；未证明按 Seed 隔离 | OfflineAudioContext 可用，两个 Seed 的合成音频哈希相同 | 原生功能保留；Seed 隔离未证明 |
+| WebGL/WebGPU | 原基线有 Seed/GPU 模板能力 | WebGL M3/M4 渲染器按 Seed 区分；WebGPU 计算路径在既有审计中通过 | 已测范围改善/保留 |
+| UA/Client Hints/语言 | 版本依赖 | 真实 Chromium 152、UA-CH architecture=arm、bitness=64、fullVersion=152.0.7977.82；当前默认中文语言路径通过 | 保留；多语言完整矩阵未验证 |
+| 时区/Worker | 已有参数接入 | 主页面与 Worker 均 Asia/Tokyo，偏移一致 | 保留 |
+| WebRTC | 原 Cloak 可绑定出口 IP | native 使用 `disable_non_proxied_udp`；本地无私网候选，但没有出口 IP 改写等价证据 | 变化；不能宣称无损 |
+| 真实网站 | 匿名 ChatGPT/Cloudflare 可用 | native 可见窗口三轮匿名 ChatGPT 正常加载输入区，Cloudflare 主站正常；未登录、未发消息、未解验证码 | 已测范围可用；生产抗识别未证明 |
+| 本地签名 | 本机统一 identity | Picker、current 152、native 152、151 本地副本及 helper 均为 `ChatGPT Cloak Local Code Signing`，deep strict verify 通过 | 完成 |
+
+### 最终裁决
+
+**结论：多会话和已测原生能力成立；完整无损替代仍为证据不足，不能切换生产内核。**
+
+保留 native 候选和源码构建目录，不删除、不覆盖真实账号数据。恢复生产只需保持当前
+`current` 指针；若以后完成缺口验收，再按快照流程执行 `switch-independent-engine.sh activate native`。
+
+明确未完成/未验证：WebRTC 出口 IP 绑定等价性、真实麦克风/摄像头、远程 TURN TCP/TLS、完整 AudioWorklet/Analyser 全路径、TLS/HTTP2/3 指纹、生产登录账号连续性、生产验证码泛化，以及所有 Cloak 专有能力的逐项等价证明。
+
 用户要求：自编译版本至少比免 Key Cloak 145 更强，且保留先前相对 Cloak 151 的关键能力验收，不以版本号、补丁数或多开本身代替结论。
 
 ## 基线与来源
