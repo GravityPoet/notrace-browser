@@ -1943,7 +1943,6 @@ fn wait_for_startup_denial(path: &Path) -> Option<CloakError> {
     None
 }
 
-#[cfg(target_os = "macos")]
 fn macos_app_bundle_for_binary(browser_binary: &Path) -> Option<&Path> {
     let macos_dir = browser_binary.parent()?;
     let contents_dir = macos_dir.parent()?;
