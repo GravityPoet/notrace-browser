@@ -2,11 +2,12 @@
 
 ## 2026-10-07 收尾状态
 
-本次收尾已将本机 `current` 指向自编译 native 152：
-`chromium-152.0.7977.82-native-notrace`。这是保留完整快照后的本机候选切换，
-不是把“多开成功”包装成完整无损发布批准；下表仍明确列出尚未证明的 Cloak 专有能力和
-跨接口差异。旧 Chromix 152 保留在 `chromium-152.0.7977.82-notrace`，可通过
-`packaging/switch-independent-engine.sh` 回滚。
+本机默认已切回官方 macOS Cloak Pro 151.0.7922.108.3：
+`chromium-151.0.7922.108.3-pro-notrace`。今后的稳定更新只走官方
+CloakBrowser wrapper 和签名候选；免费/Pro 的上游单会话限制按用户选择接受。
+自编译 native 152 与 Chromix 152 仍保留在隔离目录，不作为默认启动内核，也不由官方
+更新器自动切回。下表保留此前对 native 候选的诚实对照，避免把“多开成功”包装成完整
+无损替代。
 
 | 能力 | Cloak/现生产基线 | 自编译 native 152 当前证据 | 结论 |
 |---|---|---|---|
@@ -23,11 +24,11 @@
 
 ### 最终裁决
 
-**结论：本机已切入 native 152；多会话和已测原生能力成立，但完整无损替代仍为证据不足。**
+**结论：本机默认是官方 Cloak Pro 151；native 152 仅为保留的自主候选，完整无损替代仍为证据不足。**
 
 保留 native 候选、旧 Chromix 152、源码构建目录和账号快照，不删除、不覆盖真实账号数据。
-若出现真实网站或媒体能力退步，先停止继续扩大测试，按快照和
-`packaging/switch-independent-engine.sh` 回滚到旧 `current`；“数据保留”不等于“跨内核身份完全不变”。
+如果未来官方版本出现真实网站或媒体能力退步，按官方版本快照和
+`packaging/rollback-chromium.sh` 回滚；“数据保留”不等于“跨内核身份完全不变”。
 
 明确未完成/未验证：WebRTC 出口 IP 绑定等价性、真实麦克风/摄像头、远程 TURN TCP/TLS、完整 AudioWorklet/Analyser 全路径、TLS/HTTP2/3 指纹、生产登录账号连续性、生产验证码泛化，以及所有 Cloak 专有能力的逐项等价证明。
 
@@ -58,6 +59,20 @@ React 重渲染后继续读取已脱离 DOM 的旧 row，后者是同步错误�
 row 内。最终驱动每次状态变化重新查询当前 row，并在工作区按“服务器文件读写失败”具体文本
 定位错误；成功条件同时要求当前 row 已显示“CPA已同步”且该具体错误消失。修复后重新构建、
 安装并复跑，13/13 通过。
+
+## 2026-10-07 官方内核回退与保留修复
+
+- `current` 已原子切换到 `/Users/moonlitpoet/.cloakbrowser/chromium-151.0.7922.108.3-pro-notrace`，
+  二进制输出 `Chromium 151.0.7922.108.3`，当前 SHA-256 为
+  `ca3d1469ea79bb23f5a36e8d1dad92edf7245d605bf205aecc643477de597a14`。
+- 自编译 `chromium-152.0.7977.82-native-notrace`、Chromix 152、免 Key 145 和源码构建目录均保留；
+  没有删除账号、Token、Cookie、快照或回滚产物。
+- 今天完成的 Picker/管理层修复继续随官方内核使用：新建账号选中与可见启动按钮、回收站恢复、
+  账号/存储隔离、refresh_token 失效后停止 CPA 同步、CPA 删除后的同步暂停、5 小时/周额度只读显示、
+  统一本地签名、真实安装版原生 E2E，以及 CPA 重试时清理旧错误并重新获取 DOM 节点。
+- 官方更新策略固定为稳定通道：`packaging/update-chromium.sh` 使用锁定的官方 wrapper，候选必须通过
+  签名、版本、兼容矩阵、TCC、Picker freshness、运行时契约和必要的 headed gate 后才替换 `current`；
+  浏览器运行中只延后更新，不强制关闭浏览器。native 候选不会被后台任务自动提升。
 
 用户要求：自编译版本至少比免 Key Cloak 145 更强，且保留先前相对 Cloak 151 的关键能力验收，不以版本号、补丁数或多开本身代替结论。
 
