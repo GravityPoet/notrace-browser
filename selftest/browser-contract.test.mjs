@@ -125,6 +125,32 @@ test("independent provenance rejects framework changes, unknown fields and symli
   }
 });
 
+test("native independent provenance accepts the local source and patch contract", () => {
+  const root = mkdtempSync(join(tmpdir(), "notrace-native-contract-"));
+  try {
+    const binary = join(root, "Chromium.app/Contents/MacOS/Chromium");
+    const framework = join(root, "Chromium.app/Contents/Frameworks/Chromium Framework.framework/Versions/152.0.7977.82/Chromium Framework");
+    mkdirSync(dirname(binary), { recursive: true });
+    mkdirSync(dirname(framework), { recursive: true });
+    writeFileSync(binary, "native-launcher");
+    writeFileSync(framework, "native-framework");
+    const hash = value => createHash("sha256").update(value).digest("hex");
+    writeFileSync(join(root, ".notrace-independent-engine.json"), JSON.stringify({
+      provider: "notrace-native",
+      version: "152.0.7977.82",
+      engine_version: "152.0.7977.82",
+      source_commit: "f1e41d82ca3fb9e83cedc06e22ff5f3073e8c542",
+      source_lock_sha256: "0".repeat(64),
+      patch_stack_sha256: "1".repeat(64),
+      binary_sha256: hash("native-launcher"),
+      framework_sha256: hash("native-framework"),
+    }));
+    assert.equal(independentEngineMetadata(binary).provider, "notrace-native");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("browser identity rules never force high-entropy client hints", () => {
   const identity = browserIdentityForVersion({ major: "145", full: "145.0.7632.109" });
   const rules = browserIdentityHeaderRules(identity);
