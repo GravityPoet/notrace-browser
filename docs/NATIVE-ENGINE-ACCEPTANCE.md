@@ -17,7 +17,7 @@
 | UA/Client Hints/语言 | 版本依赖 | 真实 Chromium 152、UA-CH architecture=arm、bitness=64、fullVersion=152.0.7977.82；当前默认中文语言路径通过 | 保留；多语言完整矩阵未验证 |
 | 时区/Worker | 已有参数接入 | 主页面与 Worker 均 Asia/Tokyo，偏移一致 | 保留 |
 | WebRTC | 原 Cloak 可绑定出口 IP | native 使用 `disable_non_proxied_udp`；本地无私网候选，但没有出口 IP 改写等价证据 | 变化；不能宣称无损 |
-| 真实网站 | 匿名 ChatGPT/Cloudflare 可用 | native 可见窗口三轮匿名 ChatGPT 正常加载输入区，Cloudflare 主站正常；未登录、未发消息、未解验证码 | 已测范围可用；生产抗识别未证明 |
+| 真实网站 | 匿名 ChatGPT/Cloudflare 可用 | native 可见窗口三轮匿名 ChatGPT 正常加载输入区，Cloudflare 主站正常；未登录、未发消息、未解验证码 | 辅助证据；不是 Picker 账号路径的生产抗识别证明 |
 | 本地签名 | 本机统一 identity | Picker、current 152、native 152、151 本地副本及 helper 均为 `ChatGPT Cloak Local Code Signing`，deep strict verify 通过 | 完成 |
 
 ### 最终裁决
