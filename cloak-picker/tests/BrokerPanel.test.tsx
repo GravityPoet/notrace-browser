@@ -111,7 +111,7 @@ describe("统一授权续期窗口", () => {
     expect([...document.querySelectorAll("button")].find(button => button.textContent === "读取额度")?.disabled).toBe(false);
     await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
     await settle();
-    expect(document.querySelector('[aria-label="账号额度"]')?.textContent ?? "").not.toContain("42%");
+    expect(document.querySelector('[aria-label="账号额度"]')?.textContent).toContain("75%");
     expect(requests).toEqual(["profile-1", "profile-2"]);
   });
 
