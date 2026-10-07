@@ -10,6 +10,7 @@ ACCOUNTS="${CLOAK_ACCOUNT_BASE:-$HOME/Library/Application Support/NoTrace Browse
 mode="${1:-activate}"
 candidate="${2:-chromix}"
 BACKUP_ROOT_INPUT="${CLOAK_BACKUP_ROOT:-}"
+ARCHIVE_ROOT_INPUT="${CLOAK_BACKUP_ARCHIVE_ROOT:-}"
 stage=""
 cleanup() { if [[ -n "$stage" && -d "$stage" ]]; then /bin/rm -rf "$stage"; fi; }
 trap cleanup EXIT
@@ -58,6 +59,11 @@ compare_snapshot() {
   changes="$(/usr/bin/rsync -acni --delete "$1/" "$2/")" || die '账号快照校验执行失败'
   [[ -z "$changes" ]] || die '账号快照内容不一致；停止切换并保留现有数据'
 }
+archive_snapshot_if_configured() {
+  local archive_root="$ARCHIVE_ROOT_INPUT"
+  if [[ -z "$archive_root" && "$CB" == "$HOME/.cloakbrowser" ]]; then archive_root="$HOME/Library/Mobile Documents/com~apple~CloudDocs/电脑文件/隐私浏览器自编译源码"; fi
+  [[ -z "$archive_root" ]] || CLOAK_BACKUP_ARCHIVE_ROOT="$archive_root" bash "$ROOT/packaging/archive-independent-snapshot.sh" "$1"
+}
 resolve_backup_root
 assert_idle
 current_dir="$(cd "$CB/current" && pwd -P)"
@@ -101,6 +107,7 @@ const fs=require('node:fs'), path=require('node:path');
 fs.writeFileSync(path.join(process.argv[2], 'snapshot.json'), JSON.stringify({schema:1,account_base:process.argv[3],previous_version:process.argv[4],accounts_sha256:process.argv[5]},null,2)+'\n',{mode:0o600});
 JS
     assert_idle
+    archive_snapshot_if_configured "$snapshot"
     if [[ "$mode" == activate ]]; then
       CLOAKBROWSER_DIR="$CB" bash "$ROOT/packaging/rollback-chromium.sh" "$target_version"
     fi

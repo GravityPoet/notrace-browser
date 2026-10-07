@@ -150,7 +150,9 @@ cd /Users/moonlitpoet/Tools/AI-tools/notrace-browser && bash packaging/switch-in
 - 选择独立内核后，原 CloakBrowser 定时更新器只验收并保留它，不会自动切回单席位内核。新 Chromix 版本须重新验收；154 macOS 产物未通过实际指纹参数测试，不能仅凭版本号升级。
 - 完整降级使用 `packaging/switch-independent-engine.sh restore <激活时输出的快照目录>`：恢复旧内核和切换前账号，切换后数据另存 `.noindex` 目录。不要仅切回旧内核再让旧版直接写已升级的 profile。
 - 回滚快照根目录默认仍是 `~/.cloakbrowser/backups`。如需统一归类到外部目录，可在**备份和恢复两次**使用同一个绝对路径覆盖：`CLOAK_BACKUP_ROOT="/绝对路径/账号快照" bash packaging/switch-independent-engine.sh backup`；恢复时同样设置该变量。脚本拒绝符号链接和账号工作区内的路径，旧命令保持兼容。
-- 回滚快照含浏览器登录数据库（例如 Cookies、Login Data、IndexedDB），不应把明文快照直接放进云盘；iCloud 归档请使用 Picker 的 AES-256-GCM 加密工作区备份，或在加密磁盘/加密归档中保存。源码归档与账号快照可放在同一总目录下的不同子目录，但不要混成一个未加密包。
+- 真实默认 `~/.cloakbrowser` 执行 `backup` 或 `activate` 时，会在唯一 iCloud 根目录生成无密码 tar.gz 归档，并先完整解压校验；测试临时根目录不会触发。归档成功不会自动删除本机快照，上传和清理仍单独验收。恢复可用 `packaging/restore-independent-snapshot-archive.sh <归档.tar.gz>`，只取回并校验，不覆盖现行账号或内核。
+- 更新器和授权续期 LaunchAgent 的旧 plist 也统一备份到这个根目录；根目录不可用或不可写时，安装脚本会停止并保留现行 plist，不会回落到本机旧备份目录。
+- 回滚快照含浏览器登录数据库（例如 Cookies、Login Data、IndexedDB）。在用户已开启 iCloud 高级数据保护且归档只放私有 iCloud 根目录的前提，默认使用无密码压缩归档；不要公开分享、复制到不受信任云盘或把旧 OAuth 文件覆盖到现行 Broker 凭据。源码、账号包和启动配置统一平铺在同一根目录，用文件名区分，不再依赖子目录分类。
 
 验收：`node selftest/run-independent-multisession.mjs` 验证三会话正式启动、原生 Canvas 区分、存储隔离和重启稳定；`bash packaging/verify-challenge-contract.sh` 核对 Rust/Bash 参数与浏览器实际能力。
 
