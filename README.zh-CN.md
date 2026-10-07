@@ -149,6 +149,8 @@ cd /Users/moonlitpoet/Tools/AI-tools/notrace-browser && bash packaging/switch-in
 - WebRTC 使用 `disable_non_proxied_udp` 防止绕过代理，不声称支持旧内核的出口 IP 改写；依赖 UDP 的实时通话需站点支持 TCP/TURN。Audio 保持原生，两个 Seed 的 Audio hash 相同，与本机旧 151 基线一致。功能测试通过不等于所有网站永不要求挑战。
 - 选择独立内核后，原 CloakBrowser 定时更新器只验收并保留它，不会自动切回单席位内核。新 Chromix 版本须重新验收；154 macOS 产物未通过实际指纹参数测试，不能仅凭版本号升级。
 - 完整降级使用 `packaging/switch-independent-engine.sh restore <激活时输出的快照目录>`：恢复旧内核和切换前账号，切换后数据另存 `.noindex` 目录。不要仅切回旧内核再让旧版直接写已升级的 profile。
+- 回滚快照根目录默认仍是 `~/.cloakbrowser/backups`。如需统一归类到外部目录，可在**备份和恢复两次**使用同一个绝对路径覆盖：`CLOAK_BACKUP_ROOT="/绝对路径/账号快照" bash packaging/switch-independent-engine.sh backup`；恢复时同样设置该变量。脚本拒绝符号链接和账号工作区内的路径，旧命令保持兼容。
+- 回滚快照含浏览器登录数据库（例如 Cookies、Login Data、IndexedDB），不应把明文快照直接放进云盘；iCloud 归档请使用 Picker 的 AES-256-GCM 加密工作区备份，或在加密磁盘/加密归档中保存。源码归档与账号快照可放在同一总目录下的不同子目录，但不要混成一个未加密包。
 
 验收：`node selftest/run-independent-multisession.mjs` 验证三会话正式启动、原生 Canvas 区分、存储隔离和重启稳定；`bash packaging/verify-challenge-contract.sh` 核对 Rust/Bash 参数与浏览器实际能力。
 
