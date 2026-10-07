@@ -9,6 +9,7 @@ CB="${CLOAK_BROWSER_ROOT:-$HOME/.cloakbrowser}"
 ACCOUNTS="${CLOAK_ACCOUNT_BASE:-$HOME/Library/Application Support/NoTrace Browser/Accounts}"
 mode="${1:-activate}"
 candidate="${2:-chromix}"
+BACKUP_ROOT_INPUT="${CLOAK_BACKUP_ROOT:-}"
 stage=""
 cleanup() { if [[ -n "$stage" && -d "$stage" ]]; then /bin/rm -rf "$stage"; fi; }
 trap cleanup EXIT
@@ -18,6 +19,28 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
 [[ -d "$CB" && ! -L "$CB" && -L "$CB/current" ]] || die '内核根目录或 current 指针无效'
 CB="$(cd "$CB" && pwd -P)"
 ACCOUNTS="$(cd "$ACCOUNTS" && pwd -P)"
+
+resolve_backup_root() {
+  local raw parent
+  if [[ -n "$BACKUP_ROOT_INPUT" ]]; then
+    raw="$BACKUP_ROOT_INPUT"
+  else
+    raw="$CB/backups"
+  fi
+  [[ "$raw" == /* ]] || die 'CLOAK_BACKUP_ROOT 必须是绝对路径'
+  [[ ! -L "$raw" ]] || die '备份根目录不能是符号链接'
+  if [[ -e "$raw" ]]; then
+    [[ -d "$raw" ]] || die '备份根目录不是目录'
+  else
+    [[ "$mode" == backup || "$mode" == activate ]] || die '恢复所需的备份根目录不存在'
+    parent="$(dirname "$raw")"
+    mkdir -p "$parent"
+    mkdir "$raw"
+  fi
+  BACKUP_ROOT="$(cd "$raw" && pwd -P)"
+  [[ "$BACKUP_ROOT" != "$ACCOUNTS" && "$BACKUP_ROOT" != "$ACCOUNTS"/* ]] \
+    || die '备份根目录不能位于账号工作区内'
+}
 
 assert_idle() {
   # Examine commands only in memory; never log account names or credentials.
@@ -35,6 +58,7 @@ compare_snapshot() {
   changes="$(/usr/bin/rsync -acni --delete "$1/" "$2/")" || die '账号快照校验执行失败'
   [[ -z "$changes" ]] || die '账号快照内容不一致；停止切换并保留现有数据'
 }
+resolve_backup_root
 assert_idle
 current_dir="$(cd "$CB/current" && pwd -P)"
 current_version="${current_dir##*/chromium-}"
@@ -62,10 +86,9 @@ case "$mode" in
         || die '请先安装当前源码构建的 Cloak Picker'
     fi
     [[ -f "$CB/current.sha256" && ! -L "$CB/current.sha256" ]] || die 'current.sha256 无效'
-    [[ ! -L "$CB/backups" ]] || die '备份目录不能是符号链接'
-    mkdir -p "$CB/backups"
-    chmod 700 "$CB/backups"
-    snapshot="$(mktemp -d "$CB/backups/independent-engine-$(date '+%Y%m%d-%H%M%S').XXXXXX")"
+    [[ ! -L "$BACKUP_ROOT" ]] || die '备份根目录不能是符号链接'
+    chmod 700 "$BACKUP_ROOT"
+    snapshot="$(mktemp -d "$BACKUP_ROOT/independent-engine-$(date '+%Y%m%d-%H%M%S').XXXXXX")"
     /bin/mv "$snapshot" "${snapshot}.noindex"
     snapshot="${snapshot}.noindex"
     printf '%s\n' '正在创建完整账号快照并逐文件校验；不修改原账号'
@@ -86,7 +109,7 @@ JS
   restore)
     [[ $# == 2 && -d "$2" && ! -L "$2" ]] || die '用法：switch-independent-engine.sh restore <账号快照目录>'
     snapshot="$(cd "$2" && pwd -P)"
-    [[ "$snapshot" == "$CB"/backups/independent-engine-*.noindex ]] || die '快照不在本机独立内核备份目录内'
+    [[ "$snapshot" == "$BACKUP_ROOT"/independent-engine-*.noindex ]] || die '快照不在配置的独立内核备份目录内'
     previous="$(node - "$snapshot/snapshot.json" "$ACCOUNTS" <<'JS'
 const fs=require('node:fs');
 const file=process.argv[2],stat=fs.lstatSync(file);
