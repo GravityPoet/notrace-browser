@@ -10,7 +10,7 @@ CLI="$APP/Contents/MacOS/cloak"
 LABEL="com.notrace-browser.auth-refresh"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$HOME/Library/Logs/NoTrace Browser/auth-refresh.log"
-BACKUP_DIR="$HOME/Library/Application Support/NoTrace Browser/backups/launchagents"
+BACKUP_ARCHIVE_ROOT="${CLOAK_BACKUP_ARCHIVE_ROOT:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/电脑文件/隐私浏览器自编译源码}"
 
 [[ -x "$CLI" ]] || {
   printf 'error: bundled auth CLI not found: %s\n' "$CLI" >&2
@@ -47,10 +47,19 @@ PLIST
 
 /usr/bin/plutil -lint "$tmp" >/dev/null
 if [[ -f "$PLIST" ]] && ! cmp -s "$PLIST" "$tmp"; then
-  mkdir -p "$BACKUP_DIR"
-  backup="$BACKUP_DIR/$LABEL.$(date '+%Y%m%d-%H%M%S').plist"
-  cp -p "$PLIST" "$backup"
+  [[ "$BACKUP_ARCHIVE_ROOT" == /* && ! -L "$BACKUP_ARCHIVE_ROOT" && -d "$BACKUP_ARCHIVE_ROOT" && -w "$BACKUP_ARCHIVE_ROOT" ]] || {
+    printf 'error: iCloud backup root is unavailable or not writable; live plist unchanged\n' >&2
+    exit 1
+  }
+  backup="$BACKUP_ARCHIVE_ROOT/启动配置-$(date '+%Y%m%d-%H%M%S')-$LABEL.plist"
+  [[ ! -e "$backup" && ! -L "$backup" ]] || { printf 'error: backup target already exists; live plist unchanged\n' >&2; exit 1; }
+  if ! cp -p "$PLIST" "$backup"; then
+    rm -f -- "$backup"
+    printf 'error: unable to write the single iCloud backup root: %s\n' "$BACKUP_ARCHIVE_ROOT" >&2
+    exit 1
+  fi
   chmod 600 "$backup"
+  cmp -s "$PLIST" "$backup" || { printf 'error: launchd backup mismatch; live plist unchanged\n' >&2; exit 1; }
   printf 'backup  : %s\n' "$backup"
 fi
 mv -f "$tmp" "$PLIST"

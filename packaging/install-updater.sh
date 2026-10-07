@@ -15,7 +15,7 @@ LABEL="com.notrace-browser.update"
 UPDATER="$ROOT/packaging/update-chromium.sh"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$HOME/.cloakbrowser/update.log"
-BACKUP_DIR="$HOME/.cloakbrowser/backups/launchagents"
+BACKUP_ARCHIVE_ROOT="${CLOAK_BACKUP_ARCHIVE_ROOT:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/电脑文件/隐私浏览器自编译源码}"
 
 [[ -f "$UPDATER" ]] || { printf 'error: updater not found: %s\n' "$UPDATER" >&2; exit 1; }
 chmod +x "$UPDATER"
@@ -49,10 +49,19 @@ cat > "$plist_tmp" <<PLIST
 PLIST
 /usr/bin/plutil -lint "$plist_tmp" >/dev/null
 if [[ -f "$PLIST" ]] && ! cmp -s "$PLIST" "$plist_tmp"; then
-  mkdir -p "$BACKUP_DIR"
-  backup="$BACKUP_DIR/$LABEL.$(date '+%Y%m%d-%H%M%S').plist"
-  cp -p "$PLIST" "$backup"
+  [[ "$BACKUP_ARCHIVE_ROOT" == /* && ! -L "$BACKUP_ARCHIVE_ROOT" && -d "$BACKUP_ARCHIVE_ROOT" && -w "$BACKUP_ARCHIVE_ROOT" ]] || {
+    printf 'error: iCloud backup root is unavailable or not writable; live plist unchanged\n' >&2
+    exit 1
+  }
+  backup="$BACKUP_ARCHIVE_ROOT/启动配置-$(date '+%Y%m%d-%H%M%S')-$LABEL.plist"
+  [[ ! -e "$backup" && ! -L "$backup" ]] || { printf 'error: backup target already exists; live plist unchanged\n' >&2; exit 1; }
+  if ! cp -p "$PLIST" "$backup"; then
+    rm -f -- "$backup"
+    printf 'error: unable to write the single iCloud backup root: %s\n' "$BACKUP_ARCHIVE_ROOT" >&2
+    exit 1
+  fi
   chmod 600 "$backup"
+  cmp -s "$PLIST" "$backup" || { printf 'error: launchd backup mismatch; live plist unchanged\n' >&2; exit 1; }
   printf 'backup  : %s\n' "$backup"
 fi
 mv -f "$plist_tmp" "$PLIST"

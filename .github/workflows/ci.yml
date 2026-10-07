@@ -91,6 +91,8 @@ jobs:
           ./packaging/test-update-pin.sh
           ./packaging/test-update-wrapper.sh
           ./packaging/test-rollback-chromium.sh
+          bash packaging/test-independent-snapshot.sh
+          bash packaging/test-archive-independent-snapshot.sh
 
       - name: Build and install the canonical app shape
         shell: bash

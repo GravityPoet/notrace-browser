@@ -6,8 +6,9 @@ trap '/bin/rm -rf "$tmp"' EXIT
 CB="$tmp/browser"
 accounts="$tmp/Accounts"
 backup_root="$tmp/iCloud/隐私浏览器自编译源码/账号快照"
+archive_root="$tmp/单一归档目录"
 app="$CB/chromium-151.0.0.0/Chromium.app"
-mkdir -p "$app/Contents/MacOS" "$accounts/synthetic-account"
+mkdir -p "$app/Contents/MacOS" "$accounts/synthetic-account" "$archive_root"
 printf '#!/bin/sh\nprintf "Chromium 151.0.0.0\\n"\n' > "$app/Contents/MacOS/Chromium"
 chmod 700 "$app/Contents/MacOS/Chromium"
 /usr/bin/plutil -create xml1 "$app/Contents/Info.plist"
@@ -22,10 +23,12 @@ ln -s 'nonexistent-cookie' "$accounts/synthetic-account/SingletonCookie"
 legacy_output="$(CLOAK_BROWSER_ROOT="$CB" CLOAK_ACCOUNT_BASE="$accounts" bash "$ROOT/packaging/switch-independent-engine.sh" backup)"
 legacy_snapshot="${legacy_output##*账号快照：}"
 [[ "$legacy_snapshot" == "$CB/backups"/independent-engine-*.noindex ]]
-output="$(CLOAK_BROWSER_ROOT="$CB" CLOAK_ACCOUNT_BASE="$accounts" CLOAK_BACKUP_ROOT="$backup_root" bash "$ROOT/packaging/switch-independent-engine.sh" backup)"
+output="$(CLOAK_BROWSER_ROOT="$CB" CLOAK_ACCOUNT_BASE="$accounts" CLOAK_BACKUP_ROOT="$backup_root" CLOAK_BACKUP_ARCHIVE_ROOT="$archive_root" bash "$ROOT/packaging/switch-independent-engine.sh" backup)"
 snapshot="${output##*账号快照：}"
 [[ -f "$snapshot/snapshot.json" ]]
 [[ "$snapshot" == "$backup_root"/independent-engine-*.noindex ]]
+archive="$(printf '%s\n' "$output" | sed -n 's/^archive=//p')"
+[[ -f "$archive" && -f "$archive.sha256" ]]
 printf '%s\n' 'post-switch-synthetic-storage' > "$accounts/synthetic-account/storage.txt"
 cp "$snapshot/Accounts/synthetic-account/storage.txt" "$tmp/original.txt"
 printf '%s\n' 'corrupted-backup' > "$snapshot/Accounts/synthetic-account/storage.txt"
