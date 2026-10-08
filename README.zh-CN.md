@@ -118,7 +118,7 @@ cloak auth authority <账号> notrace    # 外部应用停止刷新后，切回 
 cloak auth refresh-all                 # 只检查到期窗口，不做无条件轮换
 ```
 
-安装 Picker 后，可运行 `packaging/install-auth-refresh.sh` 安装 macOS LaunchAgent。它在登录时和每 24 小时调用一次内置 `cloak`，但只有到期窗口内的 NoTrace 授权才会实际刷新；`packaging/uninstall-auth-refresh.sh` 可移除该任务。NoTrace 不会直接修改 Cockpit 的 SQLite、Keychain 或 sidecar 凭据，也不会把刷新成功误报成 CPA/Cockpit 已完成导入。
+安装 Picker 后，可运行 `packaging/install-auth-refresh.sh` 安装 macOS LaunchAgent。它在登录时和每 24 小时调用一次 App 内已签名的“授权续期后台任务”，但只有到期窗口内的 NoTrace 授权才会实际刷新；重新签名/安装 Picker 时会自动重载既有任务，避免 launchd 缓存旧 CDHash 而报 `OS_REASON_CODESIGNING`。`packaging/uninstall-auth-refresh.sh` 可移除该任务。NoTrace 不会直接修改 Cockpit 的 SQLite、Keychain 或 sidecar 凭据，也不会把刷新成功误报成 CPA/Cockpit 已完成导入。
 
 ## 🔐 加密工作区备份与恢复
 
