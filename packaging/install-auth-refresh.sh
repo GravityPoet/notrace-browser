@@ -7,13 +7,14 @@ set -euo pipefail
 
 APP="${CLOAK_PICKER_INSTALL_APP:-/Applications/Cloak Picker.app}"
 CLI="$APP/Contents/MacOS/cloak"
+LAUNCHER="$APP/Contents/Resources/授权续期后台任务.sh"
 LABEL="com.notrace-browser.auth-refresh"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$HOME/Library/Logs/NoTrace Browser/auth-refresh.log"
 BACKUP_ARCHIVE_ROOT="${CLOAK_BACKUP_ARCHIVE_ROOT:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/电脑文件/隐私浏览器自编译源码}"
 
-[[ -x "$CLI" ]] || {
-  printf 'error: bundled auth CLI not found: %s\n' "$CLI" >&2
+[[ -x "$CLI" && -x "$LAUNCHER" ]] || {
+  printf 'error: bundled auth refresh launcher or CLI not found: %s\n' "$APP" >&2
   printf '%s\n' 'Run packaging/install-cloak-picker-app.sh first.' >&2
   exit 1
 }
@@ -32,9 +33,7 @@ cat > "$tmp" <<PLIST
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$CLI</string>
-    <string>auth</string>
-    <string>refresh-all</string>
+    <string>$LAUNCHER</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>86400</integer>

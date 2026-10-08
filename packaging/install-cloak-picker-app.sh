@@ -12,6 +12,13 @@ INSTALL_TMP="$INSTALL_PARENT/.$APP_NAME.app.tmp.$$"
 EXPECTED_BUNDLE_ID="local.cloak.picker"
 LSREG="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
 CODESIGN_IDENTITY="$(resolve_cloak_codesign_identity)"
+AUTH_REFRESH_LABEL="com.notrace-browser.auth-refresh"
+AUTH_REFRESH_PLIST="$HOME/Library/LaunchAgents/$AUTH_REFRESH_LABEL.plist"
+AUTH_REFRESH_WAS_INSTALLED=0
+if [[ "$INSTALL_APP" == "/Applications/$APP_NAME.app" && -f "$AUTH_REFRESH_PLIST" ]]; then
+  AUTH_REFRESH_WAS_INSTALLED=1
+fi
+AUTH_REFRESH_LAUNCHER="$ROOT/packaging/授权续期后台任务.sh"
 
 printf '%s\n' "backup: skipped; Cloak Picker.app is a generated Tauri bundle and is reinstallable from this script."
 
@@ -42,6 +49,16 @@ fi
 # does not depend on a source checkout or a mutable target directory.
 cp "$ROOT/target/release/cloak" "$BUILT_APP/Contents/MacOS/cloak"
 chmod 755 "$BUILT_APP/Contents/MacOS/cloak"
+[[ -f "$AUTH_REFRESH_LAUNCHER" && ! -L "$AUTH_REFRESH_LAUNCHER" ]] || {
+  printf 'error: auth refresh launcher source missing: %s\n' "$AUTH_REFRESH_LAUNCHER" >&2
+  exit 1
+}
+cp "$AUTH_REFRESH_LAUNCHER" "$BUILT_APP/Contents/Resources/授权续期后台任务.sh"
+chmod 755 "$BUILT_APP/Contents/Resources/授权续期后台任务.sh"
+# Tauri may leave a CodeResources file from an earlier bundle shape. Remove
+# only that generated signature metadata before signing the final file set.
+# Do not strip arbitrary extended attributes from the installed app.
+/bin/rm -rf "$BUILT_APP/Contents/_CodeSignature"
 
 if [[ -e "$INSTALL_APP/Contents/Info.plist" ]]; then
   existing_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INSTALL_APP/Contents/Info.plist" 2>/dev/null || true)"
@@ -108,6 +125,15 @@ fi
 # LaunchServices candidate with the same bundle identifier as the canonical app.
 if [[ "$BUILT_APP" != "$INSTALL_APP" ]]; then
   /bin/rm -rf "$BUILT_APP"
+fi
+
+# Re-register an existing auth-refresh job after replacing the signed bundle.
+# launchd caches a code requirement for the previous CDHash; without a
+# bootstrap cycle it can reject the new, otherwise valid local signature with
+# OS_REASON_CODESIGNING. Do not create the job here when the user has not
+# enabled it previously.
+if [[ "$AUTH_REFRESH_WAS_INSTALLED" == 1 ]]; then
+  CLOAK_PICKER_INSTALL_APP="$INSTALL_APP" bash "$ROOT/packaging/install-auth-refresh.sh"
 fi
 
 printf 'signing : %s\n' "$CODESIGN_IDENTITY"
