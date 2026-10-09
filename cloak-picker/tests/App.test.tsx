@@ -843,6 +843,52 @@ describe("Cloak Picker dialog regressions", () => {
     expect(document.querySelector('#cloak-account-active-tab')?.getAttribute('aria-selected')).toBe('true');
   });
 
+  it.each([
+    ["demo-beta", "活跃 · codex"],
+    ["demo-gamma", "回收站 · codex"],
+  ])("keeps the searched account %s selected through its context menu and cancelled permanent deletion", async (name, location) => {
+    const search = document.querySelector<HTMLInputElement>('input[aria-label="搜索账号"]')!;
+    await inputText(search, name);
+    await settle(30);
+    const row = accountRow(name);
+    const list = row.closest<HTMLElement>(".accountList")!;
+    list.scrollTop = 24;
+    const resultCount = document.querySelectorAll(".accountRow").length;
+    const matchPosition = document.querySelector(".accountSearchResultStatus")?.textContent;
+
+    await openContextMenu(row);
+    expect(search.value).toBe(name);
+    expect(accountRow(name)).toBe(row);
+    expect(row.classList.contains("selected")).toBe(true);
+    expect(row.hidden).toBe(false);
+    expect(row.querySelector(".accountLocationTag")?.textContent).toBe(location);
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(resultCount);
+    expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe(matchPosition);
+    expect(list.scrollTop).toBe(24);
+    expect(document.querySelector(".workbenchAccountHeader h1")?.textContent).toBe(name);
+
+    await click(buttonWithText("彻底删除", document.querySelector(".accountContextMenu")!));
+    const dialog = document.querySelector('[role="alertdialog"]')!;
+    expect(dialog.textContent).toContain(name);
+    expect(accountRow(name)).toBe(row);
+    expect(row.classList.contains("selected")).toBe(true);
+    expect(search.value).toBe(name);
+    expect(mockCommandCountForTest("delete_account")).toBe(0);
+    expect(mockCommandCountForTest("permanently_delete_account")).toBe(0);
+
+    await click(buttonWithText("取消", dialog));
+    await settle(30);
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(document.activeElement).toBe(row);
+    expect(search.value).toBe(name);
+    expect(accountRow(name)).toBe(row);
+    expect(row.classList.contains("selected")).toBe(true);
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(resultCount);
+    expect(list.scrollTop).toBe(24);
+    expect(mockCommandCountForTest("delete_account")).toBe(0);
+    expect(mockCommandCountForTest("permanently_delete_account")).toBe(0);
+  });
+
   it("offers confirmed permanent batch deletion directly in the active list", async () => {
     await click(buttonWithText("多选"));
     await click(accountRow("demo-beta"));

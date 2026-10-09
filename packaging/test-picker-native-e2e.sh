@@ -162,6 +162,7 @@ node -e '
     "renewal-search-authorize-seat-error",
     "renewal-header-active-and-trash-launch",
     "cpa-sync-pending-retry-success",
+    "searched-account-context-preserves-selection",
     "account-context-submenu-and-restore",
     "bulk-workspace-large-actions",
     "account-tab-aria-controls",

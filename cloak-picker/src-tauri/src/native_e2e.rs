@@ -234,6 +234,50 @@ const NATIVE_E2E_DRIVER: &str = r#"
         && !syncErrorAlert();
     }, '重试成功后开启自动同步');
     checks.push('cpa-sync-pending-retry-success');
+    // A context action must not reset the search and replace the targeted row.
+    // Open only the confirmation, then cancel; both fixtures stay on disk.
+    for (const [name, trashed] of [['native-e2e-account', false], ['native-e2e-sync-account', true]]) {
+      setter.call(search, name);
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      const row = await waitFor(() => {
+        const candidate = document.querySelector(`.accountRow[data-account-name="${name}"]`);
+        return candidate?.classList.contains('selected') && pane.querySelector('h1')?.textContent === name ? candidate : null;
+      }, '搜索后选中右键目标');
+      const list = row.closest('.accountList');
+      const scrollTop = list.scrollTop;
+      const resultCount = document.querySelectorAll('.accountRow').length;
+      const assertContextPreserved = () => {
+        const current = document.querySelector(`.accountRow[data-account-name="${name}"]`);
+        const rowBounds = row.getBoundingClientRect();
+        const listBounds = list.getBoundingClientRect();
+        if (search.value !== name || current !== row || !row.classList.contains('selected') || row.hidden
+            || document.querySelectorAll('.accountRow').length !== resultCount || list.scrollTop !== scrollTop
+            || rowBounds.height <= 0 || rowBounds.bottom <= listBounds.top || rowBounds.top >= listBounds.bottom
+            || pane.querySelector('h1')?.textContent !== name) {
+          throw new Error('右键菜单或取消彻底删除丢失了搜索、账号行、选中态或列表位置');
+        }
+      };
+      const rowBounds = row.getBoundingClientRect();
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: rowBounds.left + 20, clientY: rowBounds.top + 10 }));
+      const menu = await waitFor(() => document.querySelector('.accountContextMenu'), '搜索结果右键菜单');
+      assertContextPreserved();
+      const permanent = Array.from(menu.querySelectorAll('button')).find(button => button.textContent.trim() === '彻底删除');
+      if (!permanent || permanent.disabled) throw new Error('搜索结果缺少可用的彻底删除确认入口');
+      permanent.click();
+      const dialog = await waitFor(() => document.querySelector('[role="alertdialog"]'), '搜索结果删除确认');
+      if (!dialog.textContent.includes(name)) throw new Error('搜索结果删除确认绑定了其他账号');
+      assertContextPreserved();
+      const cancel = Array.from(dialog.querySelectorAll('button')).find(button => button.textContent.trim() === '取消');
+      if (!cancel || cancel.disabled) throw new Error('删除确认无法取消');
+      cancel.click();
+      await waitFor(() => !document.querySelector('[role="alertdialog"]') && document.activeElement === row, '取消后焦点回到原账号');
+      assertContextPreserved();
+      const accountsOnDisk = await invoke(trashed ? 'list_trashed_accounts' : 'list_accounts');
+      if (!accountsOnDisk.some(account => account.name === name && account.trashed === trashed)) {
+        throw new Error('仅查看或取消删除确认仍修改了账号数据');
+      }
+    }
+    checks.push('searched-account-context-preserves-selection');
     const verifyHeaderLaunch = async (name, temporary) => {
       setter.call(search, '');
       search.dispatchEvent(new Event('input', { bubbles: true }));

@@ -1960,7 +1960,9 @@ export default function App() {
       accountContextMenuHeight(account.marked, account.trashed),
     );
     setGroupContextMenu(null);
-    setAccountSearch("");
+    // Opening a context menu is non-destructive. Preserve an active search so
+    // the right-clicked row stays in the same filtered list and keeps its
+    // selection while a confirmation dialog is opened or cancelled.
     setSelectedName(account.name);
     setAccountContextMenu({
       account,
