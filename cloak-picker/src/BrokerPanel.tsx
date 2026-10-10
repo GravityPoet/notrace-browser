@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowDownUp, Download, FileJson, KeyRound, Link2, Loader2, RefreshCw, Search, UploadCloud } from "lucide-react";
+import { ArrowDownUp, Clock3, Download, FileJson, KeyRound, Link2, Loader2, RefreshCw, RotateCcw, Search, UploadCloud } from "lucide-react";
 import { authProgressLabels, type ActiveAuth, type AuthCall, type AuthLoginPhase, type AuthStatus } from "./AuthPanel";
 
 export type BrokerMetadata = {
@@ -107,7 +107,10 @@ function QuotaWindowCard({ window }: { window: CodexQuotaWindow }) {
     >
       <span style={{ width: `${remaining}%` }} />
     </div> : <span className="brokerQuotaUnknown">上游未提供百分比</span>}
-    <small>{window.reset_at ? `重置 ${time(window.reset_at)}` : "重置时间暂未返回"}</small>
+    <div className={`brokerQuotaWindowReset ${window.reset_at ? "" : "brokerQuotaWindowReset-unavailable"}`} aria-label={`${label}重置时间`}>
+      <Clock3 size={13} aria-hidden="true" />
+      <span><small>重置时间</small><b>{window.reset_at ? time(window.reset_at) : "上游未提供"}</b></span>
+    </div>
   </div>;
 }
 function repeatsAuthorizationState(message: string) {
@@ -496,7 +499,14 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
           {quota && <section className="brokerQuota" aria-label="账号额度">
             <div className="brokerQuotaHeader"><strong>额度</strong><span>查询于 {time(quota.fetched_at)}</span></div>
             {quota.windows.length > 0 ? <div className="brokerQuotaWindows">{[...quota.windows].sort((a, b) => (a.window_minutes ?? Number.MAX_SAFE_INTEGER) - (b.window_minutes ?? Number.MAX_SAFE_INTEGER)).map((window, index) => <QuotaWindowCard key={`${window.name}-${window.window_minutes ?? "unknown"}-${index}`} window={window} />)}</div> : <p className="brokerQuotaUnavailable">上游未返回额度窗口</p>}
-            <div className="brokerQuotaMeta"><span>主动重置：{quota.reset_count_available ? `${quota.reset_count ?? 0} 次` : "上游未提供"}</span></div>
+            {(() => {
+              const resetCreditsTone = !quota.reset_count_available ? "unavailable" : quota.reset_count === 0 ? "empty" : "available";
+              return <div className={`brokerQuotaResetCredits brokerQuotaResetCredits-${resetCreditsTone}`} role="status" aria-label="主动重置剩余次数">
+                <RotateCcw size={13} aria-hidden="true" />
+                <span>主动重置剩余</span>
+                <b>{quota.reset_count_available ? `${quota.reset_count ?? 0} 次` : "上游未提供"}</b>
+              </div>;
+            })()}
           </section>}
           <div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span title="从启用统计起累计，只计成功续期；首次授权、重新授权和失败重试不计入。">成功续期<b>{refreshCountLabel(remote.refresh_count)}</b>{remote.refresh_count !== undefined && remote.automatic_refresh_count !== undefined && <small>自动 {remote.automatic_refresh_count} 次 · 手动 {Math.max(0, remote.refresh_count - remote.automatic_refresh_count)} 次</small>}<small>启用统计后累计</small></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? "已确认" : "使用导出 JSON 导入"}</b></span></div>
           {quotaErrors[row.profile_id] && !historicalAuthorization && <p className="brokerError" role="alert">{quotaErrors[row.profile_id].replace(/^(?:Error:\s*)?(?:ChatGPT 授权[：:]\s*)?/, "")}{quota ? "（保留上次快照）" : ""}</p>}

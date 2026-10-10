@@ -72,6 +72,9 @@ describe("统一授权续期窗口", () => {
     expect(document.body.textContent).toContain("周");
     expect(document.body.textContent).toContain("40%");
     expect(document.body.textContent).toContain("上游未提供");
+    expect(document.querySelectorAll(".brokerQuotaWindowReset")).toHaveLength(2);
+    expect(document.body.textContent).toContain("重置时间");
+    expect(document.body.textContent).toContain("主动重置剩余");
     expect(Array.from(document.querySelectorAll('[role="progressbar"]'), bar => bar.getAttribute("aria-valuenow"))).toEqual(["75", "40"]);
     expect(document.querySelector(".brokerQuota")!.compareDocumentPosition(document.querySelector(".brokerStatus")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(calls).toContain("broker_quota_snapshot");
@@ -102,7 +105,28 @@ describe("统一授权续期窗口", () => {
     expect(document.querySelector(".brokerQuota")?.textContent).toContain("周");
     expect(document.querySelector(".brokerQuota")?.textContent).not.toContain("5 小时");
     expect(document.querySelector('[role="progressbar"][aria-label="周额度剩余"]')?.getAttribute("aria-valuenow")).toBe("84");
-    expect(document.querySelector(".brokerQuota")?.textContent).toContain("主动重置：1 次");
+    expect(document.querySelector(".brokerQuota")?.textContent).toContain("主动重置剩余1 次");
+    expect(document.querySelector(".brokerQuotaResetCredits-available")).not.toBeNull();
+  });
+
+  it.each([
+    [0, "empty", "0 次"], [3, "available", "3 次"], [null, "unavailable", "上游未提供"],
+  ])("makes reset-credit state explicit for %s", async (count, tone, label) => {
+    const remote: BrokerMetadata = { key: "profile-1", email: local.email, account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const call: AuthCall = async function call<T>(command: string): Promise<T> {
+      if (command === "broker_overview") return overview(remote) as T;
+      if (command === "broker_quota_snapshot") return { account_id: remote.account_id, email: remote.email, fetched_at: 1_899_000_000, generation: 9,
+        windows: [{ name: "5 小时", used_percent: 20, remaining_percent: 80, reset_at: 1_899_100_000, window_minutes: 300 }], reset_count: count, reset_count_available: count !== null } as T;
+      return null as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    const credits = document.querySelector(".brokerQuotaResetCredits")!;
+    expect(credits.classList.contains(`brokerQuotaResetCredits-${tone}`)).toBe(true);
+    expect(credits.textContent).toContain("主动重置剩余");
+    expect(credits.textContent).toContain(label);
+    expect(credits.getAttribute("aria-label")).toBe("主动重置剩余次数");
   });
 
   it.each([

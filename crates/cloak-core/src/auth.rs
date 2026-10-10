@@ -113,6 +113,7 @@ enum Failure {
     Unchanged,
     Recovery,
     Browser,
+    BrowserClosed,
 }
 impl Failure {
     fn message(self) -> &'static str {
@@ -137,6 +138,7 @@ impl Failure {
             Self::Unchanged => "尚未确认新凭证已写回，未报告刷新成功",
             Self::Recovery => "上次刷新尚未完成保存，已保留恢复副本；请点立即刷新恢复或重新连接",
             Self::Browser => "未能在所选 NoTrace 账号中打开授权页，请先确认该账号可以正常启动",
+            Self::BrowserClosed => "授权浏览器已关闭，本次授权已停止，原有凭证保持不变；可重新授权",
         }
     }
     fn terminal(self) -> bool {
@@ -731,10 +733,79 @@ pub fn login_account_auth_with_progress(
         let start = Instant::now();
         let plan = crate::build_launch_plan_for_url(config, name, &options, raw)
             .map_err(browser_failure)?;
-        crate::launch_plan(config, plan, &options, start).map_err(browser_failure)?;
+        let launched =
+            crate::launch_plan(config, plan, &options, start).map_err(browser_failure)?;
         progress(AuthLoginProgress::WaitingBrowser);
-        Ok(())
+        Ok(Some(AuthBrowserMonitor::new(launched)))
     })
+}
+
+struct AuthBrowserMonitor {
+    pid: u32,
+    binary: PathBuf,
+    profile: PathBuf,
+    started: Instant,
+    next_check: Instant,
+    seen_window: bool,
+    closed_since: Option<Instant>,
+}
+
+impl AuthBrowserMonitor {
+    fn new(launched: crate::LaunchResult) -> Self {
+        let started = Instant::now();
+        Self {
+            pid: launched.pid,
+            binary: launched.browser_binary,
+            profile: launched.profile_path,
+            started,
+            next_check: started,
+            seen_window: false,
+            closed_since: None,
+        }
+    }
+
+    fn check(&mut self) -> AuthResult<()> {
+        let now = Instant::now();
+        if now < self.next_check {
+            return Ok(());
+        }
+        self.next_check = now + Duration::from_millis(500);
+        let Ok(state) =
+            crate::browser_processes::auth_browser_state(self.pid, &self.binary, &self.profile)
+        else {
+            // An unavailable OS observation is not proof of a user closure.
+            self.closed_since = None;
+            return Ok(());
+        };
+        self.observe(state, now)
+    }
+
+    fn observe(
+        &mut self,
+        state: crate::browser_processes::AuthBrowserState,
+        now: Instant,
+    ) -> AuthResult<()> {
+        if !state.running {
+            return Err(Failure::BrowserClosed);
+        }
+        match state.has_window {
+            Some(true) => {
+                self.seen_window = true;
+                self.closed_since = None;
+            }
+            Some(false)
+                if self.seen_window
+                    || now.duration_since(self.started) >= Duration::from_secs(10) =>
+            {
+                let closed = *self.closed_since.get_or_insert(now);
+                if now.duration_since(closed) >= Duration::from_secs(1) {
+                    return Err(Failure::BrowserClosed);
+                }
+            }
+            _ => self.closed_since = None,
+        }
+        Ok(())
+    }
 }
 
 fn browser_failure(error: CloakError) -> Failure {
@@ -754,7 +825,7 @@ fn login_with(
     name: &str,
     binary: &Path,
     cancel: &AtomicBool,
-    open: impl FnOnce(&str) -> AuthResult<()>,
+    open: impl FnOnce(&str) -> AuthResult<Option<AuthBrowserMonitor>>,
 ) -> Result<AuthStatus> {
     let home = auth_home(config, name, true)?;
     let _login_lock = lock(
@@ -792,8 +863,8 @@ fn login_with(
             .get("loginId")
             .and_then(Value::as_str)
             .ok_or(Failure::Service)?;
-        open(url)?;
-        rpc.wait_login(login_id, cancel, LOGIN_TIMEOUT)?;
+        let browser = open(url)?;
+        rpc.wait_login(login_id, cancel, LOGIN_TIMEOUT, browser)?;
         let response = rpc.request(
             3,
             "account/read",
@@ -1056,10 +1127,26 @@ impl RpcSession {
             .map_err(|_| Failure::Service)
     }
     fn receive(&self, deadline: Instant, cancel: &AtomicBool) -> AuthResult<Value> {
+        self.receive_checked(deadline, cancel, || Ok(()))
+    }
+    fn receive_checked(
+        &self,
+        deadline: Instant,
+        cancel: &AtomicBool,
+        mut check: impl FnMut() -> AuthResult<()>,
+    ) -> AuthResult<Value> {
         loop {
             if cancel.load(Ordering::Acquire) {
                 return Err(Failure::Cancelled);
             }
+            // A queued successful callback wins over a simultaneous browser
+            // closure. Manual cancellation still has priority above.
+            match self.messages.try_recv() {
+                Ok(value) => return Ok(value),
+                Err(mpsc::TryRecvError::Disconnected) => return Err(Failure::Service),
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            check()?;
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(Failure::Timeout);
@@ -1100,12 +1187,21 @@ impl RpcSession {
             }
         }
     }
-    fn wait_login(&mut self, id: &str, cancel: &AtomicBool, timeout: Duration) -> AuthResult<()> {
+    fn wait_login(
+        &mut self,
+        id: &str,
+        cancel: &AtomicBool,
+        timeout: Duration,
+        mut browser: Option<AuthBrowserMonitor>,
+    ) -> AuthResult<()> {
         let deadline = Instant::now() + timeout;
         loop {
             let event = match self.pending.pop_front() {
                 Some(event) => event,
-                None => self.receive(deadline, cancel)?,
+                None => self.receive_checked(deadline, cancel, || match browser.as_mut() {
+                    Some(browser) => browser.check(),
+                    None => Ok(()),
+                })?,
             };
             if event.get("method").and_then(Value::as_str) != Some("account/login/completed") {
                 continue;

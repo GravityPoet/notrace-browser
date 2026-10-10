@@ -323,7 +323,10 @@ fn login_handles_delayed_callback_and_does_not_refresh_new_token() {
         &f.name,
         &f.provider("slow"),
         &AtomicBool::new(false),
-        validate_auth_url,
+        |url| {
+            validate_auth_url(url)?;
+            Ok(None)
+        },
     )
     .unwrap();
     assert_eq!(s.state, AuthState::Connected);
@@ -339,7 +342,7 @@ fn callback_before_login_response_is_not_lost() {
         &f.name,
         &f.provider("success"),
         &AtomicBool::new(false),
-        |_| Ok(())
+        |_| Ok(None)
     )
     .is_ok());
 }
@@ -353,7 +356,7 @@ fn wrong_account_does_not_overwrite_existing_auth() {
         &f.name,
         &f.provider("wrong"),
         &AtomicBool::new(false),
-        |_| Ok(())
+        |_| Ok(None)
     )
     .is_err());
     assert_eq!(old, fs::read(f.home.join("auth.json")).unwrap());
@@ -368,7 +371,7 @@ fn cancellation_keeps_existing_auth_and_cleans_pending_login() {
         &f.name,
         &f.provider("slow"),
         &AtomicBool::new(true),
-        |_| Ok(())
+        |_| Ok(None)
     )
     .is_err());
     assert_eq!(old, fs::read(f.home.join("auth.json")).unwrap());
@@ -381,6 +384,144 @@ fn rename_preserves_binding_and_missing_names_are_rejected() {
     crate::rename_account(&f.config, &f.name, "renamed").unwrap();
     assert_eq!(auth_home(&f.config, "renamed", false).unwrap(), f.home);
     assert!(auth_home(&f.config, "does-not-exist", true).is_err());
+}
+
+fn browser_monitor(pid: u32, binary: PathBuf, profile: PathBuf) -> AuthBrowserMonitor {
+    let started = Instant::now();
+    AuthBrowserMonitor {
+        pid,
+        binary,
+        profile,
+        started,
+        next_check: started,
+        seen_window: false,
+        closed_since: None,
+    }
+}
+
+#[test]
+fn closing_last_auth_window_stops_wait_but_hidden_windows_and_unknown_state_do_not() {
+    use crate::browser_processes::AuthBrowserState;
+    let mut browser = browser_monitor(10, "/unused".into(), "/unused-profile".into());
+    let started = browser.started;
+    assert!(browser
+        .observe(
+            AuthBrowserState {
+                running: true,
+                has_window: Some(false)
+            },
+            started
+        )
+        .is_ok());
+    assert!(browser
+        .observe(
+            AuthBrowserState {
+                running: true,
+                has_window: Some(true)
+            },
+            started + Duration::from_secs(1)
+        )
+        .is_ok());
+    assert!(browser
+        .observe(
+            AuthBrowserState {
+                running: true,
+                has_window: Some(false)
+            },
+            started + Duration::from_secs(2)
+        )
+        .is_ok());
+    assert!(browser
+        .observe(
+            AuthBrowserState {
+                running: true,
+                has_window: None
+            },
+            started + Duration::from_secs(3)
+        )
+        .is_ok());
+    assert!(browser
+        .observe(
+            AuthBrowserState {
+                running: true,
+                has_window: Some(true)
+            },
+            started + Duration::from_secs(4)
+        )
+        .is_ok());
+    assert!(browser
+        .observe(
+            AuthBrowserState {
+                running: true,
+                has_window: Some(false)
+            },
+            started + Duration::from_secs(5)
+        )
+        .is_ok());
+    assert_eq!(
+        browser.observe(
+            AuthBrowserState {
+                running: true,
+                has_window: Some(false)
+            },
+            started + Duration::from_secs(6)
+        ),
+        Err(Failure::BrowserClosed)
+    );
+}
+
+#[test]
+fn closing_auth_browser_preserves_credentials_cleans_pending_and_allows_retry() {
+    let f = Fixture::new();
+    f.seed(now() + 864000);
+    let old = fs::read(f.home.join("auth.json")).unwrap();
+    let started = Instant::now();
+    let error = login_with(
+        &f.config,
+        &f.name,
+        &f.provider("slow"),
+        &AtomicBool::new(false),
+        |_| {
+            Ok(Some(browser_monitor(
+                u32::MAX,
+                "/missing".into(),
+                f.config.profile_dir(&f.name),
+            )))
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("授权浏览器已关闭"));
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(old, fs::read(f.home.join("auth.json")).unwrap());
+    assert!(!f.home.join(".pending-login").exists());
+    assert!(login_with(
+        &f.config,
+        &f.name,
+        &f.provider("success"),
+        &AtomicBool::new(false),
+        |_| Ok(None)
+    )
+    .is_ok());
+}
+
+#[test]
+fn completed_callback_is_not_lost_when_browser_closes_at_the_same_time() {
+    let f = Fixture::new();
+    let status = login_with(
+        &f.config,
+        &f.name,
+        &f.provider("success"),
+        &AtomicBool::new(false),
+        |_| {
+            Ok(Some(browser_monitor(
+                u32::MAX,
+                "/missing".into(),
+                f.config.profile_dir(&f.name),
+            )))
+        },
+    )
+    .unwrap();
+    assert_eq!(status.state, AuthState::Connected);
 }
 #[test]
 fn paused_account_is_not_refreshed() {
@@ -435,7 +576,7 @@ fn login_reports_global_lock_separately_and_recovers_after_release() {
         &f.name,
         &f.provider("success"),
         &AtomicBool::new(false),
-        |_| Ok(())
+        |_| Ok(None)
     )
     .is_ok());
 }

@@ -551,6 +551,8 @@ dependencies = [
  "aes-gcm",
  "base64 0.22.1",
  "chrono",
+ "core-foundation",
+ "core-graphics",
  "dirs 5.0.1",
  "fs4",
  "libc",

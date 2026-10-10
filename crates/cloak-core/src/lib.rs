@@ -1955,7 +1955,10 @@ fn macos_app_bundle_for_binary(browser_binary: &Path) -> Option<&Path> {
 }
 
 #[cfg(target_os = "macos")]
-fn running_browser_pid(browser_binary: &Path, profile_path: &Path) -> Result<Option<u32>> {
+pub(crate) fn running_browser_pid(
+    browser_binary: &Path,
+    profile_path: &Path,
+) -> Result<Option<u32>> {
     let output = Command::new("ps")
         .args(["axww", "-o", "pid=,command="])
         .output()?;
@@ -3258,7 +3261,7 @@ fn run_selftest(
 ///   sandbox_extension_issue_file_to_process failed for .../current/Chromium.app: 1
 /// Resolving to the real versioned path first keeps one consistent bundle
 /// identity for the whole process tree.
-fn real_browser_path(path: PathBuf) -> PathBuf {
+pub(crate) fn real_browser_path(path: PathBuf) -> PathBuf {
     fs::canonicalize(&path).unwrap_or(path)
 }
 

@@ -42,10 +42,12 @@ browser="$version_dir/Chromium.app/Contents/MacOS/Chromium"
 account_base="$tmp/accounts/native-e2e-profile-root-with-a-deliberately-long-path-for-layout-verification/segment-one-for-real-webview-overflow/segment-two-for-real-webview-overflow/segment-three-for-real-webview-overflow"
 account_dir="$account_base/native-e2e-account"
 sync_account_dir="$account_base/native-e2e-sync-account"
+close_account_dir="$account_base/native-e2e-auth-close-account"
 report="$tmp/cloak-picker-native-e2e-report.json"
 log="$tmp/picker.log"
-mkdir -p "$(dirname "$browser")" "$account_dir" "$sync_account_dir"
-printf '%s\n' '#!/bin/sh' 'if [ "${1:-}" = "--version" ]; then printf "Chromium 145.0.7632.109.2\n"; else exit 76; fi' > "$browser"
+mkdir -p "$(dirname "$browser")" "$account_dir" "$sync_account_dir" "$close_account_dir"
+/usr/bin/xcrun clang -framework AppKit -fblocks \
+  "$ROOT/packaging/auth-browser-window-fixture.m" -o "$browser"
 chmod 700 "$browser"
 # Resolve current to a plain executable for the synthetic launch failure; real
 # browsers still use their ordinary LaunchServices bundle path.
@@ -62,6 +64,9 @@ printf '%s\n' '48153' > "$sync_account_dir/.cloak-seed"
 printf '%s\n' '1690000000000000' > "$sync_account_dir/.cloak-created-at"
 chmod 600 "$sync_account_dir/.cloak-seed" "$sync_account_dir/.cloak-created-at"
 touch "$sync_account_dir/.cloak-trashed"
+printf '%s\n' '48154' > "$close_account_dir/.cloak-seed"
+printf '%s\n' '1680000000000000' > "$close_account_dir/.cloak-created-at"
+chmod 600 "$close_account_dir/.cloak-seed" "$close_account_dir/.cloak-created-at"
 
 # An isolated metadata-only Broker and synthetic OAuth provider exercise the
 # real native click path without using a real account or OpenAI credentials.
@@ -128,6 +133,8 @@ for line in sys.stdin:
 PYFIX
 chmod 700 "$tmp/codex-fixture"
 CLOAK_SKIP_GEO=1 \
+CLOAK_AUTH_TEST_TIMED=1 \
+CLOAK_AUTH_FIXTURE_PROFILE_GATE=1 \
 CLOAK_CODEX_BINARY="$tmp/codex-fixture" \
 CLOAK_ACCOUNT_BASE="$account_base" \
 CLOAK_BROWSER_ROOT="$browser_root" \
@@ -169,6 +176,7 @@ node -e '
     "renewal-header-active-and-trash-launch",
     "cpa-sync-pending-retry-success",
     "native-quota-weekly-only-progress",
+    "native-auth-browser-close-stops-and-retry-recovers",
     "searched-account-context-preserves-selection",
     "account-context-submenu-and-restore",
     "bulk-workspace-large-actions",
