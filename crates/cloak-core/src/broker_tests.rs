@@ -283,8 +283,12 @@ fn quota_snapshot_reads_usage_without_refreshing_or_writing_cpa() {
         let bytes = stream.read(&mut request).unwrap();
         let request = String::from_utf8_lossy(&request[..bytes]);
         assert!(request.starts_with("GET /usage HTTP/1.1"));
-        assert!(request.to_ascii_lowercase().contains("authorization: bearer "));
-        assert!(request.to_ascii_lowercase().contains("originator: codex desktop"));
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer "));
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("originator: codex desktop"));
         let body = json!({
             "rate_limit": {
                 "primary_window": {"used_percent": 25, "limit_window_seconds": 18000, "reset_at": now() + 3600},
@@ -336,15 +340,27 @@ fn quota_snapshot_counts_available_reset_credit_details_when_count_is_omitted() 
                 {"status": "redeemed"},
                 {"status": "available", "expires_at": now() - 1}
             ]}
-        }).to_string();
+        })
+        .to_string();
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
     });
     let dir = tempfile::tempdir().unwrap();
-    let store = BrokerStore::new(BrokerConfig {
-        root: dir.path().into(), cpa_auth_dir: None, proxy_url: None,
-        token_url: format!("http://{address}"),
-    }, [23; 32]).unwrap();
-    store.import_grant("alpha", &grant_body("alpha@example.test", "acct-1", "refresh-a", now() + 3600)).unwrap();
+    let store = BrokerStore::new(
+        BrokerConfig {
+            root: dir.path().into(),
+            cpa_auth_dir: None,
+            proxy_url: None,
+            token_url: format!("http://{address}"),
+        },
+        [23; 32],
+    )
+    .unwrap();
+    store
+        .import_grant(
+            "alpha",
+            &grant_body("alpha@example.test", "acct-1", "refresh-a", now() + 3600),
+        )
+        .unwrap();
     let snapshot = store.quota_snapshot("alpha").unwrap();
     assert_eq!(snapshot.reset_count, Some(1));
     assert!(snapshot.reset_count_available);

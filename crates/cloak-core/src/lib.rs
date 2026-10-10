@@ -13,8 +13,8 @@ pub use broker::{
 pub use broker_client::{
     broker_convert_json, broker_export_json, broker_import_json, broker_overview,
     broker_preview_json, broker_push_account, broker_quota_snapshot, broker_refresh_account,
-    broker_set_cpa,
-    save_broker_connection, BrokerJsonImportSummary, BrokerJsonTransferSummary, BrokerOverview,
+    broker_set_cpa, save_broker_connection, BrokerJsonImportSummary, BrokerJsonTransferSummary,
+    BrokerOverview,
 };
 pub use broker_transfer::{
     convert_file as convert_broker_json_file, format_access_credentials,
@@ -251,7 +251,8 @@ fn numeric_version_components(version: &str) -> Vec<u64> {
 /// the final packaging revision even when that revision contains fingerprint
 /// fixes. `-notrace` identifies the locally signed TCC-ready runtime copy.
 fn extract_version_from_path(path: &Path) -> Option<EngineVersion> {
-    let re = Regex::new(r"^chromium[-_](\d+(?:\.\d+){0,4})(?:-pro)?(?:-native)?(?:-notrace)?$").ok()?;
+    let re =
+        Regex::new(r"^chromium[-_](\d+(?:\.\d+){0,4})(?:-pro)?(?:-native)?(?:-notrace)?$").ok()?;
     for ancestor in path.ancestors() {
         let name = ancestor.file_name()?.to_string_lossy();
         if let Some(caps) = re.captures(&name) {
@@ -3484,7 +3485,10 @@ fn verify_independent_runtime(binary: &Path) -> Result<bool> {
         "notrace-native" => {
             metadata.engine_version.as_deref() == Some("152.0.7977.82")
                 && metadata.source_commit.len() == 40
-                && metadata.source_commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && metadata
+                    .source_commit
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
                 && metadata.source_lock_sha256.as_deref().is_some_and(|value| {
                     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
                 })

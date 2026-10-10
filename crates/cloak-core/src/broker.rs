@@ -25,8 +25,7 @@ use zeroize::Zeroizing;
 
 const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
-const RESET_CREDITS_URL: &str =
-    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
+const RESET_CREDITS_URL: &str = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const MAX_BYTES: u64 = 256 * 1024;
 const MAX_LEAD: u64 = 36 * 3600;
@@ -473,10 +472,12 @@ impl BrokerStore {
         let path = self.path(key)?;
         let _guard = acquire_lock(&path.with_extension("lock"))?;
         let mut current = self.load(&path)?;
-        if enabled && (current.in_flight || matches!(
-            current.error,
-            Some(BrokerError::ReauthRequired | BrokerError::RecoveryRequired)
-        ))
+        if enabled
+            && (current.in_flight
+                || matches!(
+                    current.error,
+                    Some(BrokerError::ReauthRequired | BrokerError::RecoveryRequired)
+                ))
         {
             // A terminal OAuth lineage is deliberately inert. Re-enabling CPA
             // must not resurrect a deleted/stale account; only a fresh grant
@@ -499,10 +500,12 @@ impl BrokerStore {
         let path = self.path(key)?;
         let _guard = acquire_lock(&path.with_extension("lock"))?;
         let mut grant = self.load(&path)?;
-        if grant.in_flight || matches!(
-            grant.error,
-            Some(BrokerError::ReauthRequired | BrokerError::RecoveryRequired)
-        ) {
+        if grant.in_flight
+            || matches!(
+                grant.error,
+                Some(BrokerError::ReauthRequired | BrokerError::RecoveryRequired)
+            )
+        {
             if grant.cpa_enabled || grant.next_retry_at.is_some() {
                 grant.cpa_enabled = false;
                 grant.next_retry_at = None;
@@ -523,10 +526,7 @@ impl BrokerStore {
         reject_link(directory)?;
         let result = (|| {
             let (destination, existing, legacy) = cpa_destination(directory, key, &grant)?;
-            if existing.is_none()
-                && legacy.is_none()
-                && grant.cpa_synced_generation.is_some()
-            {
+            if existing.is_none() && legacy.is_none() && grant.cpa_synced_generation.is_some() {
                 return Err(BrokerError::ConsumerMissing);
             }
             if grant.expires_at <= crate::current_epoch_secs() {
@@ -1208,7 +1208,10 @@ fn count_available_reset_credits(root: &Value) -> Option<u64> {
                     .and_then(Value::as_str)
                     .unwrap_or("available")
                     .to_ascii_lowercase();
-                if matches!(status.as_str(), "redeemed" | "used" | "consumed" | "expired") {
+                if matches!(
+                    status.as_str(),
+                    "redeemed" | "used" | "consumed" | "expired"
+                ) {
                     return false;
                 }
                 credit
@@ -1256,7 +1259,10 @@ fn fetch_reset_credits_count(config: &BrokerConfig, grant: &Grant) -> Option<u64
     response.take(MAX_BYTES).read_to_string(&mut body).ok()?;
     let root: Value = serde_json::from_str(&body).ok()?;
     root.get("available_count")
-        .or_else(|| root.get("data").and_then(|data| data.get("available_count")))
+        .or_else(|| {
+            root.get("data")
+                .and_then(|data| data.get("available_count"))
+        })
         .and_then(Value::as_u64)
         .or_else(|| count_available_reset_credits(&root))
 }
