@@ -67,13 +67,116 @@ describe("统一授权续期窗口", () => {
     expect(button).toBeTruthy();
     await act(async () => button?.click());
     await settle();
-    expect(document.body.textContent).toContain("5 小时剩余");
+    expect(document.body.textContent).toContain("5 小时");
     expect(document.body.textContent).toContain("75%");
-    expect(document.body.textContent).toContain("周剩余");
+    expect(document.body.textContent).toContain("周");
     expect(document.body.textContent).toContain("40%");
     expect(document.body.textContent).toContain("上游未提供");
+    expect(Array.from(document.querySelectorAll('[role="progressbar"]'), bar => bar.getAttribute("aria-valuenow"))).toEqual(["75", "40"]);
+    expect(document.querySelector(".brokerQuota")!.compareDocumentPosition(document.querySelector(".brokerStatus")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(calls).toContain("broker_quota_snapshot");
     expect(calls).not.toContain("broker_refresh_account");
+    expect(calls).not.toContain("login_account_auth");
+    expect(calls).not.toContain("broker_set_cpa");
+  });
+
+  it.each([
+    ["pro", "Pro"], ["max_pro", "Max Pro"], ["plus", "Plus"], ["future-plan", "future-plan"], [null, "套餐未知"],
+  ])("renders the returned weekly window without guessing five-hour limits for %s", async (plan, label) => {
+    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: plan, expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const call: AuthCall = async function call<T>(command: string): Promise<T> {
+      if (command === "broker_quota_snapshot") return {
+        account_id: "acct-1", email: "demo@example.test", fetched_at: 1_899_000_000, generation: 9,
+        // Older Brokers label primary_window "5 小时" even when its real duration is a week.
+        windows: [{ name: "5 小时", used_percent: 16, remaining_percent: 84, reset_at: 1_899_200_000, window_minutes: 10080 }],
+        reset_count: 1, reset_count_available: true,
+      } as T;
+      return overview(remote) as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    expect(document.querySelectorAll(".brokerQuotaWindow")).toHaveLength(1);
+    expect(document.querySelector(".brokerRow")?.textContent).toContain(`套餐：${label}`);
+    expect(document.querySelector(".brokerRow")?.textContent?.match(/套餐：/g)).toHaveLength(1);
+    expect(document.querySelector(".brokerQuota")?.textContent).toContain("周");
+    expect(document.querySelector(".brokerQuota")?.textContent).not.toContain("5 小时");
+    expect(document.querySelector('[role="progressbar"][aria-label="周额度剩余"]')?.getAttribute("aria-valuenow")).toBe("84");
+    expect(document.querySelector(".brokerQuota")?.textContent).toContain("主动重置：1 次");
+  });
+
+  it.each([
+    [101, "unavailable"], [100, "normal"], [30, "normal"], [29, "warning"], [15, "warning"], [14, "danger"], [0, "danger"], [-1, "unavailable"],
+    [null, "unavailable"], [Number.NaN, "unavailable"], [Number.POSITIVE_INFINITY, "unavailable"],
+  ])("distinguishes real remaining quota %s from unavailable data", async (percent, tone) => {
+    const remote: BrokerMetadata = { key: "profile-1", email: local.email, account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const call: AuthCall = async function call<T>(command: string): Promise<T> {
+      if (command === "broker_overview") return overview(remote) as T;
+      if (command === "broker_quota_snapshot") return { account_id: remote.account_id, email: remote.email, fetched_at: 1_899_000_000, generation: 9,
+        windows: [{ name: "5 小时", used_percent: null, remaining_percent: percent, reset_at: null, window_minutes: 300 }], reset_count: null, reset_count_available: false } as T;
+      return null as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    const card = document.querySelector(".brokerQuotaWindow")!;
+    expect(card.classList.contains(`brokerQuotaWindow-${tone}`)).toBe(true);
+    const bar = card.querySelector('[role="progressbar"]');
+    if (tone === "unavailable") {
+      expect(bar).toBeNull();
+      expect(card.textContent).toContain("未提供");
+      expect(card.textContent).not.toContain("0%");
+    } else {
+      expect(bar?.getAttribute("aria-valuenow")).toBe(String(percent));
+      expect(bar?.querySelector<HTMLElement>("span")?.style.width).toBe(`${percent}%`);
+    }
+  });
+
+  it("does not turn an empty quota response into zero or unlimited usage", async () => {
+    const remote: BrokerMetadata = { key: "profile-1", email: local.email, account_id: "acct-1", plan_type: "pro", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const call: AuthCall = async function call<T>(command: string): Promise<T> {
+      if (command === "broker_overview") return overview(remote) as T;
+      if (command === "broker_quota_snapshot") return { account_id: remote.account_id, email: remote.email, fetched_at: 1_899_000_000, generation: 9, windows: [], reset_count: null, reset_count_available: false } as T;
+      return null as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    const quota = document.querySelector(".brokerQuota")!;
+    expect(quota.textContent).toContain("上游未返回额度窗口");
+    expect(quota.querySelector('[role="progressbar"]')).toBeNull();
+    expect(quota.textContent).not.toMatch(/0%|无限|不适用/);
+  });
+
+  it("shows one authorization failure instead of repeating the action error and stale quota warning", async () => {
+    let remote: BrokerMetadata = { key: "profile-1", email: local.email, account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const calls: string[] = [];
+    const call: AuthCall = async function call<T>(command: string): Promise<T> {
+      calls.push(command);
+      if (command === "broker_overview") return overview(remote) as T;
+      if (command === "broker_quota_snapshot") throw Error("ChatGPT 授权: 上游额度暂时无法读取，请稍后重试");
+      if (command === "broker_refresh_account") {
+        remote = { ...remote, error: "reauth_required" };
+        throw Error("ChatGPT 授权: 授权已失效，需要重新授权");
+      }
+      return null as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    expect(document.querySelectorAll('[role="alert"]')).toHaveLength(1);
+    expect(document.querySelector('[role="alert"]')?.textContent).not.toContain("ChatGPT 授权:");
+    await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent === "立即刷新")?.click());
+    await settle();
+    const row = document.querySelector(".brokerRow")!;
+    expect(row.textContent?.match(/授权已失效/g)).toHaveLength(1);
+    expect(row.querySelectorAll(".brokerAuthorizationReason")).toHaveLength(1);
+    expect(row.querySelector('.brokerRowFeedback[role="alert"]')).toBeNull();
+    expect(row.querySelector('[role="progressbar"]')).toBeNull();
+    expect([...row.querySelectorAll("button")].map(button => button.textContent)).toEqual(["重新授权", "导出 JSON"]);
+    expect(calls.filter(command => command === "broker_quota_snapshot")).toHaveLength(1);
+    expect(calls).not.toContain("login_account_auth");
+    expect(calls).not.toContain("broker_set_cpa");
   });
 
   it("finishes asynchronous workbench quota once and keeps late results on their account", async () => {
@@ -341,10 +444,11 @@ describe("统一授权续期窗口", () => {
     expect(document.body.textContent).toContain("未授权 1");
     expect(document.body.textContent).toContain("曾授权失效 1");
     const invalidRow = [...document.querySelectorAll<HTMLElement>(".brokerRow")].find(row => row.textContent?.includes("invalid@example.test"));
-    expect(invalidRow?.textContent).toContain("未授权 · 曾授权 · 授权已失效");
+    expect(invalidRow?.textContent).toContain("未授权 · 授权已失效");
     expect(invalidRow?.querySelector(".brokerAuthStatus-reauth_required")).toBeTruthy();
-    expect(invalidRow?.textContent).toContain("点击“重新授权”获取新的授权链");
-    expect(invalidRow?.querySelector('button:disabled')?.textContent).toContain("需重新授权");
+    expect(invalidRow?.textContent).toContain("续期凭据失效，已停止自动续期。");
+    expect(invalidRow?.textContent).not.toContain("曾授权 · 授权已失效");
+    expect(invalidRow?.querySelector('button')?.textContent).toContain("重新授权");
     const authorizedTab = [...document.querySelectorAll('[role="tab"]')].find(candidate => candidate.textContent?.includes("已授权"));
     await act(async () => (authorizedTab as HTMLButtonElement | undefined)?.click());
     await settle();

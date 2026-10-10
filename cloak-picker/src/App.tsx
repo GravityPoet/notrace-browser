@@ -3375,7 +3375,7 @@ export default function App() {
                           {copiedAccountName === selected.name ? <Check size={15} /> : <Copy size={15} />}
                         </button>}
                       </div>
-                      {selected && <p className="workbenchAccountContext">{selected.trashed ? "回收站 · 临时启动不会恢复账号" : "活跃"} · {accountGroupLabel(selected)} · 环境 #{selected.serial}</p>}
+                      {selected && <p className="workbenchAccountContext">{selected.trashed ? "回收站" : "活跃"} · {accountGroupLabel(selected)} · 环境 #{selected.serial}</p>}
                       {launchStatusIndicator}
                       {webStoreStatusLabel && <span className="webStoreStatus">{webStoreStatusLabel}</span>}
                     </div>

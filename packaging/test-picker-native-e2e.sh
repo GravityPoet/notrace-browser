@@ -71,9 +71,15 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 class Handler(BaseHTTPRequestHandler):
     attempts = 0
-    metadata = {"key": "", "email": "native-e2e-sync-account", "account_id": "synthetic-account", "plan_type": "plus", "expires_at": 1900000000, "last_refresh_at": 1899000000, "generation": 2, "refresh_count": 0, "automatic_refresh_count": 0, "next_refresh_at": 1899900000, "next_retry_at": None, "error": None, "cpa_enabled": False, "cpa_synced_generation": 1, "cpa_sync_error": None, "cockpit_synced_generation": None}
+    metadata = {"key": "", "email": "native-e2e-sync-account", "account_id": "synthetic-account", "plan_type": "pro", "expires_at": 1900000000, "last_refresh_at": 1899000000, "generation": 2, "refresh_count": 0, "automatic_refresh_count": 0, "next_refresh_at": 1899900000, "next_retry_at": None, "error": None, "cpa_enabled": False, "cpa_synced_generation": 1, "cpa_sync_error": None, "cockpit_synced_generation": None}
     def do_GET(self) -> None:
         profile = Path(sys.argv[2]) / ".cloak-profile.json"
+        if self.path.endswith("/quota"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"account_id": Handler.metadata["account_id"], "email": Handler.metadata["email"], "fetched_at": 1899000000, "generation": Handler.metadata["generation"], "windows": [{"name": "周", "used_percent": 16, "remaining_percent": 84, "reset_at": 1900003600, "limit_window_seconds": 604800}], "reset_count": 1, "reset_count_available": True}).encode())
+            return
         rows = []
         if profile.exists():
             Handler.metadata["key"] = json.loads(profile.read_text())["profile_id"]
@@ -162,6 +168,7 @@ node -e '
     "renewal-search-authorize-seat-error",
     "renewal-header-active-and-trash-launch",
     "cpa-sync-pending-retry-success",
+    "native-quota-weekly-only-progress",
     "searched-account-context-preserves-selection",
     "account-context-submenu-and-restore",
     "bulk-workspace-large-actions",
