@@ -2,7 +2,7 @@
 //! cross the frontend IPC boundary; all returns are metadata only.
 use crate::{
     format_access_credentials, AccessCredential, AuthStatus, BrokerJsonFormat,
-    BrokerJsonImportPreview, BrokerMetadata, CodexQuotaSnapshot, CloakConfig, CloakError, Result,
+    BrokerJsonImportPreview, BrokerMetadata, CloakConfig, CloakError, CodexQuotaSnapshot, Result,
 };
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -152,10 +152,7 @@ pub fn broker_refresh_account(config: &CloakConfig, profile_id: &str) -> Result<
 
 /// Read-only usage/quota query. The Broker uses the current access token and
 /// never refreshes or synchronizes CPA as part of this request.
-pub fn broker_quota_snapshot(
-    config: &CloakConfig,
-    profile_id: &str,
-) -> Result<CodexQuotaSnapshot> {
+pub fn broker_quota_snapshot(config: &CloakConfig, profile_id: &str) -> Result<CodexQuotaSnapshot> {
     let connection = load(config)?.ok_or_else(|| CloakError::Auth("请先连接 Broker".into()))?;
     request(
         &connection,
