@@ -3,6 +3,20 @@
 
 use crate::{CloakConfig, Result};
 use serde::Serialize;
+use std::path::Path;
+
+pub(crate) struct AuthBrowserState {
+    pub running: bool,
+    pub has_window: Option<bool>,
+}
+
+pub(crate) fn auth_browser_state(
+    pid: u32,
+    binary: &Path,
+    profile: &Path,
+) -> Result<AuthBrowserState> {
+    platform::auth_state(pid, binary, profile)
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct BrowserProcessStatus {
@@ -149,6 +163,63 @@ mod platform {
             .position(|byte| *byte == 0)
             .unwrap_or(length as usize);
         Some(PathBuf::from(OsStr::from_bytes(&buffer[..end])))
+    }
+
+    pub(super) fn auth_state(pid: u32, binary: &Path, profile: &Path) -> Result<AuthBrowserState> {
+        let matching_process = i32::try_from(pid)
+            .ok()
+            .filter(|pid| *pid > 1)
+            .is_some_and(|pid| {
+                executable_for_pid(pid).as_ref() == Some(&crate::real_browser_path(binary.into()))
+            });
+        let running = matching_process && crate::running_browser_pid(binary, profile)? == Some(pid);
+        Ok(AuthBrowserState {
+            running,
+            has_window: running.then(|| auth_window_exists(pid)).flatten(),
+        })
+    }
+
+    fn auth_window_exists(pid: u32) -> Option<bool> {
+        use core_foundation::array::CFArray;
+        use core_foundation::base::{CFType, TCFType};
+        use core_foundation::dictionary::CFDictionary;
+        use core_foundation::number::CFNumber;
+        use core_foundation::string::CFString;
+        use core_graphics::window::{copy_window_info, kCGNullWindowID, kCGWindowListOptionAll};
+
+        fn number(dictionary: &CFDictionary<CFString, CFType>, key: &str) -> Option<f64> {
+            dictionary
+                .find(CFString::new(key))?
+                .downcast::<CFNumber>()?
+                .to_f64()
+        }
+        // Include offscreen windows: minimizing, hiding or switching Spaces is
+        // not cancellation. Only PID/layer/bounds are inspected, never titles.
+        let array = copy_window_info(kCGWindowListOptionAll, kCGNullWindowID)?;
+        // SAFETY: CGWindowListCopyWindowInfo returns an array of CFDictionary
+        // objects with documented CFString keys and CFType values. This wrapper
+        // retains the array; every value is type-checked before use.
+        let windows: CFArray<CFDictionary<CFString, CFType>> =
+            unsafe { CFArray::wrap_under_get_rule(array.as_concrete_TypeRef()) };
+        Some(windows.iter().any(|window| {
+            if number(&window, "kCGWindowOwnerPID") != Some(f64::from(pid))
+                || number(&window, "kCGWindowLayer") != Some(0.0)
+            {
+                return false;
+            }
+            let Some(bounds) = window
+                .find(CFString::new("kCGWindowBounds"))
+                .and_then(|value| value.downcast::<CFDictionary>())
+            else {
+                return false;
+            };
+            // SAFETY: the documented bounds dictionary uses CFString keys;
+            // number() validates each value as a CFNumber before reading it.
+            let bounds: CFDictionary<CFString, CFType> =
+                unsafe { CFDictionary::wrap_under_get_rule(bounds.as_concrete_TypeRef()) };
+            number(&bounds, "Width").is_some_and(|width| width >= 100.0)
+                && number(&bounds, "Height").is_some_and(|height| height >= 100.0)
+        }))
     }
 
     fn scan(scope: &Scope) -> Result<Vec<BrowserProcess>> {
@@ -356,6 +427,106 @@ mod platform {
         }
 
         #[test]
+        fn auth_window_inventory_distinguishes_hidden_minimized_closed_and_unrelated_processes() {
+            use std::io::{BufRead, BufReader, Write};
+            use std::process::Stdio;
+            use std::sync::mpsc;
+
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("auth-window.m");
+            let binary = directory.path().join("auth-window");
+            std::fs::write(
+                &source,
+                include_str!("../../../packaging/auth-browser-window-fixture.m"),
+            )
+            .unwrap();
+            assert!(Command::new("/usr/bin/xcrun")
+                .args(["clang", "-framework", "AppKit", "-fblocks"])
+                .arg(&source)
+                .arg("-o")
+                .arg(&binary)
+                .status()
+                .unwrap()
+                .success());
+            let profile = directory.path().join("profile");
+            let mut child = ChildGuard(
+                Command::new(&binary)
+                    .arg(format!("--user-data-dir={}", profile.display()))
+                    .env_remove("CLOAK_AUTH_TEST_TIMED")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            );
+            let stdout = child.0.stdout.take().unwrap();
+            let (sender, receiver) = mpsc::channel();
+            let reader = thread::spawn(move || {
+                for line in BufReader::new(stdout).lines() {
+                    if sender.send(line.unwrap()).is_err() {
+                        break;
+                    }
+                }
+            });
+            assert_eq!(
+                receiver.recv_timeout(Duration::from_secs(10)).unwrap(),
+                "ready"
+            );
+            assert!(auth_state(child.0.id(), &binary, &profile)
+                .unwrap()
+                .has_window
+                .unwrap());
+            assert!(
+                !auth_state(child.0.id(), Path::new("/bin/sleep"), &profile)
+                    .unwrap()
+                    .running
+            );
+            assert!(
+                !auth_state(
+                    child.0.id(),
+                    &binary,
+                    &directory.path().join("other-profile")
+                )
+                .unwrap()
+                .running
+            );
+            for action in ["minimize", "show", "hide", "show", "close"] {
+                writeln!(child.0.stdin.as_mut().unwrap(), "{action}").unwrap();
+                assert_eq!(
+                    receiver.recv_timeout(Duration::from_secs(10)).unwrap(),
+                    action
+                );
+                let state = auth_state(child.0.id(), &binary, &profile).unwrap();
+                if action == "close" {
+                    let deadline = Instant::now() + Duration::from_secs(3);
+                    let mut closed = false;
+                    while Instant::now() < deadline {
+                        let current = auth_state(child.0.id(), &binary, &profile).unwrap();
+                        if !current.running || current.has_window == Some(false) {
+                            closed = true;
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                    assert!(closed, "native window did not disappear after close");
+                } else {
+                    assert!(
+                        state.running,
+                        "native process must remain alive after {action}"
+                    );
+                    assert_eq!(
+                        state.has_window,
+                        Some(true),
+                        "native window state after {action}"
+                    );
+                }
+            }
+            let _ = child.0.kill();
+            let _ = child.0.wait();
+            reader.join().unwrap();
+            assert!(!auth_state(child.0.id(), &binary, &profile).unwrap().running);
+        }
+
+        #[test]
         fn closes_real_processes_and_reopens_without_touching_unrelated_processes() {
             let dir = tempfile::tempdir().unwrap();
             let binary = dir
@@ -413,6 +584,12 @@ mod platform {
 #[cfg(not(target_os = "macos"))]
 mod platform {
     use super::*;
+    pub(super) fn auth_state(_: u32, _: &Path, profile: &Path) -> Result<AuthBrowserState> {
+        Ok(AuthBrowserState {
+            running: crate::account_profile_is_running(profile)?,
+            has_window: None,
+        })
+    }
     pub(super) fn status(_: &CloakConfig) -> Result<BrowserProcessStatus> {
         Err(std::io::Error::other("浏览器进程管理目前仅支持 macOS").into())
     }

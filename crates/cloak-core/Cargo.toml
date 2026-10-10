@@ -34,6 +34,8 @@ tempfile = "3.10"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+core-foundation = "0.10"
+core-graphics = "0.25"
 # Used only for the native launch-readiness signal.  The official keyed
 # binary remains the license authority; this dependency only tells us when its
 # macOS application has entered the main run loop.

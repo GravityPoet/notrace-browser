@@ -3679,7 +3679,7 @@ button:disabled {
 .brokerQuota { display: grid; gap: 10px; margin: 0 0 2px; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); }
 .brokerQuotaHeader { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .brokerQuotaHeader strong { color: var(--text); font-size: 13px; }
-.brokerQuotaHeader span, .brokerQuotaMeta, .brokerQuotaWindow small { color: var(--muted); font-size: 10px; }
+.brokerQuotaHeader span { color: var(--muted); font-size: 10px; }
 .brokerQuotaWindows { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 12px; }
 .brokerQuotaWindow { display: grid; gap: 6px; min-width: 0; }
 .brokerQuotaWindowHeader { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; }
@@ -3689,9 +3689,18 @@ button:disabled {
 .brokerQuotaWindow-warning .brokerQuotaProgress span { background: #d97706; }
 .brokerQuotaWindow-danger .brokerQuotaProgress span { background: var(--danger); }
 .brokerQuotaUnknown { color: var(--muted); font-size: 10px; }
+.brokerQuotaWindowReset { display: inline-flex; align-items: center; gap: 6px; width: fit-content; max-width: 100%; border: 1px solid rgba(154, 75, 0, 0.2); border-radius: 7px; background: #fff4e6; color: #9a4b00; padding: 5px 8px; }
+.brokerQuotaWindowReset > span { display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.brokerQuotaWindowReset small { color: inherit; font-size: 11px; font-weight: 650; }
+.brokerQuotaWindowReset b { color: inherit; font-size: 12px; font-weight: 700; }
+.brokerQuotaWindowReset-unavailable { border-color: var(--border); background: var(--surface); color: var(--muted); }
 .brokerAuthorizationReason { margin: 0; color: var(--muted); font-size: 12px; }
 .brokerQuotaUnavailable { margin: 0; color: var(--muted); font-size: 11px; }
-.brokerQuotaMeta { padding-top: 2px; }
+.brokerQuotaResetCredits { display: inline-flex; align-items: center; gap: 6px; width: fit-content; max-width: 100%; border: 1px solid transparent; border-radius: 7px; padding: 6px 9px; font-size: 12px; font-weight: 650; }
+.brokerQuotaResetCredits b { font-size: 13px; font-weight: 750; }
+.brokerQuotaResetCredits-available { border-color: rgba(23, 100, 59, 0.2); background: #edf8f0; color: #17643b; }
+.brokerQuotaResetCredits-empty { border-color: rgba(180, 35, 24, 0.22); background: #fff1f0; color: #b42318; }
+.brokerQuotaResetCredits-unavailable { border-color: rgba(154, 75, 0, 0.2); background: #fff4e6; color: #9a4b00; }
 .brokerError { color: var(--danger); font-size: 12px; margin: 0; }
 .brokerTransientError { color: #8a4b08; }
 .brokerJsonOverlay { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 24px; background: rgba(15, 23, 30, 0.24); backdrop-filter: blur(6px); }

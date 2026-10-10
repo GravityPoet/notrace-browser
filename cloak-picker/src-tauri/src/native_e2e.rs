@@ -214,6 +214,8 @@ const NATIVE_E2E_DRIVER: &str = r#"
     const quotaStatusBounds = quotaStatus?.getBoundingClientRect();
     const quotaProgressBounds = quotaProgress?.getBoundingClientRect();
     const quotaProgressFillBounds = quotaProgressFill?.getBoundingClientRect();
+    const quotaReset = quotaRow.querySelector('.brokerQuotaWindowReset');
+    const resetCredits = quotaRow.querySelector('.brokerQuotaResetCredits');
     const quotaProgressGeometryValid = Boolean(
       quotaProgressBounds && quotaProgressFillBounds
       && quotaProgressBounds.width > 10
@@ -224,6 +226,9 @@ const NATIVE_E2E_DRIVER: &str = r#"
         || !quotaProgress?.matches('[aria-valuenow="84"]')
         || quotaRow.querySelector('[role="progressbar"][aria-label="5 小时额度剩余"]')
         || !quotaStatus
+        || !quotaReset?.textContent.includes('重置时间')
+        || !resetCredits?.textContent.includes('主动重置剩余')
+        || !resetCredits?.textContent.includes('1 次')
         || quotaCard.compareDocumentPosition(quotaStatus) !== Node.DOCUMENT_POSITION_FOLLOWING
         || !quotaCardBounds || !quotaStatusBounds
         || quotaCardBounds.width <= 10 || quotaCardBounds.bottom > quotaStatusBounds.top + 1
@@ -484,9 +489,9 @@ const NATIVE_E2E_DRIVER: &str = r#"
       return button && !button.disabled ? button : null;
     }, '多选入口');
     multiSelect.click();
-    await waitFor(() => document.querySelectorAll('.accountRow.selectionMode').length === 2, '多选账号列表');
+    await waitFor(() => document.querySelectorAll('.accountRow.selectionMode').length === 3, '多选账号列表');
     document.querySelectorAll('.accountRow.selectionMode').forEach(row => row.click());
-    await waitFor(() => document.querySelectorAll('.bulkSelectedPreview li').length === 2, '完整所选账号预览');
+    await waitFor(() => document.querySelectorAll('.bulkSelectedPreview li').length === 3, '完整所选账号预览');
     const bulkActions = document.querySelectorAll('.bulkActionButton');
     if (bulkActions.length < 3 || Array.from(bulkActions).some(button => button.getBoundingClientRect().height < 72)) throw new Error('批量操作按钮过小或缺失');
     const exitSelection = Array.from(document.querySelectorAll('.bulkWorkspace button')).find(button => button.textContent.trim() === '退出多选');
@@ -542,6 +547,33 @@ const NATIVE_E2E_DRIVER: &str = r#"
     // commands, but only the runner's disposable synthetic profiles.
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     await waitFor(() => !document.querySelector('[role="dialog"], [role="alertdialog"]'), '关闭迁移弹窗');
+    // A native disposable browser window follows the real authorization IPC.
+    // It hides/minimizes/restores before closing; no OAuth callback is sent.
+    const closeAccount = 'native-e2e-auth-close-account';
+    // This account is created in the disposable fixture before the Picker
+    // starts, so the normal initial account-list read includes it.
+    await waitFor(() => document.querySelector(`.accountRow[data-account-name="${closeAccount}"]`), '关闭授权测试账号加载');
+    setter.call(search, closeAccount);
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await waitFor(() => pane.querySelector('h1')?.textContent === closeAccount, '关闭授权测试账号被选中');
+    document.querySelector('#workbench-broker-tab').click();
+    const closeAuthorize = () => Array.from(pane.querySelectorAll('.brokerRow button')).find(button => button.textContent.trim() === '授权并纳管');
+    (await waitFor(() => { const button = closeAuthorize(); return button && !button.disabled ? button : null; }, '关闭授权测试入口可用')).click();
+    await waitFor(() => document.body.textContent.includes('授权页已打开'), '原生授权等待开始');
+    await sleep(12000);
+    if (!(await invoke('active_account_auth')) || !pane.textContent.includes('授权处理中')) throw new Error('隐藏或最小化错误取消了授权');
+    await waitFor(() => pane.querySelector('[role="alert"]')?.textContent.includes('授权浏览器已关闭'), '关闭窗口后结束授权', 15000);
+    if (await invoke('active_account_auth')) throw new Error('窗口已关闭但原生授权注册表仍忙碌');
+    if (Array.from(pane.querySelectorAll('button')).some(button => button.textContent.trim() === '取消授权')) throw new Error('窗口已关闭但取消授权进度仍未清理');
+    const retryAuth = await waitFor(() => { const button = closeAuthorize(); return button && !button.disabled ? button : null; }, '关闭后允许重新授权');
+    retryAuth.click();
+    await waitFor(() => document.body.textContent.includes('授权页已打开'), '关闭后重新授权成功开始');
+    (await waitFor(() => Array.from(pane.querySelectorAll('button')).find(button => button.textContent.trim() === '取消授权' && !button.disabled), '重新授权可取消')).click();
+    await waitFor(() => closeAuthorize() && !closeAuthorize().disabled && !pane.textContent.includes('授权处理中'), '取消重试后释放忙碌状态');
+    checks.push('native-auth-browser-close-stops-and-retry-recovers');
+    setter.call(search, '');
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#cloak-account-active-tab').click();
     const deleteAccountMenu = async () => {
       const row = await waitFor(() => document.querySelector('.accountRow[data-account-name="native-e2e-account"]'), '删除测试账号行');
       const bounds = row.getBoundingClientRect();
