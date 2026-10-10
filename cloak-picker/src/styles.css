@@ -3670,16 +3670,28 @@ button:disabled {
   .brokerListControls { flex-wrap: wrap; }
   .brokerSearch { flex-basis: 100%; }
   .brokerStatus { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .brokerQuotaWindows { grid-template-columns: 1fr; }
   .brokerConnection { grid-template-columns: 1fr; }
 }
 .brokerStatus { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .brokerStatus span { display: grid; gap: 4px; }
 .brokerStatus b { color: var(--text); font-weight: 500; }
-.brokerQuota { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
-.brokerQuota > div { display: grid; gap: 3px; min-width: 0; }
-.brokerQuota span, .brokerQuota small { color: var(--muted); font-size: 10px; }
-.brokerQuota b { color: var(--text); font-size: 14px; font-weight: 650; }
-.brokerQuota small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.brokerQuota { display: grid; gap: 10px; margin: 0 0 2px; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); }
+.brokerQuotaHeader { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.brokerQuotaHeader strong { color: var(--text); font-size: 13px; }
+.brokerQuotaHeader span, .brokerQuotaMeta, .brokerQuotaWindow small { color: var(--muted); font-size: 10px; }
+.brokerQuotaWindows { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 12px; }
+.brokerQuotaWindow { display: grid; gap: 6px; min-width: 0; }
+.brokerQuotaWindowHeader { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; }
+.brokerQuotaWindowHeader b { color: var(--text); font-size: 16px; font-weight: 650; }
+.brokerQuotaProgress { height: 7px; overflow: hidden; border-radius: 999px; background: var(--surface-3); }
+.brokerQuotaProgress span { display: block; height: 100%; min-width: 0; border-radius: inherit; background: var(--accent); }
+.brokerQuotaWindow-warning .brokerQuotaProgress span { background: #d97706; }
+.brokerQuotaWindow-danger .brokerQuotaProgress span { background: var(--danger); }
+.brokerQuotaUnknown { color: var(--muted); font-size: 10px; }
+.brokerAuthorizationReason { margin: 0; color: var(--muted); font-size: 12px; }
+.brokerQuotaUnavailable { margin: 0; color: var(--muted); font-size: 11px; }
+.brokerQuotaMeta { padding-top: 2px; }
 .brokerError { color: var(--danger); font-size: 12px; margin: 0; }
 .brokerTransientError { color: #8a4b08; }
 .brokerJsonOverlay { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 24px; background: rgba(15, 23, 30, 0.24); backdrop-filter: blur(6px); }

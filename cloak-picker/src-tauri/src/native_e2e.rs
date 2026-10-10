@@ -204,6 +204,33 @@ const NATIVE_E2E_DRIVER: &str = r#"
       const row = findCurrentSyncRow();
       return row?.textContent.includes('待同步新凭据') ? row : null;
     }, '新授权等待手动同步');
+    await waitFor(() => findCurrentSyncRow()?.querySelector('.brokerQuotaWindow'), 'Pro 账号周额度进度条');
+    const quotaRow = findCurrentSyncRow();
+    const quotaCard = quotaRow.querySelector('.brokerQuota');
+    const quotaStatus = quotaRow.querySelector('.brokerStatus');
+    const quotaProgress = quotaRow.querySelector('[role="progressbar"][aria-label="周额度剩余"]');
+    const quotaProgressFill = quotaProgress?.querySelector('span');
+    const quotaCardBounds = quotaCard?.getBoundingClientRect();
+    const quotaStatusBounds = quotaStatus?.getBoundingClientRect();
+    const quotaProgressBounds = quotaProgress?.getBoundingClientRect();
+    const quotaProgressFillBounds = quotaProgressFill?.getBoundingClientRect();
+    const quotaProgressGeometryValid = Boolean(
+      quotaProgressBounds && quotaProgressFillBounds
+      && quotaProgressBounds.width > 10
+      && quotaProgressFillBounds.width > quotaProgressBounds.width * 0.75
+      && quotaProgressFillBounds.width < quotaProgressBounds.width,
+    );
+    if (!quotaCard || quotaRow.querySelectorAll('.brokerQuotaWindow').length !== 1
+        || !quotaProgress?.matches('[aria-valuenow="84"]')
+        || quotaRow.querySelector('[role="progressbar"][aria-label="5 小时额度剩余"]')
+        || !quotaStatus
+        || quotaCard.compareDocumentPosition(quotaStatus) !== Node.DOCUMENT_POSITION_FOLLOWING
+        || !quotaCardBounds || !quotaStatusBounds
+        || quotaCardBounds.width <= 10 || quotaCardBounds.bottom > quotaStatusBounds.top + 1
+        || !quotaProgressGeometryValid) {
+      throw new Error('Pro 账号额度窗口或顺序不符合真实 UI 契约');
+    }
+    checks.push('native-quota-weekly-only-progress');
     const syncButton = (label) => {
       const row = findCurrentSyncRow();
       return row ? Array.from(row.querySelectorAll('button')).find(e => e.textContent.trim() === label) : null;
