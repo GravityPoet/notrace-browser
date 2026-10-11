@@ -21,6 +21,11 @@ use zeroize::Zeroizing;
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(45);
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+// The OAuth success page can appear before the app-server has delivered the
+// completed event and persisted the new credentials. Keep consuming the RPC
+// stream for a short period after the browser closes so a successful callback
+// is not mistaken for a failed authorization.
+const BROWSER_CALLBACK_GRACE: Duration = Duration::from_secs(8);
 const CHECK_INTERVAL: u64 = 24 * 60 * 60;
 const REFRESH_LEAD_TIME: u64 = 36 * 60 * 60;
 const MAX_AUTH_BYTES: u64 = 128 * 1024;
@@ -138,7 +143,9 @@ impl Failure {
             Self::Unchanged => "尚未确认新凭证已写回，未报告刷新成功",
             Self::Recovery => "上次刷新尚未完成保存，已保留恢复副本；请点立即刷新恢复或重新连接",
             Self::Browser => "未能在所选 NoTrace 账号中打开授权页，请先确认该账号可以正常启动",
-            Self::BrowserClosed => "授权浏览器已关闭，本次授权已停止，原有凭证保持不变；可重新授权",
+            Self::BrowserClosed => {
+                "授权浏览器已关闭，等待凭证写回超时；原有凭证保持不变，可重新授权"
+            }
         }
     }
     fn terminal(self) -> bool {
@@ -557,6 +564,20 @@ fn promote(home: &Path, candidate: &Credentials) -> Result<()> {
     // Never roll back to an old refresh token after the server has rotated it.
     crate::write_secret_atomic(&home.join("auth.json"), &candidate.body)
 }
+
+fn read_pending_credentials_with_grace(path: &Path) -> AuthResult<Credentials> {
+    let deadline = Instant::now() + BROWSER_CALLBACK_GRACE;
+    loop {
+        match Credentials::read(path) {
+            Ok(Some(credentials)) => return Ok(credentials),
+            Ok(None) | Err(Failure::Credentials) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Ok(None) | Err(Failure::Credentials) => return Err(Failure::Credentials),
+            Err(failure) => return Err(failure),
+        }
+    }
+}
 fn prepare_pending(home: &Path, kind: &str, previous: Option<&Credentials>) -> Result<PathBuf> {
     let pending = home.join(kind);
     reject_symlink(&pending)?;
@@ -705,6 +726,8 @@ pub enum AuthLoginProgress {
     Preparing,
     OpeningBrowser,
     WaitingBrowser,
+    Confirming,
+    SavingCredentials,
 }
 
 pub fn login_account_auth(config: &CloakConfig, name: &str) -> Result<AuthStatus> {
@@ -724,20 +747,27 @@ pub fn login_account_auth_with_progress(
     progress: impl Fn(AuthLoginProgress),
 ) -> Result<AuthStatus> {
     progress(AuthLoginProgress::Preparing);
-    login_with(config, name, &resolve_codex_binary()?, cancel, |raw| {
-        validate_auth_url(raw)?;
-        progress(AuthLoginProgress::OpeningBrowser);
-        let mut options = LaunchOptions::from_env(false);
-        options.preflight = crate::PreflightMode::Off;
-        options.cancellation = Some(Arc::clone(cancel));
-        let start = Instant::now();
-        let plan = crate::build_launch_plan_for_url(config, name, &options, raw)
-            .map_err(browser_failure)?;
-        let launched =
-            crate::launch_plan(config, plan, &options, start).map_err(browser_failure)?;
-        progress(AuthLoginProgress::WaitingBrowser);
-        Ok(Some(AuthBrowserMonitor::new(launched)))
-    })
+    login_with_progress(
+        config,
+        name,
+        &resolve_codex_binary()?,
+        cancel,
+        |raw| {
+            validate_auth_url(raw)?;
+            progress(AuthLoginProgress::OpeningBrowser);
+            let mut options = LaunchOptions::from_env(false);
+            options.preflight = crate::PreflightMode::Off;
+            options.cancellation = Some(Arc::clone(cancel));
+            let start = Instant::now();
+            let plan = crate::build_launch_plan_for_url(config, name, &options, raw)
+                .map_err(browser_failure)?;
+            let launched =
+                crate::launch_plan(config, plan, &options, start).map_err(browser_failure)?;
+            progress(AuthLoginProgress::WaitingBrowser);
+            Ok(Some(AuthBrowserMonitor::new(launched)))
+        },
+        &progress,
+    )
 }
 
 struct AuthBrowserMonitor {
@@ -785,24 +815,30 @@ impl AuthBrowserMonitor {
         state: crate::browser_processes::AuthBrowserState,
         now: Instant,
     ) -> AuthResult<()> {
-        if !state.running {
-            return Err(Failure::BrowserClosed);
-        }
-        match state.has_window {
-            Some(true) => {
-                self.seen_window = true;
-                self.closed_since = None;
-            }
-            Some(false)
-                if self.seen_window
-                    || now.duration_since(self.started) >= Duration::from_secs(10) =>
-            {
-                let closed = *self.closed_since.get_or_insert(now);
-                if now.duration_since(closed) >= Duration::from_secs(1) {
-                    return Err(Failure::BrowserClosed);
+        let browser_closed = if !state.running {
+            true
+        } else {
+            match state.has_window {
+                Some(true) => {
+                    self.seen_window = true;
+                    false
                 }
+                Some(false)
+                    if self.seen_window
+                        || now.duration_since(self.started) >= Duration::from_secs(10) =>
+                {
+                    true
+                }
+                _ => false,
             }
-            _ => self.closed_since = None,
+        };
+        if browser_closed {
+            let closed = *self.closed_since.get_or_insert(now);
+            if now.duration_since(closed) >= BROWSER_CALLBACK_GRACE {
+                return Err(Failure::BrowserClosed);
+            }
+        } else {
+            self.closed_since = None;
         }
         Ok(())
     }
@@ -820,12 +856,24 @@ fn browser_failure(error: CloakError) -> Failure {
         _ => Failure::Browser,
     }
 }
+#[cfg(test)]
 fn login_with(
     config: &CloakConfig,
     name: &str,
     binary: &Path,
     cancel: &AtomicBool,
     open: impl FnOnce(&str) -> AuthResult<Option<AuthBrowserMonitor>>,
+) -> Result<AuthStatus> {
+    login_with_progress(config, name, binary, cancel, open, &|_| {})
+}
+
+fn login_with_progress(
+    config: &CloakConfig,
+    name: &str,
+    binary: &Path,
+    cancel: &AtomicBool,
+    open: impl FnOnce(&str) -> AuthResult<Option<AuthBrowserMonitor>>,
+    progress: &impl Fn(AuthLoginProgress),
 ) -> Result<AuthStatus> {
     let home = auth_home(config, name, true)?;
     let _login_lock = lock(
@@ -864,19 +912,25 @@ fn login_with(
             .and_then(Value::as_str)
             .ok_or(Failure::Service)?;
         let browser = open(url)?;
-        rpc.wait_login(login_id, cancel, LOGIN_TIMEOUT, browser)?;
+        rpc.wait_login(login_id, cancel, LOGIN_TIMEOUT, browser, progress)?;
+        // The matching success event has arrived. Browser lifetime and a late
+        // cancellation must not discard its credentials while we commit them.
+        progress(AuthLoginProgress::SavingCredentials);
         let response = rpc.request(
             3,
             "account/read",
             json!({"refreshToken":false}),
             RPC_TIMEOUT,
-            cancel,
+            &AtomicBool::new(false),
         )?;
         if response.pointer("/account/type").and_then(Value::as_str) != Some("chatgpt") {
             return Err(Failure::Reauth);
         }
+        let candidate = read_pending_credentials_with_grace(&pending)?;
+        // Keep the app-server alive until the pending credential file is
+        // durable. Some providers emit the success event before their file
+        // writer finishes; dropping the child here would kill that write.
         drop(rpc);
-        let candidate = Credentials::read(&pending)?.ok_or(Failure::Credentials)?;
         ensure_identity(name, previous.as_ref(), &candidate)?;
         if candidate.expires_at <= now() {
             return Err(Failure::Credentials);
@@ -1146,7 +1200,14 @@ impl RpcSession {
                 Err(mpsc::TryRecvError::Disconnected) => return Err(Failure::Service),
                 Err(mpsc::TryRecvError::Empty) => {}
             }
-            check()?;
+            if let Err(error) = check() {
+                if cancel.load(Ordering::Acquire) {
+                    return Err(Failure::Cancelled);
+                }
+                // The OS inventory can take time. A callback delivered during
+                // that observation still wins over its closure deadline.
+                return self.messages.try_recv().map_err(|_| error);
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(Failure::Timeout);
@@ -1193,14 +1254,30 @@ impl RpcSession {
         cancel: &AtomicBool,
         timeout: Duration,
         mut browser: Option<AuthBrowserMonitor>,
+        progress: &impl Fn(AuthLoginProgress),
     ) -> AuthResult<()> {
         let deadline = Instant::now() + timeout;
+        let mut confirming = false;
         loop {
+            if cancel.load(Ordering::Acquire) {
+                return Err(Failure::Cancelled);
+            }
             let event = match self.pending.pop_front() {
                 Some(event) => event,
-                None => self.receive_checked(deadline, cancel, || match browser.as_mut() {
-                    Some(browser) => browser.check(),
-                    None => Ok(()),
+                None => self.receive_checked(deadline, cancel, || {
+                    if let Some(browser) = browser.as_mut() {
+                        browser.check()?;
+                        let closed = browser.closed_since.is_some();
+                        if closed != confirming {
+                            confirming = closed;
+                            progress(if closed {
+                                AuthLoginProgress::Confirming
+                            } else {
+                                AuthLoginProgress::WaitingBrowser
+                            });
+                        }
+                    }
+                    Ok(())
                 })?,
             };
             if event.get("method").and_then(Value::as_str) != Some("account/login/completed") {

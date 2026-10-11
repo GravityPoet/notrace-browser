@@ -150,7 +150,6 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   const [errorTarget, setErrorTarget] = useState("");
   const [activeAuth, setActiveAuth] = useState<ActiveAuth | null>(null);
   const [login, setLogin] = useState<{ name: string; phase: AuthLoginPhase | "handoff"; cancelling: boolean } | null>(null);
-  const cancelRequested = useRef(false);
   const [exportRow, setExportRow] = useState<BrokerRow | null>(null);
   const [jsonFormat, setJsonFormat] = useState<BrokerJsonFormat>("auth_json");
   const [importPreview, setImportPreview] = useState<BrokerJsonPreview | null>(null);
@@ -245,7 +244,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   async function run(label: string, operation: () => Promise<void>) {
     if (inFlight.current) return;
     onBusyChange?.(true);
-    inFlight.current = true; setBusy(label); setMessage(""); setError(""); setErrorTarget(label); cancelRequested.current = false;
+    inFlight.current = true; setBusy(label); setMessage(""); setError(""); setErrorTarget(label);
     try { await operation(); } catch (caught) { if (mounted.current) setError(String(caught)); }
     finally { inFlight.current = false; if (mounted.current) { setBusy(""); setLogin(null); } await readActiveAuth(); }
   }
@@ -257,7 +256,6 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     if (browserBusy) throw new Error("浏览器正在启动或关闭，请稍后再授权");
     setLogin({ name: row.name, phase: "preparing", cancelling: false });
     await call("login_account_auth", { name: row.name });
-    if (cancelRequested.current) throw new Error("授权已取消，未交给 Broker");
     if (mounted.current) setLogin({ name: row.name, phase: "handoff", cancelling: false });
   }
   async function manage(row: BrokerRow) {
@@ -332,10 +330,10 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     }
   }, [call]);
   async function cancelAuthorization(name: string) {
-    cancelRequested.current = true;
     setLogin(current => current && { ...current, cancelling: true });
     try {
       const cancelled = await call<boolean>("cancel_account_auth", { name });
+      if (!cancelled && mounted.current) setLogin(current => current && { ...current, cancelling: false });
       if (mounted.current) setMessage(cancelled ? `${name}：正在取消授权…` : `${name}：当前没有待取消的浏览器授权`);
       await readActiveAuth();
     } catch (caught) { if (mounted.current) setError(String(caught)); }
@@ -434,7 +432,8 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   const headerRow = matchedHeaderRow && selectedAccount ? { ...matchedHeaderRow, ...selectedAccount } : matchedHeaderRow;
   const visibleLogin = login ?? (activeAuth ? { name: activeAuth.account, phase: activeAuth.phase, cancelling: activeAuth.cancelling } : null);
   const loginLabel = visibleLogin ? visibleLogin.cancelling ? "正在取消授权…" : visibleLogin.phase === "handoff" ? "授权成功，正在交给 Broker…" : authProgressLabels[visibleLogin.phase] : "";
-  const activity = visibleLogin && (<div className="brokerRowFeedback" role="status"><strong>{visibleLogin.name}</strong><p><Loader2 className="spin" size={14} /> {loginLabel}</p>{visibleLogin.phase !== "handoff" && !(headerHasAuthorization && headerRow?.name === visibleLogin.name) && <button className="secondaryButton" type="button" disabled={visibleLogin.cancelling} onClick={() => void cancelAuthorization(visibleLogin.name)}>取消授权</button>}</div>);
+  const authorizationCommitInFlight = visibleLogin?.phase === "confirming" || visibleLogin?.phase === "saving_credentials";
+  const activity = visibleLogin && (<div className="brokerRowFeedback" role="status"><strong>{visibleLogin.name}</strong><p><Loader2 className="spin" size={14} /> {loginLabel}</p>{visibleLogin.phase !== "handoff" && !authorizationCommitInFlight && !(headerHasAuthorization && headerRow?.name === visibleLogin.name) && <button className="secondaryButton" type="button" disabled={visibleLogin.cancelling} onClick={() => void cancelAuthorization(visibleLogin.name)}>取消授权</button>}</div>);
   function authorizationAction(row: BrokerRow, compact = false) {
     const pending = visibleLogin?.name === row.name ? visibleLogin : null;
     const historical = authorizationState(row) === "reauth_required";
@@ -442,8 +441,8 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     const reconnect = Boolean(row.remote || historical || external);
     const label = reconnect ? "重新授权" : row.local.state === "missing" ? "授权" : "纳管授权";
     const fullLabel = row.remote ? "重新授权" : historical || external ? "重新授权并纳管" : row.local.state === "missing" ? "授权并纳管" : "交给 Broker";
-    if (compact && pending) return <button className="authorizationButton authorizationButton-secondary" type="button" disabled={pending.cancelling || pending.phase === "handoff"} onClick={() => void cancelAuthorization(row.name)}>
-      {pending.cancelling || pending.phase === "handoff" ? <Loader2 size={16} className="spin" /> : <X size={16} />}{pending.phase === "handoff" ? "保存授权中…" : pending.cancelling ? "取消中…" : "取消授权"}
+    if (compact && pending) return <button className="authorizationButton authorizationButton-secondary" type="button" disabled={pending.cancelling || pending.phase === "handoff" || authorizationCommitInFlight} onClick={() => void cancelAuthorization(row.name)}>
+      {pending.cancelling || pending.phase === "handoff" || authorizationCommitInFlight ? <Loader2 size={16} className="spin" /> : <X size={16} />}{pending.phase === "handoff" ? "保存授权中…" : pending.phase === "confirming" ? "确认凭证中…" : pending.phase === "saving_credentials" ? "保存凭证中…" : pending.cancelling ? "取消中…" : "取消授权"}
     </button>;
     return <button className={compact ? `authorizationButton${row.remote && !historical ? " authorizationButton-secondary" : ""}` : workbench && (!row.remote || historical) ? "primaryButton" : "secondaryButton"}
       type="button" disabled={disabled || !brokerConnected || browserBusy}

@@ -198,6 +198,12 @@ impl AuthCancellationRegistry {
     fn cancel(&self, name: &str) -> Result<bool, String> {
         let mut active = self.0.lock().map_err(|_| "授权状态不可用")?;
         if let Some((status, flag)) = active.as_mut().filter(|(status, _)| status.account == name) {
+            if matches!(
+                status.phase,
+                AuthLoginProgress::Confirming | AuthLoginProgress::SavingCredentials
+            ) {
+                return Ok(false);
+            }
             status.cancelling = true;
             flag.store(true, Ordering::Release);
             return Ok(true);
@@ -1433,6 +1439,23 @@ mod tests {
         registry.finish("first@example.test");
         assert!(registry.status().unwrap().is_none());
         assert!(registry.begin("other@example.test").is_ok());
+    }
+
+    #[test]
+    fn auth_registry_does_not_cancel_credential_confirmation_or_saving() {
+        let registry = super::AuthCancellationRegistry::default();
+        let flag = registry.begin("first@example.test").unwrap();
+        for phase in [
+            super::AuthLoginProgress::Confirming,
+            super::AuthLoginProgress::SavingCredentials,
+        ] {
+            registry.progress("first@example.test", phase);
+            assert!(!registry.cancel("first@example.test").unwrap());
+            assert!(!flag.load(std::sync::atomic::Ordering::Acquire));
+            assert!(!registry.status().unwrap().unwrap().cancelling);
+        }
+        registry.finish("first@example.test");
+        assert!(registry.status().unwrap().is_none());
     }
 
     use super::*;

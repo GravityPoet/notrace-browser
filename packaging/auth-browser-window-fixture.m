@@ -56,7 +56,7 @@ int main(int argc, char **argv) {
         if ([NSProcessInfo.processInfo.environment[@"CLOAK_AUTH_FIXTURE_PROFILE_GATE"] isEqual:@"1"]) {
             BOOL target = NO;
             for (NSString *argument in NSProcessInfo.processInfo.arguments) {
-                if ([argument hasPrefix:@"--user-data-dir="] && [argument hasSuffix:@"/native-e2e-auth-close-account"]) target = YES;
+                if ([argument hasPrefix:@"--user-data-dir="] && ([argument hasSuffix:@"/native-e2e-auth-close-account"] || [argument hasSuffix:@"/native-e2e-auth-success-account"])) target = YES;
             }
             if (!target) return 76;
         }
@@ -70,6 +70,13 @@ int main(int argc, char **argv) {
             fixture.window = window;
             [window release];
             [fixture.window orderFront:nil];
+        }
+        if ([NSProcessInfo.processInfo.environment[@"CLOAK_AUTH_TEST_TIMED"] isEqual:@"1"]) {
+            for (NSString *argument in NSProcessInfo.processInfo.arguments) {
+                if (![argument hasPrefix:@"--user-data-dir="]) continue;
+                NSString *profile = [argument substringFromIndex:@"--user-data-dir=".length];
+                [@"" writeToFile:[profile stringByAppendingPathComponent:@".native-auth-window-phases"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }
         }
         [fixture performSelector:@selector(report:) withObject:@"ready" afterDelay:0.3];
         if ([NSProcessInfo.processInfo.environment[@"CLOAK_AUTH_TEST_TIMED"] isEqual:@"1"]) {

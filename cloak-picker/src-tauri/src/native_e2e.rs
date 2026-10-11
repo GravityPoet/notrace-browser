@@ -474,8 +474,10 @@ const NATIVE_E2E_DRIVER: &str = r#"
     const moveGroup = Array.from(accountMenu.querySelectorAll('button')).find(button => button.textContent.trim() === '移动分组');
     if (!moveGroup || document.querySelector('.accountGroupSubmenu')) throw new Error('分组未收纳为子菜单入口');
     moveGroup.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-    const groupMenu = await waitFor(() => document.querySelector('.accountGroupSubmenu'), '悬停打开分组子菜单');
-    await waitFor(() => Number(getComputedStyle(groupMenu).opacity) > 0.9, '分组子菜单展开动画');
+    const groupMenu = await waitFor(() => {
+      const menu = document.querySelector('.accountGroupSubmenu');
+      return menu && Number(getComputedStyle(menu).opacity) > 0.9 ? menu : null;
+    }, '悬停打开分组子菜单');
     const flyoutBounds = groupMenu.getBoundingClientRect();
     if (flyoutBounds.left < 0 || flyoutBounds.top < 0 || flyoutBounds.right > innerWidth || flyoutBounds.bottom > innerHeight) throw new Error('分组子菜单越出窗口');
     const codexGroup = Array.from(groupMenu.querySelectorAll('button')).find(button => button.textContent.trim() === 'codex');
@@ -491,8 +493,8 @@ const NATIVE_E2E_DRIVER: &str = r#"
       return button && !button.disabled ? button : null;
     }, '多选入口');
     multiSelect.click();
-    await waitFor(() => document.querySelectorAll('.accountRow.selectionMode').length === 3, '多选账号列表');
-    document.querySelectorAll('.accountRow.selectionMode').forEach(row => row.click());
+    await waitFor(() => document.querySelectorAll('.accountRow.selectionMode').length >= 3, '多选账号列表');
+    Array.from(document.querySelectorAll('.accountRow.selectionMode')).slice(0, 3).forEach(row => row.click());
     await waitFor(() => document.querySelectorAll('.bulkSelectedPreview li').length === 3, '完整所选账号预览');
     const bulkActions = document.querySelectorAll('.bulkActionButton');
     if (bulkActions.length < 3 || Array.from(bulkActions).some(button => button.getBoundingClientRect().height < 72)) throw new Error('批量操作按钮过小或缺失');
@@ -582,6 +584,10 @@ const NATIVE_E2E_DRIVER: &str = r#"
         || !Array.from(pane.querySelectorAll('button')).some(button => button.textContent.trim() === '取消授权')) {
       throw new Error('隐藏或最小化错误取消了授权');
     }
+    await waitFor(() => closeAuthorize()?.textContent.includes('确认凭证中'), '关闭后确认授权结果', 7000);
+    if (!closeAuthorize()?.disabled || pane.querySelector('[role="alert"]')?.textContent.includes('授权浏览器已关闭')) {
+      throw new Error('浏览器关闭后在凭证写回宽限期内过早报告授权失败');
+    }
     await waitFor(() => pane.querySelector('[role="alert"]')?.textContent.includes('授权浏览器已关闭'), '关闭窗口后结束授权', 15000);
     if (await invoke('active_account_auth')) throw new Error('窗口已关闭但原生授权注册表仍忙碌');
     if (Array.from(pane.querySelectorAll('button')).some(button => button.textContent.trim() === '取消授权')) throw new Error('窗口已关闭但取消授权进度仍未清理');
@@ -591,6 +597,43 @@ const NATIVE_E2E_DRIVER: &str = r#"
     (await waitFor(() => Array.from(pane.querySelectorAll('button')).find(button => button.textContent.trim() === '取消授权' && !button.disabled), '重新授权可取消')).click();
     await waitFor(() => closeAuthorize() && !closeAuthorize().disabled && !pane.textContent.includes('正在取消授权'), '取消重试后释放忙碌状态');
     checks.push('native-auth-browser-close-stops-and-retry-recovers');
+    const fixtureClosed = await invoke('force_close_all_browsers');
+    if (fixtureClosed.remaining !== 0) throw new Error('上一次授权的临时窗口未退出');
+    const fixtureExitDeadline = Date.now() + 20000;
+    while (await invoke('account_is_running', { name: closeAccount })) {
+      if (Date.now() >= fixtureExitDeadline) throw new Error('取消后的临时授权窗口没有退出');
+      await sleep(100);
+    }
+    // A separate disposable account delivers synthetic OAuth success 4.2
+    // seconds after its real native window closes.
+    const successAccount = 'native-e2e-auth-success-account';
+    setter.call(search, successAccount);
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await waitFor(() => pane.querySelector('h1')?.textContent === successAccount, '延迟成功账号被选中');
+    document.querySelector('#workbench-broker-tab').click();
+    const successAuthorize = () => pane.querySelector('.workbenchPrimaryActions .authorizationButton');
+    await waitFor(() => successAuthorize() && !successAuthorize().disabled ? successAuthorize() : null, '延迟成功测试入口');
+    successAuthorize().click();
+    await waitFor(() => successAuthorize()?.textContent.includes('确认凭证中') && successAuthorize().disabled, '延迟成功等待凭证', 25000);
+    const pendingAuth = await invoke('active_account_auth');
+    if (pendingAuth?.phase !== 'confirming' || pendingAuth.cancelling) throw new Error('关闭后未进入确认阶段');
+    if (await invoke('cancel_account_auth', { name: successAccount })) throw new Error('确认期间允许取消已在接收的凭证');
+    try {
+      await waitFor(() => pane.textContent.includes('已授权 · NoTrace Broker 自动续期') && successAuthorize()?.textContent.trim() === '重新授权' && !successAuthorize().disabled, '关闭后延迟授权成功并纳管', 15000);
+    } catch (error) {
+      const alerts = Array.from(pane.querySelectorAll('[role="alert"]'), node => node.textContent).join(' | ');
+      throw new Error(`${error.message}; current=${successAuthorize()?.textContent}; alert=${alerts}`);
+    }
+    const localAuth = await invoke('auth_status', { name: successAccount });
+    if (localAuth.state !== 'connected' || localAuth.authority !== 'broker' || localAuth.email !== successAccount || await invoke('active_account_auth')) throw new Error('延迟成功凭证未保留或授权仍忙碌');
+    if (pane.querySelector('[role="alert"]')?.textContent.includes('授权浏览器已关闭')) throw new Error('成功后仍显示关闭错误');
+    const metadata = await invoke('broker_overview');
+    if (!metadata.accounts.some(row => row.name === successAccount && row.remote?.email === successAccount)) throw new Error('关闭后的成功凭证未到达 Broker');
+    document.querySelector('#workbench-account-tab').click();
+    await waitFor(() => !document.querySelector('#workbench-details').hidden, '成功后切换账号资料');
+    document.querySelector('#workbench-broker-tab').click();
+    await waitFor(() => pane.textContent.includes('已授权 · NoTrace Broker 自动续期'), '返回授权页仍保留成功状态');
+    checks.push('native-auth-success-after-browser-close-retained');
     setter.call(search, '');
     search.dispatchEvent(new Event('input', { bubbles: true }));
     document.querySelector('#cloak-account-active-tab').click();

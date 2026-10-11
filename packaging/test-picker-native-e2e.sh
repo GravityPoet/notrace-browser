@@ -43,9 +43,10 @@ account_base="$tmp/accounts/native-e2e-profile-root-with-a-deliberately-long-pat
 account_dir="$account_base/native-e2e-account"
 sync_account_dir="$account_base/native-e2e-sync-account"
 close_account_dir="$account_base/native-e2e-auth-close-account"
+success_account_dir="$account_base/native-e2e-auth-success-account"
 report="$tmp/cloak-picker-native-e2e-report.json"
 log="$tmp/picker.log"
-mkdir -p "$(dirname "$browser")" "$account_dir" "$sync_account_dir" "$close_account_dir"
+mkdir -p "$(dirname "$browser")" "$account_dir" "$sync_account_dir" "$close_account_dir" "$success_account_dir"
 /usr/bin/xcrun clang -framework AppKit -fblocks \
   "$ROOT/packaging/auth-browser-window-fixture.m" -o "$browser"
 chmod 700 "$browser"
@@ -67,6 +68,9 @@ touch "$sync_account_dir/.cloak-trashed"
 printf '%s\n' '48154' > "$close_account_dir/.cloak-seed"
 printf '%s\n' '1680000000000000' > "$close_account_dir/.cloak-created-at"
 chmod 600 "$close_account_dir/.cloak-seed" "$close_account_dir/.cloak-created-at"
+printf '%s\n' '48155' > "$success_account_dir/.cloak-seed"
+printf '%s\n' '1670000000000000' > "$success_account_dir/.cloak-created-at"
+chmod 600 "$success_account_dir/.cloak-seed" "$success_account_dir/.cloak-created-at"
 
 # An isolated metadata-only Broker and synthetic OAuth provider exercise the
 # real native click path without using a real account or OpenAI credentials.
@@ -76,6 +80,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 class Handler(BaseHTTPRequestHandler):
     attempts = 0
+    completed_grant = None
     metadata = {"key": "", "email": "native-e2e-sync-account", "account_id": "synthetic-account", "plan_type": "pro", "expires_at": 1900000000, "last_refresh_at": 1899000000, "generation": 2, "refresh_count": 0, "automatic_refresh_count": 0, "next_refresh_at": 1899900000, "next_retry_at": None, "error": None, "cpa_enabled": False, "cpa_synced_generation": 1, "cpa_sync_error": None, "cockpit_synced_generation": None}
     def do_GET(self) -> None:
         profile = Path(sys.argv[2]) / ".cloak-profile.json"
@@ -89,12 +94,24 @@ class Handler(BaseHTTPRequestHandler):
         if profile.exists():
             Handler.metadata["key"] = json.loads(profile.read_text())["profile_id"]
             rows = [Handler.metadata]
+        if Handler.completed_grant is not None:
+            rows.append(Handler.completed_grant)
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(rows).encode())
     def do_POST(self) -> None:
         settings = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+        if self.path.endswith("/grant"):
+            # Only disposable synthetic OAuth bytes from this test can arrive.
+            profile_id = self.path.split("/")[-2]
+            Handler.completed_grant = {**Handler.metadata, "key": profile_id, "email": "native-e2e-auth-success-account", "generation": 1, "cpa_enabled": False, "cpa_synced_generation": None, "cpa_sync_error": None}
+            time.sleep(1)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(Handler.completed_grant).encode())
+            return
         if not self.path.endswith("/cpa") or settings.get("enabled") is not True:
             self.send_error(400)
             return
@@ -120,16 +137,52 @@ for attempt in $(seq 1 50); do [[ -s "$connection" ]] && break; sleep 0.1; done
 [[ -s "$connection" ]] || { printf '%s\n' 'fixture broker failed to start' >&2; exit 1; }
 cat > "$tmp/codex-fixture" <<'PYFIX'
 #!/usr/bin/env python3
-import json, sys
+import base64, json, os, sys, time
+from pathlib import Path
+home = Path(os.environ["CODEX_HOME"])
+account_base = Path(os.environ["CLOAK_ACCOUNT_BASE"])
+profile = account_base / "native-e2e-auth-success-account"
+events = home.parent / ".native-auth-events"
+def trace(event):
+    with events.open("a") as log:
+        log.write(f"{time.monotonic():.3f} {event}\n")
+def emit(value):
+    print(json.dumps(value), flush=True)
+def jwt(value):
+    return "synthetic." + base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=") + ".signature"
 for line in sys.stdin:
     message = json.loads(line)
     if message.get("method") == "initialize":
         result = {}
     elif message.get("method") == "account/login/start":
         result = {"loginId": "native-e2e", "authUrl": "https://auth.openai.com/oauth/authorize?state=synthetic"}
+        trace("login-start")
+        phases = profile / ".native-auth-window-phases"
+        phases.unlink(missing_ok=True)
+        emit({"id": message["id"], "result": result})
+        deadline = time.monotonic() + 30
+        while not phases.exists() or "close" not in phases.read_text().splitlines():
+            if time.monotonic() >= deadline:
+                raise RuntimeError("synthetic browser did not close")
+            time.sleep(0.05)
+        trace("window-closed")
+        time.sleep(4.2)
+        email = profile.name
+        expiry = int(time.time()) + 864000
+        access = jwt({"exp": expiry, "https://api.openai.com/profile": {"email": email}, "https://api.openai.com/auth": {"chatgpt_plan_type": "pro"}})
+        tokens = {"_".join(("access", "token")): access, "_".join(("id", "token")): jwt({"email": email, "exp": expiry}), "_".join(("refresh", "token")): "synthetic-native-closed-success", "account_id": "synthetic-account"}
+        (home / "auth.json").write_text(json.dumps({"auth_mode": "chatgpt", "tokens": tokens}))
+        os.chmod(home / "auth.json", 0o600)
+        trace("credentials-written")
+        emit({"method": "account/login/completed", "params": {"loginId": "native-e2e", "success": True}})
+        trace("success-sent")
+        continue
+    elif message.get("method") == "account/read":
+        trace("account-read")
+        result = {"account": {"type": "chatgpt", "email": profile.name, "planType": "pro"}, "requiresOpenaiAuth": True}
     else:
         continue
-    print(json.dumps({"id": message["id"], "result": result}), flush=True)
+    emit({"id": message["id"], "result": result})
 PYFIX
 chmod 700 "$tmp/codex-fixture"
 CLOAK_SKIP_GEO=1 \
@@ -156,7 +209,7 @@ if ! xcrun swift "$ROOT/packaging/picker-native-window-check.swift" "$picker_pid
 fi
 
 attempt=0
-while [[ ! -s "$report" ]] && [[ "$attempt" -lt 300 ]]; do
+while [[ ! -s "$report" ]] && [[ "$attempt" -lt 450 ]]; do
   if ! kill -0 "$picker_pid" 2>/dev/null; then
     printf '%s\n' 'Picker exited before producing the native E2E report:' >&2
     sed -n '1,160p' "$log" >&2
@@ -177,6 +230,7 @@ node -e '
     "cpa-sync-pending-retry-success",
     "native-quota-weekly-only-progress",
     "native-auth-browser-close-stops-and-retry-recovers",
+    "native-auth-success-after-browser-close-retained",
     "searched-account-context-preserves-selection",
     "account-context-submenu-and-restore",
     "bulk-workspace-large-actions",

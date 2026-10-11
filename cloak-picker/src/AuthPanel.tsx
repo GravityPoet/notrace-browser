@@ -15,12 +15,14 @@ export type AuthStatus = {
   message: string | null;
 };
 
-export type AuthLoginPhase = "preparing" | "opening_browser" | "waiting_browser";
+export type AuthLoginPhase = "preparing" | "opening_browser" | "waiting_browser" | "confirming" | "saving_credentials";
 export type ActiveAuth = { account: string; phase: AuthLoginPhase; started_at: number; cancelling: boolean };
 export const authProgressLabels: Record<AuthLoginPhase, string> = {
   preparing: "正在准备官方授权…",
   opening_browser: "正在检查浏览器席位并打开授权页…",
   waiting_browser: "授权页已打开，请在对应账号浏览器完成登录（最多等待 10 分钟）",
+  confirming: "浏览器已关闭，正在确认授权结果并接收凭证…",
+  saving_credentials: "授权已确认，正在保存凭证…",
 };
 type Operation = "login_account_auth" | "refresh_account_auth" | "set_auth_auto_refresh";
 export type AuthCall = <T>(command: string, args: Record<string, unknown>) => Promise<T>;
@@ -135,7 +137,7 @@ export function AuthPanel({ name, call = nativeCall, onOpenBroker }: { name: str
   return <section className="inspectorGroup authPanel" aria-label="ChatGPT 授权" data-account={name}>
     <h2>ChatGPT 授权</h2>
     <div>
-      <Row label="状态" value={brokerManaged ? "统一续期托管" : busy === "login_account_auth" ? "等待浏览器授权" : busy === "refresh_account_auth" ? "正在刷新" : visible ? labels[visible.state] : "读取中"} />
+      <Row label="状态" value={brokerManaged ? "统一续期托管" : busy === "login_account_auth" ? loginPhase === "confirming" ? "正在确认授权" : loginPhase === "saving_credentials" ? "正在保存凭证" : "等待浏览器授权" : busy === "refresh_account_auth" ? "正在刷新" : visible ? labels[visible.state] : "读取中"} />
       {brokerManaged && <Row label="刷新管理" value="统一授权续期" />}
       {connected && <>
         <Row label="账号" value={visible.email ?? "无邮箱信息"} />
@@ -161,7 +163,7 @@ export function AuthPanel({ name, call = nativeCall, onOpenBroker }: { name: str
           {noTraceOwnsRefresh && <button className="secondaryButton" type="button" disabled={Boolean(busy)} onClick={() => void run("refresh_account_auth")}><RefreshCw size={14} />立即刷新</button>}
           {noTraceOwnsRefresh && <button className="secondaryButton" type="button" disabled={Boolean(busy)} onClick={() => void run("set_auth_auto_refresh")}>{visible?.auto_refresh ? "暂停续期" : "开启续期"}</button>}
         </>}
-        {busy === "login_account_auth" && <button className="secondaryButton" type="button" onClick={() => void cancel()}>取消授权</button>}
+        {busy === "login_account_auth" && !["confirming", "saving_credentials"].includes(loginPhase) && <button className="secondaryButton" type="button" onClick={() => void cancel()}>取消授权</button>}
         </>}
       </div>
     </div>

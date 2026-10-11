@@ -764,6 +764,32 @@ describe("统一授权续期窗口", () => {
     expect(calls.find(call => call.command === "cancel_account_auth")?.args).toEqual({ name: "previous@example.test" });
   });
 
+  it("hands off a successful login when a late cancellation was not accepted by the native worker", async () => {
+    const data = overview();
+    data.accounts[0].local = { ...local, state: "missing" };
+    const commands: string[] = [];
+    let finishLogin: (value: unknown) => void = () => {};
+    const call: AuthCall = async function<T>(command: string): Promise<T> {
+      commands.push(command);
+      if (command === "broker_overview") return data as T;
+      if (command === "active_account_auth") return null as T;
+      if (command === "login_account_auth") return new Promise<T>(resolve => { finishLogin = value => resolve(value as T); });
+      if (command === "cancel_account_auth") return false as T;
+      return null as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    const findButton = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === label)!;
+    await act(async () => findButton("授权并纳管").click());
+    await act(async () => findButton("取消授权").click());
+    await act(async () => finishLogin(local));
+    await settle();
+    expect(commands).toContain("broker_push_account");
+    expect(document.querySelector('[role="alert"]')).toBeNull();
+    expect(document.body.textContent).toContain("授权已交给 Broker");
+  });
+
   it("keeps search available when status cannot be loaded", async () => {
     const call: AuthCall = async function<T>(command: string): Promise<T> {
       if (command === "active_account_auth") return null as T;

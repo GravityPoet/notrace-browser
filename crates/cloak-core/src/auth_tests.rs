@@ -40,7 +40,7 @@ impl Fixture {
     fn provider(&self, mode: &str) -> PathBuf {
         let path = self.config.repo_root.join(format!("fake-{mode}"));
         let script = r#"#!/usr/bin/env python3
-import sys,os,json,time,base64
+import sys,os,json,time,base64,threading
 from pathlib import Path
 mode=MODE
 home=Path(os.environ['CODEX_HOME'])
@@ -61,12 +61,16 @@ for line in sys.stdin:
  m=json.loads(line); method=m['method']; i=m.get('id')
  if method=='initialize': emit({'id':i,'result':{}})
  elif method=='account/login/start':
-  save()
-  if mode=='slow':
+  if mode not in ('closed_delayed','credentials_late'): save()
+  if mode in ('slow','closed','closed_delayed'):
    emit({'id':i,'result':{'loginId':'test-login','authUrl':'https://auth.openai.com/oauth/authorize?state=synthetic'}})
-   time.sleep(2.2)
+   time.sleep(2.2 if mode=='slow' else (20 if mode=='closed' else 4.2))
+  elif mode=='credentials_late':
+   emit({'id':i,'result':{'loginId':'test-login','authUrl':'https://auth.openai.com/oauth/authorize?state=synthetic'}})
+   threading.Thread(target=lambda: (time.sleep(4.2), save()), daemon=True).start()
+  if mode=='closed_delayed': save()
   emit({'method':'account/login/completed','params':{'loginId':'test-login','success':True}})
-  if mode!='slow': emit({'id':i,'result':{'loginId':'test-login','authUrl':'https://auth.openai.com/oauth/authorize?state=synthetic'}})
+  if mode not in ('slow','closed','closed_delayed','credentials_late'): emit({'id':i,'result':{'loginId':'test-login','authUrl':'https://auth.openai.com/oauth/authorize?state=synthetic'}})
  elif method=='account/read':
   if m.get('params',{}).get('refreshToken'):
    if mode in ('revoked','network'):
@@ -464,7 +468,7 @@ fn closing_last_auth_window_stops_wait_but_hidden_windows_and_unknown_state_do_n
                 running: true,
                 has_window: Some(false)
             },
-            started + Duration::from_secs(6)
+            started + Duration::from_secs(5) + BROWSER_CALLBACK_GRACE + Duration::from_millis(1)
         ),
         Err(Failure::BrowserClosed)
     );
@@ -479,14 +483,13 @@ fn closing_auth_browser_preserves_credentials_cleans_pending_and_allows_retry() 
     let error = login_with(
         &f.config,
         &f.name,
-        &f.provider("slow"),
+        &f.provider("closed"),
         &AtomicBool::new(false),
         |_| {
-            Ok(Some(browser_monitor(
-                u32::MAX,
-                "/missing".into(),
-                f.config.profile_dir(&f.name),
-            )))
+            let mut browser =
+                browser_monitor(u32::MAX, "/missing".into(), f.config.profile_dir(&f.name));
+            browser.seen_window = true;
+            Ok(Some(browser))
         },
     )
     .unwrap_err();
@@ -502,6 +505,77 @@ fn closing_auth_browser_preserves_credentials_cleans_pending_and_allows_retry() 
         |_| Ok(None)
     )
     .is_ok());
+}
+
+#[test]
+fn delayed_success_callback_after_browser_close_is_accepted_within_grace() {
+    let f = Fixture::new();
+    f.seed(now() + 864000);
+    let old = Credentials::read(&f.home).unwrap().unwrap().digest;
+    let phases = std::cell::RefCell::new(Vec::new());
+    let started = Instant::now();
+    let status = login_with_progress(
+        &f.config,
+        &f.name,
+        &f.provider("closed_delayed"),
+        &AtomicBool::new(false),
+        |_| {
+            Ok(Some(browser_monitor(
+                u32::MAX,
+                "/missing".into(),
+                f.config.profile_dir(&f.name),
+            )))
+        },
+        &|phase| phases.borrow_mut().push(phase),
+    )
+    .unwrap();
+    assert_eq!(status.state, AuthState::Connected);
+    assert!(started.elapsed() >= Duration::from_secs(4));
+    assert_ne!(old, Credentials::read(&f.home).unwrap().unwrap().digest);
+    assert!(matches!(phases.borrow()[0], AuthLoginProgress::Confirming));
+    assert!(matches!(
+        phases.borrow()[1],
+        AuthLoginProgress::SavingCredentials
+    ));
+    assert!(!f.home.join(".pending-login").exists());
+}
+
+#[test]
+fn credentials_written_after_success_callback_are_waited_for() {
+    let f = Fixture::new();
+    let status = login_with_progress(
+        &f.config,
+        &f.name,
+        &f.provider("credentials_late"),
+        &AtomicBool::new(false),
+        |_| Ok(None),
+        &|_| {},
+    )
+    .unwrap();
+    assert_eq!(status.state, AuthState::Connected);
+    assert!(!f.home.join(".pending-login").exists());
+}
+
+#[test]
+fn a_late_cancel_cannot_discard_an_already_confirmed_login() {
+    let f = Fixture::new();
+    let cancel = AtomicBool::new(false);
+    let status = login_with_progress(
+        &f.config,
+        &f.name,
+        &f.provider("success"),
+        &cancel,
+        |_| Ok(None),
+        &|phase| {
+            if matches!(phase, AuthLoginProgress::SavingCredentials) {
+                cancel.store(true, Ordering::Release);
+            }
+        },
+    )
+    .unwrap();
+    assert!(cancel.load(Ordering::Acquire));
+    assert_eq!(status.state, AuthState::Connected);
+    assert!(!f.home.join(".pending-login").exists());
 }
 
 #[test]
