@@ -577,7 +577,11 @@ const NATIVE_E2E_DRIVER: &str = r#"
     (await waitFor(() => { const button = closeAuthorize(); return button && !button.disabled ? button : null; }, '关闭授权测试入口可用')).click();
     await waitFor(() => document.body.textContent.includes('授权页已打开'), '原生授权等待开始');
     await sleep(12000);
-    if (!(await invoke('active_account_auth')) || !pane.textContent.includes('授权处理中')) throw new Error('隐藏或最小化错误取消了授权');
+    if (!(await invoke('active_account_auth'))
+        || (!pane.textContent.includes('授权页已打开') && !pane.textContent.includes('正在处理'))
+        || !Array.from(pane.querySelectorAll('button')).some(button => button.textContent.trim() === '取消授权')) {
+      throw new Error('隐藏或最小化错误取消了授权');
+    }
     await waitFor(() => pane.querySelector('[role="alert"]')?.textContent.includes('授权浏览器已关闭'), '关闭窗口后结束授权', 15000);
     if (await invoke('active_account_auth')) throw new Error('窗口已关闭但原生授权注册表仍忙碌');
     if (Array.from(pane.querySelectorAll('button')).some(button => button.textContent.trim() === '取消授权')) throw new Error('窗口已关闭但取消授权进度仍未清理');
@@ -585,7 +589,7 @@ const NATIVE_E2E_DRIVER: &str = r#"
     retryAuth.click();
     await waitFor(() => document.body.textContent.includes('授权页已打开'), '关闭后重新授权成功开始');
     (await waitFor(() => Array.from(pane.querySelectorAll('button')).find(button => button.textContent.trim() === '取消授权' && !button.disabled), '重新授权可取消')).click();
-    await waitFor(() => closeAuthorize() && !closeAuthorize().disabled && !pane.textContent.includes('授权处理中'), '取消重试后释放忙碌状态');
+    await waitFor(() => closeAuthorize() && !closeAuthorize().disabled && !pane.textContent.includes('正在取消授权'), '取消重试后释放忙碌状态');
     checks.push('native-auth-browser-close-stops-and-retry-recovers');
     setter.call(search, '');
     search.dispatchEvent(new Event('input', { bubbles: true }));
