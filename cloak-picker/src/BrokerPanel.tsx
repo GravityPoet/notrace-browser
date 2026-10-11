@@ -520,6 +520,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       const quotaLoading = quotaLoadingProfile === row.profile_id;
       const cpaSynced = remote?.cpa_enabled && !remote.cpa_sync_error && remote.cpa_synced_generation === remote.generation;
       const rowCpaAction = cpaAction?.profileId === row.profile_id ? cpaAction : null;
+      const headerOwnsAuthorization = headerHasAuthorization && row.profile_id === selectedProfileId;
       const cpaButtonLabel: string | null = rowCpaAction?.pending
         ? rowCpaAction.enabled ? "同步中…" : "暂停中…"
         : historicalAuthorization
@@ -538,12 +539,12 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       return <article className={`brokerRow ${historicalAuthorization ? "brokerRowHistorical" : ""}`} key={row.profile_id}>
         <div className="brokerRowTop"><div className="brokerRowMain">{!workbench && <strong>{row.name}</strong>}<span className={`brokerAuthStatus brokerAuthStatus-${accountState}`}><span className={`brokerAuthDot brokerAuthDot-${accountState}`} aria-hidden="true" />{row.trashed ? "回收站账号" : "浏览器账号"} · {accountState === "unknown" ? "托管状态待确认" : accountStatusLabel}</span>{workbench && <span>{remote?.plan_type || row.local.plan_type ? `套餐：${planLabel(remote ? remote.plan_type : row.local.plan_type)}` : "套餐未知"}{grantEmail && grantEmail !== row.name ? ` · 授权账号：${grantEmail}` : ""}</span>}</div>
           <div className="brokerRowActions">{remote ? <>
-            {!headerHasAuthorization && authorizationAction(row)}
+            {!headerOwnsAuthorization && authorizationAction(row)}
             {!historicalAuthorization && <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { try { await call("broker_refresh_account", { profileId: row.profile_id }); } catch (caught) { await read(); throw caught; } await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>}
             {cpaButtonLabel && <button className={workbench && !historicalAuthorization && !cpaSynced ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected || (historicalAuthorization && !remote.cpa_enabled)} onClick={() => void run(row.profile_id, () => updateCpa(row, historicalAuthorization ? false : !cpaSynced))}>{cpaButtonLabel}</button>}
             {!historicalAuthorization && <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected || quotaLoadingProfile !== null} title="仅读取上游 Codex 额度，不会刷新授权或消耗主动重置次数" onClick={() => void readQuota(row)}>{quotaLoading ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}{quotaLoading ? "读取中…" : "读取额度"}</button>}
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={event => { jsonTriggerRef.current = event.currentTarget; setPreserveRefreshToken(false); setImportPreview(null); setExportRow(row); setJsonFormat("auth_json"); }}><Download size={14} />导出 JSON</button>
-          </> : !headerHasAuthorization && <button className={workbench ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected || browserBusy} onClick={() => void run(row.profile_id, () => externalGrant ? reauthorize(row) : manage(row))}>{rowBusy ? <Loader2 className="spin" size={14} /> : needsLogin || needsReauthLocal || externalGrant ? <KeyRound size={14} /> : <UploadCloud size={14} />}{rowBusy ? "授权处理中…" : needsLogin ? "授权并纳管" : needsReauthLocal || externalGrant ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
+          </> : !headerOwnsAuthorization && <button className={workbench ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected || browserBusy} onClick={() => void run(row.profile_id, () => externalGrant ? reauthorize(row) : manage(row))}>{rowBusy ? <Loader2 className="spin" size={14} /> : needsLogin || needsReauthLocal || externalGrant ? <KeyRound size={14} /> : <UploadCloud size={14} />}{rowBusy ? "授权处理中…" : needsLogin ? "授权并纳管" : needsReauthLocal || externalGrant ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
         </div>
         {!workbench && visibleLogin?.name === row.name && activity}
         {error && errorTarget === row.profile_id && !(historicalAuthorization && repeatsAuthorizationState(error)) && <div className="brokerRowFeedback error" role="alert"><p>{error}</p></div>}

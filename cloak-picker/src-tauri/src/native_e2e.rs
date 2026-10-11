@@ -185,7 +185,9 @@ const NATIVE_E2E_DRIVER: &str = r#"
     setter.call(search, 'native-e2e-account');
     search.dispatchEvent(new Event('input', { bubbles: true }));
     await waitFor(() => document.querySelectorAll('.brokerRow').length === 1 && pane.querySelector('h1')?.textContent === 'native-e2e-account', '搜索精确账号');
-    const authorize = Array.from(document.querySelectorAll('.brokerRow button')).find(e => e.textContent.trim() === '授权并纳管');
+    const authorize = pane.querySelector('.workbenchPrimaryActions .authorizationButton')
+      || Array.from(document.querySelectorAll('.brokerRow button')).find(e => e.textContent.trim() === '授权并纳管')
+      || Array.from(document.querySelectorAll('.brokerRow button')).find(e => e.textContent.trim() === '重新授权并纳管');
     if (!authorize || authorize.disabled) throw new Error('搜索结果未提供可点击的授权操作');
     authorize.click();
     await waitFor(() => document.querySelector('.brokerRowFeedback[role="alert"]')?.textContent.includes('上游席位已占满'), '浏览器席位错误显示');
