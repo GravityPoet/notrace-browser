@@ -1400,6 +1400,31 @@ fn launch_plan(
     options: &LaunchOptions,
     preflight_started: Instant,
 ) -> Result<LaunchResult> {
+    launch_plan_with_mode(config, plan, options, preflight_started, false)
+}
+
+/// Open an OAuth URL in the already-running account profile when possible.
+///
+/// Authorization is the only launch path that should reuse an existing
+/// browser instance. Normal account launches keep their existing new-window
+/// behaviour. The profile path remains the routing key, so two open accounts
+/// cannot receive each other's OAuth URL.
+pub(crate) fn launch_plan_reusing_profile_tab(
+    config: &CloakConfig,
+    plan: LaunchPlan,
+    options: &LaunchOptions,
+    preflight_started: Instant,
+) -> Result<LaunchResult> {
+    launch_plan_with_mode(config, plan, options, preflight_started, true)
+}
+
+fn launch_plan_with_mode(
+    config: &CloakConfig,
+    plan: LaunchPlan,
+    options: &LaunchOptions,
+    preflight_started: Instant,
+    prefer_existing_tab: bool,
+) -> Result<LaunchResult> {
     ensure_launch_not_cancelled(options.cancellation.as_deref())?;
     if plan.runtime.blocks_launch {
         return Err(CloakError::PrivacyGate(plan.runtime.message.clone()));
@@ -1473,7 +1498,15 @@ fn launch_plan(
         }
     }
     ensure_launch_not_cancelled(options.cancellation.as_deref())?;
-    let status_file = if is_keyed_browser_binary(&plan.browser_binary) {
+    // `account_profile_is_running` also sees orphaned Chromium helpers. Only
+    // a live primary process can receive a singleton tab request; otherwise
+    // the normal launch path must create the first window.
+    #[cfg(target_os = "macos")]
+    let primary_running = running_browser_pid(&plan.browser_binary, &plan.profile_path)?.is_some();
+    #[cfg(not(target_os = "macos"))]
+    let primary_running = already_running;
+    let reuse_existing_tab = prefer_existing_tab && primary_running;
+    let status_file = if is_keyed_browser_binary(&plan.browser_binary) && !reuse_existing_tab {
         license::mint_status_file(&config.cloakbrowser_root)
     } else {
         None
@@ -1490,17 +1523,29 @@ fn launch_plan(
     } else {
         StartupPolicy::Conservative
     };
-    let pid = match launch_browser_process(
-        &plan.browser_binary,
-        &plan.profile_path,
-        &argv,
-        (options.skip_geo || plan.geo.is_trusted())
-            .then_some(plan.geo.timezone.as_deref())
-            .flatten(),
-        license_key.as_deref().map(|key| key.as_str()),
-        status_file.as_deref(),
-        startup_policy,
-    ) {
+    let pid = match if reuse_existing_tab {
+        launch_existing_profile_tab(
+            &plan.browser_binary,
+            &plan.profile_path,
+            &url,
+            (options.skip_geo || plan.geo.is_trusted())
+                .then_some(plan.geo.timezone.as_deref())
+                .flatten(),
+            license_key.as_deref().map(|key| key.as_str()),
+        )
+    } else {
+        launch_browser_process(
+            &plan.browser_binary,
+            &plan.profile_path,
+            &argv,
+            (options.skip_geo || plan.geo.is_trusted())
+                .then_some(plan.geo.timezone.as_deref())
+                .flatten(),
+            license_key.as_deref().map(|key| key.as_str()),
+            status_file.as_deref(),
+            startup_policy,
+        )
+    } {
         Ok(pid) => pid,
         Err(err) => {
             license::remove_status_file(status_file.as_deref());
@@ -1565,6 +1610,84 @@ fn launch_plan(
     }
 
     Ok(result)
+}
+
+fn existing_profile_tab_args(profile_path: &Path, url: &str) -> [String; 2] {
+    [
+        format!("--user-data-dir={}", profile_path.display()),
+        url.to_string(),
+    ]
+}
+
+#[cfg(target_os = "macos")]
+fn launch_existing_profile_tab(
+    browser_binary: &Path,
+    profile_path: &Path,
+    url: &str,
+    timezone: Option<&str>,
+    license_key: Option<&str>,
+) -> Result<u32> {
+    running_browser_pid(browser_binary, profile_path)?.ok_or_else(|| {
+        CloakError::BrowserStartup("账号浏览器刚刚关闭，无法在已有实例中打开授权标签页".into())
+    })?;
+    let args = existing_profile_tab_args(profile_path, url);
+    let mut command = Command::new(browser_binary);
+    command.args(args);
+    if let Some(tz) = timezone {
+        command.env("TZ", tz);
+    }
+    if let Some(key) = license_key {
+        command.env("CLOAKBROWSER_LICENSE_KEY", key);
+    } else {
+        command.env_remove("CLOAKBROWSER_LICENSE_KEY");
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut request = command.spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = request.try_wait()? {
+            if !status.success() {
+                return Err(CloakError::BrowserStartup(
+                    "已有账号浏览器未能接收授权标签页请求".into(),
+                ));
+            }
+            return running_browser_pid(browser_binary, profile_path)?.ok_or_else(|| {
+                CloakError::BrowserStartup(
+                    "授权标签页请求完成后，账号浏览器实例没有保持运行".into(),
+                )
+            });
+        }
+        if Instant::now() >= deadline {
+            let _ = request.kill();
+            let _ = request.wait();
+            return Err(CloakError::BrowserStartup(
+                "已有账号浏览器未在规定时间内接收授权标签页请求".into(),
+            ));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn launch_existing_profile_tab(
+    browser_binary: &Path,
+    profile_path: &Path,
+    url: &str,
+    timezone: Option<&str>,
+    license_key: Option<&str>,
+) -> Result<u32> {
+    let args = existing_profile_tab_args(profile_path, url);
+    launch_browser_direct(
+        browser_binary,
+        &args,
+        timezone,
+        license_key,
+        None,
+        StartupPolicy::Fast,
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -5944,6 +6067,26 @@ mod tests {
                 "modern launch plan unexpectedly contained {prefix}"
             );
         }
+    }
+
+    #[test]
+    fn existing_profile_tab_request_reuses_profile_without_forcing_window() {
+        let args = existing_profile_tab_args(
+            Path::new("/tmp/NoTrace Browser/Accounts/work"),
+            "https://auth.openai.com/oauth/authorize?state=test",
+        );
+
+        assert_eq!(
+            args[0],
+            "--user-data-dir=/tmp/NoTrace Browser/Accounts/work"
+        );
+        assert_eq!(
+            args[1],
+            "https://auth.openai.com/oauth/authorize?state=test"
+        );
+        assert!(!args.iter().any(|arg| arg == "--new-window"));
+        assert!(!args.iter().any(|arg| arg.starts_with("--fingerprint=")));
+        assert!(!args.iter().any(|arg| arg.starts_with("--proxy-server=")));
     }
 
     #[test]

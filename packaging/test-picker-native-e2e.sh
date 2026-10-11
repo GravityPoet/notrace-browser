@@ -55,6 +55,8 @@ chmod 700 "$browser"
 mv "$browser" "$version_dir/chromium-fixture"
 ln -s "$version_dir/chromium-fixture" "$browser"
 ln -s "$version_dir" "$browser_root/current"
+cp "$version_dir/chromium-fixture" "$tmp/chromium-fixture-bin"
+chmod 700 "$tmp/chromium-fixture-bin"
 sha="$(shasum -a 256 "$browser" | awk '{print $1}')"
 printf '%s  %s\n' "$sha" "$browser_root/current/Chromium.app/Contents/MacOS/Chromium" > "$browser_root/current.sha256"
 chmod 600 "$browser_root/current.sha256"
@@ -187,8 +189,10 @@ PYFIX
 chmod 700 "$tmp/codex-fixture"
 CLOAK_SKIP_GEO=1 \
 CLOAK_AUTH_TEST_TIMED=1 \
+CLOAK_AUTH_TEST_SINGLETON=1 \
 CLOAK_AUTH_FIXTURE_PROFILE_GATE=1 \
 CLOAK_CODEX_BINARY="$tmp/codex-fixture" \
+CLOAK_BROWSER_BIN="$tmp/chromium-fixture-bin" \
 CLOAK_ACCOUNT_BASE="$account_base" \
 CLOAK_BROWSER_ROOT="$browser_root" \
 CLOAK_EXTENSION_SOURCE="$ROOT/extension/cloak-companion" \
@@ -230,6 +234,7 @@ node -e '
     "cpa-sync-pending-retry-success",
     "native-quota-weekly-only-progress",
     "native-auth-browser-close-stops-and-retry-recovers",
+    "native-auth-reuses-existing-profile-tab",
     "native-auth-success-after-browser-close-retained",
     "searched-account-context-preserves-selection",
     "account-context-submenu-and-restore",

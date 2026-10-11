@@ -761,8 +761,8 @@ pub fn login_account_auth_with_progress(
             let start = Instant::now();
             let plan = crate::build_launch_plan_for_url(config, name, &options, raw)
                 .map_err(browser_failure)?;
-            let launched =
-                crate::launch_plan(config, plan, &options, start).map_err(browser_failure)?;
+            let launched = crate::launch_plan_reusing_profile_tab(config, plan, &options, start)
+                .map_err(browser_failure)?;
             progress(AuthLoginProgress::WaitingBrowser);
             Ok(Some(AuthBrowserMonitor::new(launched)))
         },

@@ -1,7 +1,40 @@
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 #include <stdio.h>
+#include <signal.h>
+#include <stdlib.h>
 #include <unistd.h>
+
+static NSString *profilePathFromArguments(int argc, char **argv) {
+    for (int i = 1; i < argc; i++) {
+        NSString *argument = [NSString stringWithUTF8String:argv[i]];
+        if ([argument hasPrefix:@"--user-data-dir="]) {
+            return [argument substringFromIndex:@"--user-data-dir=".length];
+        }
+    }
+    return nil;
+}
+
+// The native E2E fixture models Chromium's per-profile singleton hand-off. A
+// second invocation with only a profile and URL records a tab request and
+// exits instead of creating another AppKit window. Real Chromium performs the
+// same hand-off before the client process becomes a second browser instance.
+static BOOL forwardExistingProfileTabIfNeeded(int argc, char **argv) {
+    if (![NSProcessInfo.processInfo.environment[@"CLOAK_AUTH_TEST_SINGLETON"] isEqual:@"1"]) return NO;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--new-window") == 0) return NO;
+    }
+    NSString *profile = profilePathFromArguments(argc, argv);
+    if (!profile || argc < 2) return NO;
+    NSString *pidPath = [profile stringByAppendingPathComponent:@".native-auth-browser.pid"];
+    int pid = [[NSString stringWithContentsOfFile:pidPath encoding:NSUTF8StringEncoding error:nil] intValue];
+    if (pid <= 1 || kill(pid, 0) != 0) return NO;
+    NSString *requestPath = [profile stringByAppendingPathComponent:@".native-auth-tab-requests"];
+    NSString *previous = [NSString stringWithContentsOfFile:requestPath encoding:NSUTF8StringEncoding error:nil] ?: @"";
+    NSString *url = [NSString stringWithUTF8String:argv[argc - 1]] ?: @"";
+    [[previous stringByAppendingFormat:@"%@\n", url] writeToFile:requestPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    return YES;
+}
 
 // Disposable native window fixture with explicit AppKit ownership. It never
 // browses the network, reads credentials or uses a real browser profile.
@@ -52,6 +85,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--version") == 0) { puts("Chromium 145.0.7632.109.2"); return 0; }
     }
+    if (forwardExistingProfileTabIfNeeded(argc, argv)) return 0;
     @autoreleasepool {
         if ([NSProcessInfo.processInfo.environment[@"CLOAK_AUTH_FIXTURE_PROFILE_GATE"] isEqual:@"1"]) {
             BOOL target = NO;
@@ -75,6 +109,7 @@ int main(int argc, char **argv) {
             for (NSString *argument in NSProcessInfo.processInfo.arguments) {
                 if (![argument hasPrefix:@"--user-data-dir="]) continue;
                 NSString *profile = [argument substringFromIndex:@"--user-data-dir=".length];
+                [@(getpid()).stringValue writeToFile:[profile stringByAppendingPathComponent:@".native-auth-browser.pid"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
                 [@"" writeToFile:[profile stringByAppendingPathComponent:@".native-auth-window-phases"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
             }
         }

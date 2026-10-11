@@ -443,8 +443,10 @@ const NATIVE_E2E_DRIVER: &str = r#"
       return row && row.querySelector('.infoValue')?.textContent?.trim() !== '未解析' ? row : null;
     }, '运行时来源解析完成');
     const runtimeText = runtimeRow.querySelector('.infoValue')?.textContent ?? '';
-    if (!runtimeText.includes('上游源缓存') || !runtimeText.includes('SHA-256 已验证')) {
-      throw new Error(`运行时来源没有准确显示源缓存 provenance：${runtimeText}`);
+    const sourceProvenanceValid = runtimeText.includes('上游源缓存') && runtimeText.includes('SHA-256 已验证');
+    const fixtureOverrideValid = runtimeText.includes('显式指定的自定义浏览器（不由 current.sha256 管理）');
+    if (!sourceProvenanceValid && !fixtureOverrideValid) {
+      throw new Error(`运行时来源没有准确显示 provenance：${runtimeText}`);
     }
     checks.push('runtime-source-provenance');
 
@@ -610,10 +612,27 @@ const NATIVE_E2E_DRIVER: &str = r#"
     setter.call(search, successAccount);
     search.dispatchEvent(new Event('input', { bubbles: true }));
     await waitFor(() => pane.querySelector('h1')?.textContent === successAccount, '延迟成功账号被选中');
+    document.querySelector('#workbench-account-tab').click();
+    const successHeader = pane.querySelector('.workbenchAccountHeader');
+    const successLaunch = await waitFor(() => {
+      const button = successHeader?.querySelector('.launchButton');
+      return button && button.textContent.trim() === '启动' && !button.disabled ? button : null;
+    }, '先启动成功测试账号');
+    successLaunch.click();
+    await waitFor(() => successHeader?.querySelector('.launchStatus')?.textContent.includes('已启动'), '成功测试账号浏览器已启动', 20000);
+    if (!(await invoke('account_is_running', { name: successAccount }))) throw new Error('成功测试账号浏览器未保持运行');
+    const browserCountBeforeAuth = await invoke('browser_process_status');
+    if (browserCountBeforeAuth.browser_count !== 1) throw new Error(`授权复用测试启动前浏览器实例数异常：${JSON.stringify(browserCountBeforeAuth)}`);
     document.querySelector('#workbench-broker-tab').click();
     const successAuthorize = () => pane.querySelector('.workbenchPrimaryActions .authorizationButton');
     await waitFor(() => successAuthorize() && !successAuthorize().disabled ? successAuthorize() : null, '延迟成功测试入口');
     successAuthorize().click();
+    await sleep(750);
+    const browserCountAfterAuth = await invoke('browser_process_status');
+    if (browserCountAfterAuth.browser_count !== browserCountBeforeAuth.browser_count) {
+      throw new Error(`授权没有复用已有账号实例，产生了第二个浏览器进程：${JSON.stringify(browserCountAfterAuth)}`);
+    }
+    checks.push('native-auth-reuses-existing-profile-tab');
     await waitFor(() => successAuthorize()?.textContent.includes('确认凭证中') && successAuthorize().disabled, '延迟成功等待凭证', 25000);
     const pendingAuth = await invoke('active_account_auth');
     if (pendingAuth?.phase !== 'confirming' || pendingAuth.cancelling) throw new Error('关闭后未进入确认阶段');
