@@ -1771,7 +1771,9 @@ describe("Cloak Picker dialog regressions", () => {
     expect(diagnostics?.textContent ?? "").toContain("独立账号数据");
     expect(diagnostics?.textContent ?? "").not.toContain("isolated-profile-storage");
     expect(document.querySelector(".detail")?.textContent).toContain("Chromium 145.0.7632.109");
-    expect(document.querySelector(".detail")?.textContent).toContain("上游源缓存（SHA-256 已验证");
+    expect(document.querySelector(".detail")?.textContent).toContain("开发预览模拟数据");
+    expect(document.querySelector(".detail")?.textContent).toContain("203.0.113.42");
+    expect(document.querySelector(".detail")?.textContent).toContain("出口 IP（开发模拟）");
     expect(document.querySelector(".launchStatus")?.textContent).toContain("已启动");
     expect(mockCommandCountForTest("launch_account")).toBe(1);
     expect(mockCommandCountForTest("launch_preflight")).toBe(0);

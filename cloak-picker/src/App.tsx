@@ -2853,6 +2853,7 @@ export default function App() {
   const workspaceStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties & {
     "--sidebar-width": string;
   };
+  const mockPreview = shouldUseMockTauri();
   const draggingGroup = draggingGroupLabel
     ? groupFilters.find((group) => group.label === draggingGroupLabel) ?? null
     : null;
@@ -3573,7 +3574,7 @@ export default function App() {
                     <InfoRow icon={<Tag size={15} />} label="区域" value={selected.region ?? "未设置"} />
                     <InfoRow icon={<Globe2 size={15} />} label="语言" value={selected.locale_enabled ? "跟随出口" : "关"} />
                     <InfoRow icon={<Network size={15} />} label="代理" value={proxyLabel} />
-                    <InfoRow label="出口 IP" value={plan?.geo.exit_ip ?? "启动时解析"} />
+                    <InfoRow label={mockPreview ? "出口 IP（开发模拟）" : "出口 IP"} value={plan?.geo.exit_ip ?? "启动时解析"} />
                     <InfoRow label="时区" value={plan?.geo.timezone ?? "启动时解析"} />
                     <InfoRow label="ASN" value={plan?.geo.asn ?? "启动时解析"} />
                     <InfoRow label="GeoIP 交叉确认" value={plan ? geoConsensusLabel(plan.geo.consensus) : "未解析"} />
@@ -3596,7 +3597,7 @@ export default function App() {
                       <span>预检</span><strong>{launchStatus.result.diagnostics.preflight_ms} ms</strong>
                       <span>启动</span><strong>{launchStatus.result.diagnostics.launch_ms} ms</strong>
                       <span>代理</span><strong>{launchStatus.result.diagnostics.proxy_display}</strong>
-                      <span>出口</span><strong>{launchStatus.result.diagnostics.exit_ip ?? "未取得"}</strong>
+                      <span>{mockPreview ? "出口（开发模拟）" : "出口"}</span><strong>{launchStatus.result.diagnostics.exit_ip ?? "未取得"}</strong>
                       <span>地区</span><strong>{launchStatus.result.diagnostics.country ?? "未取得"}</strong>
                       <span>缓存</span><strong>{launchStatus.result.diagnostics.geo_cache_hit ? "命中（5 分钟内）" : "未命中"}</strong>
                     </div>
@@ -6872,6 +6873,7 @@ function mockAccounts(): Account[] {
 }
 
 function mockLaunchPlan(account: Account, full: boolean): LaunchPlan {
+  const mockRuntimeMessage = "开发预览模拟数据：上游源缓存（SHA-256 仅用于界面演示；不代表真实出口或本机 TCC）";
   return {
     account: account.name,
     seed: account.seed,
@@ -6898,7 +6900,7 @@ function mockLaunchPlan(account: Account, full: boolean): LaunchPlan {
       selection: "current",
       provenance: "verified",
       blocks_launch: false,
-      message: "上游源缓存（SHA-256 已验证；不含本机 TCC 声明）",
+      message: mockRuntimeMessage,
     },
     engine_major: "145",
     engine_version: "145.0.7632.109",
@@ -6910,7 +6912,9 @@ function mockLaunchPlan(account: Account, full: boolean): LaunchPlan {
     },
     geo: full
       ? {
-          exit_ip: "45.66.129.206",
+          // TEST-NET-3 documentation address. This must never be replaced
+          // with the user's real VPS address during an IP migration.
+          exit_ip: "203.0.113.42",
           country: account.region,
           timezone: account.region === "JP" ? "Asia/Tokyo" : "America/Los_Angeles",
           asn: "AS64501",
