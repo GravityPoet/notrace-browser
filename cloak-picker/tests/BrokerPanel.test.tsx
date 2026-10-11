@@ -776,4 +776,25 @@ describe("统一授权续期窗口", () => {
     expect(document.querySelector('[role="alert"]')?.textContent).toContain("无法读取统一授权状态");
   });
 
+  it("closes JSON dialogs with Escape and returns focus to the invoking control", async () => {
+    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
+    const call: AuthCall = async function call<T>(command: string): Promise<T> {
+      if (command === "broker_overview") return overview(remote) as T;
+      return null as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    const findExportButton = () => [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "导出 JSON");
+    const exportButton = findExportButton()!;
+    exportButton.focus();
+    await act(async () => exportButton.click());
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.activeElement).toBe(document.querySelector('[role="dialog"] button'));
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await act(async () => { await new Promise(resolve => window.requestAnimationFrame(resolve)); });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(findExportButton());
+  });
+
 });

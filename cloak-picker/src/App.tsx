@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import {
   Fragment,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -518,6 +519,11 @@ export default function App() {
   const [selectedName, setSelectedName] = useState<string>("");
   const [rightPaneMode, setRightPaneMode] = useState<RightPaneMode>("broker");
   const [brokerBusy, setBrokerBusy] = useState(false);
+  const brokerBusyRef = useRef(false);
+  const handleBrokerBusyChange = useCallback((value: boolean) => {
+    brokerBusyRef.current = value;
+    setBrokerBusy(value);
+  }, []);
   const [brokerOverview, setBrokerOverview] = useState<BrokerOverview | null>(null);
   const [authorizationFilter, setAuthorizationFilter] = useState<BrokerAccountFilter>("all");
   const [accountSort, setAccountSort] = useState<BrokerAccountSort>("default");
@@ -2329,6 +2335,7 @@ export default function App() {
 
   async function launchAccount(account: Account) {
     if (forceCloseRef.current) return;
+    if (brokerBusyRef.current) { setError("授权操作进行中，请完成或取消后再启动浏览器。"); return; }
     setForceCloseStatus("");
     // A row launches on double click, which bypasses the button's disabled
     // state. Without this guard the second call cancels the first, so the user
@@ -2385,6 +2392,7 @@ export default function App() {
 
   async function launchWebStore(account: Account) {
     if (forceCloseRef.current) return;
+    if (brokerBusyRef.current) { setError("授权操作进行中，请完成或取消后再打开商店。"); return; }
     setForceCloseStatus("");
     if (account.trashed) return;
     if (plan?.account === account.name && plan.runtime.blocks_launch) {
@@ -2816,8 +2824,8 @@ export default function App() {
   const selectedBrowserLaunchPending = launchStatusIsPending && launchStatus?.target === "chatgpt";
   const selectedLaunchButton = selected ? (
     <button
-      className="launchButton"
-      disabled={busy || forceCloseBusy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "chatgpt")}
+      className={`launchButton ${selectedBrowserLaunchPending ? "launchButton-cancel" : ""}`}
+      disabled={busy || brokerBusy || forceCloseBusy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "chatgpt")}
       title={runtimeLaunchBlocked ? plan?.runtime.message : selected.trashed ? `临时启动 ${selected.name}，保持回收站状态` : `启动 ${selected.name}`}
       onClick={() => void (selectedBrowserLaunchPending ? cancelLaunch(selected) : launchAccount(selected))}
     >
@@ -3346,10 +3354,11 @@ export default function App() {
             selectedAccount={selected ? { name: selected.name, trashed: selected.trashed } : undefined}
             accountVisible={!bulkSelectionMode && rightPaneMode === "broker"}
             onOverviewChange={setBrokerOverview}
-            onBusyChange={setBrokerBusy}
+            onBusyChange={handleBrokerBusyChange}
+            browserBusy={busy || forceCloseBusy || Boolean(launchStatus && ["checking", "starting", "cancelling"].includes(launchStatus.phase))}
             onImportedAccount={handleImportedAuthorization}
             searchControls={workbenchSearch}
-            workbenchHeader={(
+            workbenchHeader={(authorizationAction) => (
               <>
                 <div className="workbenchAuthorizationFilters" aria-label="全环境授权筛选">
                   <span className="workbenchFilterScope">全环境 · 含回收站</span>
@@ -3380,7 +3389,10 @@ export default function App() {
                       {webStoreStatusLabel && <span className="webStoreStatus">{webStoreStatusLabel}</span>}
                     </div>
                     <div className="workbenchAccountActions">
-                      {selectedLaunchButton}
+                      <div className="workbenchPrimaryActions" role="group" aria-label="当前账号操作">
+                        {authorizationAction}
+                        {selectedLaunchButton}
+                      </div>
                       {selected?.trashed && <button className="secondaryButton" type="button" disabled={busy || brokerBusy} title="恢复到活跃列表，保留浏览器环境" onClick={() => void restoreAccount(selected)}><ArchiveRestore size={15} />恢复</button>}
                     </div>
                   </header>
@@ -3511,7 +3523,7 @@ export default function App() {
                 ) : (
                   <div className="detailInlineActions" aria-label="账号操作">
                     <ActionButton icon={<Store size={15} />} label={launchStatusIsPending && launchStatus?.target === "web-store" ? "取消" : "商店"}
-                      disabled={busy || forceCloseBusy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "web-store")}
+                      disabled={busy || brokerBusy || forceCloseBusy || planLoading || runtimeLaunchBlocked || (launchStatusIsPending && launchStatus?.target !== "web-store")}
                       onClick={() => void (launchStatusIsPending && launchStatus?.target === "web-store" ? cancelLaunch(selected) : launchWebStore(selected))} />
                     <ActionButton icon={<Tag size={15} />} label="标记" onClick={event => openDialog({ kind: "mark", account: selected, value: selected.mark_note ?? "", color: normalizeMarkColor(selected.mark_color) }, event.currentTarget)} />
                     <ActionButton icon={<MessageSquareText size={15} />} label="备注" onClick={event => openDialog({ kind: "note", account: selected, value: selected.note ?? "" }, event.currentTarget)} />

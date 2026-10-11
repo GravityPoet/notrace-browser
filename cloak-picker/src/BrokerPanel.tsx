@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowDownUp, Clock3, Download, FileJson, KeyRound, Link2, Loader2, RefreshCw, RotateCcw, Search, UploadCloud } from "lucide-react";
+import { ArrowDownUp, Clock3, Download, FileJson, KeyRound, Link2, Loader2, RefreshCw, RotateCcw, Search, UploadCloud, X } from "lucide-react";
 import { authProgressLabels, type ActiveAuth, type AuthCall, type AuthLoginPhase, type AuthStatus } from "./AuthPanel";
 
 export type BrokerMetadata = {
@@ -126,9 +126,10 @@ export function authorizationState(row: BrokerRow): BrokerAuthorizationState {
   if (row.local.state === "missing") return "never_authorized";
   return row.local.state === "reauth_required" ? "reauth_required" : "authorized";
 }
-export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false, focusedAccount = "", selectedProfileId, selectedAccount, accountVisible = true, searchControls, workbenchHeader, children, onOverviewChange, onImportedAccount }: {
+export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false, focusedAccount = "", selectedProfileId, selectedAccount, accountVisible = true, searchControls, workbenchHeader, browserBusy = false, children, onOverviewChange, onImportedAccount }: {
   call?: AuthCall; onBusyChange?: (busy: boolean) => void; embedded?: boolean; focusedAccount?: string;
-  selectedProfileId?: string; selectedAccount?: Pick<BrokerRow, "name" | "trashed">; accountVisible?: boolean; searchControls?: ReactNode; workbenchHeader?: ReactNode;
+  selectedProfileId?: string; selectedAccount?: Pick<BrokerRow, "name" | "trashed">; accountVisible?: boolean; searchControls?: ReactNode;
+  workbenchHeader?: ReactNode | ((authorizationAction: ReactNode) => ReactNode); browserBusy?: boolean;
   children?: ReactNode; onOverviewChange?: (overview: BrokerOverview) => void;
   onImportedAccount?: (profileId: string) => void;
 }) {
@@ -165,6 +166,37 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   const overviewRef = useRef<BrokerOverview | null>(null);
   const overviewCallback = useRef(onOverviewChange);
   overviewCallback.current = onOverviewChange;
+  const jsonDialogRef = useRef<HTMLDivElement | null>(null);
+  const jsonTriggerRef = useRef<HTMLElement | null>(null);
+  const jsonDialogBusy = useRef(false);
+  jsonDialogBusy.current = Boolean(busy);
+  const jsonDialogOpen = Boolean(exportRow || importPreview);
+  useEffect(() => {
+    if (!jsonDialogOpen) return;
+    const previous = jsonTriggerRef.current ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    const controls = () => Array.from(jsonDialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]') ?? []);
+    (controls()[0] ?? jsonDialogRef.current)?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      const dialog = jsonDialogRef.current;
+      if (!dialog) return;
+      if (event.key === "Escape") {
+        event.preventDefault(); event.stopPropagation();
+        if (!jsonDialogBusy.current) { setExportRow(null); setImportPreview(null); }
+      } else if (event.key === "Tab") {
+        const items = controls();
+        const first = items[0]; const last = items.at(-1);
+        if (!first || !last) { event.preventDefault(); dialog.focus(); return; }
+        if (!dialog.contains(document.activeElement) || (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+          event.preventDefault(); (event.shiftKey ? last : first).focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      window.requestAnimationFrame(() => { if (!jsonDialogRef.current && previous?.isConnected) previous.focus(); });
+    };
+  }, [jsonDialogOpen]);
   function acceptOverview(next: BrokerOverview) {
     const previous = overviewRef.current;
     // A temporary tunnel outage does not erase the last known managed grant.
@@ -212,6 +244,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   useEffect(() => { onBusyChange?.(Boolean(busy || activeAuth)); }, [busy, activeAuth, onBusyChange]);
   async function run(label: string, operation: () => Promise<void>) {
     if (inFlight.current) return;
+    onBusyChange?.(true);
     inFlight.current = true; setBusy(label); setMessage(""); setError(""); setErrorTarget(label); cancelRequested.current = false;
     try { await operation(); } catch (caught) { if (mounted.current) setError(String(caught)); }
     finally { inFlight.current = false; if (mounted.current) { setBusy(""); setLogin(null); } await readActiveAuth(); }
@@ -221,6 +254,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     if (mounted.current) { acceptOverview(next); setAdminKey(""); setEditing(false); setMessage("续期服务已连接"); }
   }
   async function browserLogin(row: BrokerRow) {
+    if (browserBusy) throw new Error("浏览器正在启动或关闭，请稍后再授权");
     setLogin({ name: row.name, phase: "preparing", cancelling: false });
     await call("login_account_auth", { name: row.name });
     if (cancelRequested.current) throw new Error("授权已取消，未交给 Broker");
@@ -395,9 +429,30 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     { value: "unauthorized", label: `未授权 ${accountCounts.unauthorized}` },
   ];
   const disabled = Boolean(busy || activeAuth);
+  const headerHasAuthorization = typeof workbenchHeader === "function";
+  const matchedHeaderRow = overview?.accounts.find(row => row.profile_id === selectedProfileId);
+  const headerRow = matchedHeaderRow && selectedAccount ? { ...matchedHeaderRow, ...selectedAccount } : matchedHeaderRow;
   const visibleLogin = login ?? (activeAuth ? { name: activeAuth.account, phase: activeAuth.phase, cancelling: activeAuth.cancelling } : null);
   const loginLabel = visibleLogin ? visibleLogin.cancelling ? "正在取消授权…" : visibleLogin.phase === "handoff" ? "授权成功，正在交给 Broker…" : authProgressLabels[visibleLogin.phase] : "";
-  const activity = visibleLogin && (<div className="brokerRowFeedback" role="status"><strong>{visibleLogin.name}</strong><p><Loader2 className="spin" size={14} /> {loginLabel}</p>{visibleLogin.phase !== "handoff" && <button className="secondaryButton" type="button" disabled={visibleLogin.cancelling} onClick={() => void cancelAuthorization(visibleLogin.name)}>取消授权</button>}</div>);
+  const activity = visibleLogin && (<div className="brokerRowFeedback" role="status"><strong>{visibleLogin.name}</strong><p><Loader2 className="spin" size={14} /> {loginLabel}</p>{visibleLogin.phase !== "handoff" && !(headerHasAuthorization && headerRow?.name === visibleLogin.name) && <button className="secondaryButton" type="button" disabled={visibleLogin.cancelling} onClick={() => void cancelAuthorization(visibleLogin.name)}>取消授权</button>}</div>);
+  function authorizationAction(row: BrokerRow, compact = false) {
+    const pending = visibleLogin?.name === row.name ? visibleLogin : null;
+    const historical = authorizationState(row) === "reauth_required";
+    const external = !["no_trace", "broker"].includes(row.local.authority) && row.local.state !== "missing";
+    const reconnect = Boolean(row.remote || historical || external);
+    const label = reconnect ? "重新授权" : row.local.state === "missing" ? "授权" : "纳管授权";
+    const fullLabel = row.remote ? "重新授权" : historical || external ? "重新授权并纳管" : row.local.state === "missing" ? "授权并纳管" : "交给 Broker";
+    if (compact && pending) return <button className="authorizationButton authorizationButton-secondary" type="button" disabled={pending.cancelling || pending.phase === "handoff"} onClick={() => void cancelAuthorization(row.name)}>
+      {pending.cancelling || pending.phase === "handoff" ? <Loader2 size={16} className="spin" /> : <X size={16} />}{pending.phase === "handoff" ? "保存授权中…" : pending.cancelling ? "取消中…" : "取消授权"}
+    </button>;
+    return <button className={compact ? `authorizationButton${row.remote && !historical ? " authorizationButton-secondary" : ""}` : workbench && (!row.remote || historical) ? "primaryButton" : "secondaryButton"}
+      type="button" disabled={disabled || !brokerConnected || browserBusy}
+      title={!brokerConnected ? "请先连接续期服务" : browserBusy ? "浏览器操作完成后可授权" : reconnect ? `重新授权 ${row.name}` : `为 ${row.name} 授权并启用自动续期`}
+      onClick={() => void run(row.profile_id, () => reconnect ? reauthorize(row) : manage(row))}>
+      <KeyRound size={compact ? 16 : 14} />{compact ? label : fullLabel}
+    </button>;
+  }
+  const headerAuthorization = headerRow ? authorizationAction(headerRow, true) : selectedAccount ? <button className="authorizationButton" type="button" disabled title="正在读取当前账号授权状态"><KeyRound size={16} />授权</button> : null;
   const importAccount = importPreview?.accounts[importAccountIndex];
   const importEmail = importAccount?.email?.toLocaleLowerCase() ?? "";
   const importTargets = (overview?.accounts ?? []).filter(row => Boolean(importEmail) && (
@@ -414,12 +469,12 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     <div className={`brokerPanelHeader ${embedded ? "brokerPanelHeaderEmbedded" : ""}`}>
       {workbench ? searchControls : <div>{embedded ? null : <><span className="eyebrow">授权管理中心</span><h2 id="cloak-editor-dialog-title">统一授权续期</h2><p>查看谁负责刷新，以及各端是否收到最新凭据。</p></>}</div>}
       <div className="brokerPanelHeaderActions">
-        <button className="secondaryButton" type="button" disabled={disabled} onClick={() => void run("import-json", importJson)}><UploadCloud size={14} />{workbench ? "导入 JSON" : "导入/转换 JSON"}</button>
+        <button className="secondaryButton" type="button" disabled={disabled} onClick={event => { jsonTriggerRef.current = event.currentTarget; void run("import-json", importJson); }}><UploadCloud size={14} />{workbench ? "导入 JSON" : "导入/转换 JSON"}</button>
         <button className={workbench ? "iconButton" : "secondaryButton"} aria-label="读取授权状态" title="读取授权状态" type="button" disabled={disabled} onClick={() => void run("status", read)}><RefreshCw size={14} />{!workbench && "读取状态"}</button>
         {workbench && <button className={`brokerServiceButton ${brokerConnected ? "connected" : "disconnected"}`} type="button" aria-expanded={editing} disabled={disabled} onClick={() => setEditing(!editing)}><span className="brokerAuthDot" aria-hidden="true" />{!overview ? "连接中" : brokerConnected ? "续期服务" : "服务未连接"}</button>}
       </div>
     </div>
-    {workbench && workbenchHeader}
+    {workbench && (typeof workbenchHeader === "function" ? workbenchHeader(headerAuthorization) : workbenchHeader)}
     <div className={workbench ? "workbenchBody" : "brokerPanelBody"}>
     {overview?.configured && !editing ? !workbench && <p className="inspectorHint">{overview.connected ? "续期服务已连接" : "续期服务暂不可用"} · {overview.endpoint} <button className="textButton" type="button" onClick={() => setEditing(true)} disabled={disabled}>更换连接</button></p> : <div className="brokerConnection">
       <input aria-label="Broker 地址" placeholder="续期服务地址" value={endpoint} onChange={event => setEndpoint(event.target.value)} disabled={disabled} />
@@ -481,14 +536,14 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
               ? `未授权 · ${localStatus}`
               : `已授权 · ${localStatus}`;
       return <article className={`brokerRow ${historicalAuthorization ? "brokerRowHistorical" : ""}`} key={row.profile_id}>
-        <div className="brokerRowTop"><div className="brokerRowMain">{!workbench && <strong>{row.name}</strong>}<span className={`brokerAuthStatus brokerAuthStatus-${accountState}`}><span className={`brokerAuthDot brokerAuthDot-${accountState}`} aria-hidden="true" />{row.trashed ? "回收站账号" : "浏览器账号"} · {accountState === "unknown" ? "托管状态待确认" : accountStatusLabel}</span>{workbench && <span>套餐：{planLabel(remote ? remote.plan_type : row.local.plan_type)}{grantEmail && grantEmail !== row.name ? ` · 授权账号：${grantEmail}` : ""}</span>}</div>
+        <div className="brokerRowTop"><div className="brokerRowMain">{!workbench && <strong>{row.name}</strong>}<span className={`brokerAuthStatus brokerAuthStatus-${accountState}`}><span className={`brokerAuthDot brokerAuthDot-${accountState}`} aria-hidden="true" />{row.trashed ? "回收站账号" : "浏览器账号"} · {accountState === "unknown" ? "托管状态待确认" : accountStatusLabel}</span>{workbench && <span>{remote?.plan_type || row.local.plan_type ? `套餐：${planLabel(remote ? remote.plan_type : row.local.plan_type)}` : "套餐未知"}{grantEmail && grantEmail !== row.name ? ` · 授权账号：${grantEmail}` : ""}</span>}</div>
           <div className="brokerRowActions">{remote ? <>
-            <button className={workbench && historicalAuthorization ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected} title="打开此账号的登录环境，重新取得授权凭据" onClick={() => void run(row.profile_id, () => reauthorize(row))}><KeyRound size={14} />重新授权</button>
+            {!headerHasAuthorization && authorizationAction(row)}
             {!historicalAuthorization && <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { try { await call("broker_refresh_account", { profileId: row.profile_id }); } catch (caught) { await read(); throw caught; } await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>}
             {cpaButtonLabel && <button className={workbench && !historicalAuthorization && !cpaSynced ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected || (historicalAuthorization && !remote.cpa_enabled)} onClick={() => void run(row.profile_id, () => updateCpa(row, historicalAuthorization ? false : !cpaSynced))}>{cpaButtonLabel}</button>}
             {!historicalAuthorization && <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected || quotaLoadingProfile !== null} title="仅读取上游 Codex 额度，不会刷新授权或消耗主动重置次数" onClick={() => void readQuota(row)}>{quotaLoading ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}{quotaLoading ? "读取中…" : "读取额度"}</button>}
-            <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => { setPreserveRefreshToken(false); setImportPreview(null); setExportRow(row); setJsonFormat("auth_json"); }}><Download size={14} />导出 JSON</button>
-          </> : <button className={workbench ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, () => externalGrant ? reauthorize(row) : manage(row))}>{rowBusy ? <Loader2 className="spin" size={14} /> : needsLogin || needsReauthLocal || externalGrant ? <KeyRound size={14} /> : <UploadCloud size={14} />}{rowBusy ? "授权处理中…" : needsLogin ? "授权并纳管" : needsReauthLocal || externalGrant ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
+            <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={event => { jsonTriggerRef.current = event.currentTarget; setPreserveRefreshToken(false); setImportPreview(null); setExportRow(row); setJsonFormat("auth_json"); }}><Download size={14} />导出 JSON</button>
+          </> : !headerHasAuthorization && <button className={workbench ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected || browserBusy} onClick={() => void run(row.profile_id, () => externalGrant ? reauthorize(row) : manage(row))}>{rowBusy ? <Loader2 className="spin" size={14} /> : needsLogin || needsReauthLocal || externalGrant ? <KeyRound size={14} /> : <UploadCloud size={14} />}{rowBusy ? "授权处理中…" : needsLogin ? "授权并纳管" : needsReauthLocal || externalGrant ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
         </div>
         {!workbench && visibleLogin?.name === row.name && activity}
         {error && errorTarget === row.profile_id && !(historicalAuthorization && repeatsAuthorizationState(error)) && <div className="brokerRowFeedback error" role="alert"><p>{error}</p></div>}
@@ -500,11 +555,12 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
             <div className="brokerQuotaHeader"><strong>额度</strong><span>查询于 {time(quota.fetched_at)}</span></div>
             {quota.windows.length > 0 ? <div className="brokerQuotaWindows">{[...quota.windows].sort((a, b) => (a.window_minutes ?? Number.MAX_SAFE_INTEGER) - (b.window_minutes ?? Number.MAX_SAFE_INTEGER)).map((window, index) => <QuotaWindowCard key={`${window.name}-${window.window_minutes ?? "unknown"}-${index}`} window={window} />)}</div> : <p className="brokerQuotaUnavailable">上游未返回额度窗口</p>}
             {(() => {
-              const resetCreditsTone = !quota.reset_count_available ? "unavailable" : quota.reset_count === 0 ? "empty" : "available";
+              const resetCount = quota.reset_count_available && typeof quota.reset_count === "number" && Number.isSafeInteger(quota.reset_count) && quota.reset_count >= 0 ? quota.reset_count : null;
+              const resetCreditsTone = resetCount === null ? "unavailable" : resetCount === 0 ? "empty" : "available";
               return <div className={`brokerQuotaResetCredits brokerQuotaResetCredits-${resetCreditsTone}`} role="status" aria-label="主动重置剩余次数">
                 <RotateCcw size={13} aria-hidden="true" />
                 <span>主动重置剩余</span>
-                <b>{quota.reset_count_available ? `${quota.reset_count ?? 0} 次` : "上游未提供"}</b>
+                <b>{resetCount === null ? "上游未提供" : `${resetCount} 次`}</b>
               </div>;
             })()}
           </section>}
@@ -519,8 +575,8 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     {children}
     </div>
     {exportRow && createPortal(<div className="brokerJsonOverlay">
-      <div className="brokerJsonCard" role="dialog" aria-modal="true" aria-label="导出 JSON">
-      <div className="brokerJsonCardHeader"><div><strong>导出 JSON</strong><span>{exportRow.name}</span></div><button className="iconButton" type="button" aria-label="关闭导出 JSON" onClick={() => setExportRow(null)}>×</button></div>
+      <div ref={jsonDialogRef} tabIndex={-1} className="brokerJsonCard" role="dialog" aria-modal="true" aria-label="导出 JSON">
+      <div className="brokerJsonCardHeader"><div><strong>导出 JSON</strong><span>{exportRow.name}</span></div><button className="iconButton" type="button" disabled={disabled} aria-label="关闭导出 JSON" onClick={() => setExportRow(null)}>×</button></div>
       <label className="brokerJsonField">导出格式<select value={jsonFormat} onChange={(event) => setJsonFormat(event.target.value as BrokerJsonFormat)} disabled={disabled}>{jsonFormats.map((format) => <option value={format.value} key={format.value}>{format.label}</option>)}</select></label>
       {jsonFormat === "auth_json" && <p className="brokerJsonHint">适用于官方 Codex；上传到 CPA 时，请选择“CPA”格式。</p>}
       <label className="brokerJsonCheckbox"><input type="checkbox" checked={!preserveRefreshToken} onChange={(event) => setPreserveRefreshToken(!event.target.checked)} /><span>清空 refresh_token（推荐）</span></label>
@@ -529,7 +585,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       </div>
     </div>, document.body)}
     {importPreview && createPortal(<div className="brokerJsonOverlay">
-      <div className="brokerJsonCard" role="dialog" aria-modal="true" aria-label="JSON 导入与转换">
+      <div ref={jsonDialogRef} tabIndex={-1} className="brokerJsonCard" role="dialog" aria-modal="true" aria-label="JSON 导入与转换">
       <div className="brokerJsonCardHeader"><div><strong>导入授权 JSON</strong><span>{importPreview.account_count} 个账号 · {importPreview.detected_format}</span></div><button className="iconButton" type="button" disabled={disabled} aria-label="关闭 JSON 导入与转换" onClick={() => setImportPreview(null)}>×</button></div>
       <p className="brokerJsonPath" title={importPreview.path}>{importPreview.path}</p>
       <div className="brokerFilterTabs brokerJsonMode" role="group" aria-label="JSON 处理方式"><button className={`brokerFilterTab ${importMode === "manage" ? "active" : ""}`} type="button" aria-pressed={importMode === "manage"} disabled={disabled} onClick={() => { setImportMode("manage"); setError(""); }}>导入并纳管</button><button className={`brokerFilterTab ${importMode === "convert" ? "active" : ""}`} type="button" aria-pressed={importMode === "convert"} disabled={disabled} onClick={() => { setImportMode("convert"); setError(""); }}>仅转换文件</button></div>

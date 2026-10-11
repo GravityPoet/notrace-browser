@@ -1544,10 +1544,13 @@ summary:focus-visible {
 .workbenchAuthorizationFilters .brokerFilterTab small { margin-left: 3px; font-size: 10px; font-variant-numeric: tabular-nums; opacity: 0.75; }
 .workbenchAuthorizationFilters .issue { color: var(--danger); }
 .workbenchAuthorizationFilters .issue.active { background: var(--danger-soft); box-shadow: none; }
-.workbenchAccountHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 16px 18px 12px; min-width: 0; }
+.workbenchAccountHeader { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 12px 16px; padding: 16px 18px 12px; min-width: 0; }
+.workbenchAccountHeader .titleBlock { flex: 1 1 220px; min-width: 0; }
 .workbenchAccountHeader .accountNameHeading { font-size: 19px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
 .workbenchAccountHeader .accountNameControl { width: fit-content; }
-.workbenchAccountActions { display: flex; align-items: center; flex: 0 0 auto; gap: 8px; margin-top: 8px; }
+.workbenchAccountActions { display: flex; align-items: center; flex-wrap: wrap; flex: 0 0 auto; max-width: 100%; gap: 8px; margin-top: 8px; margin-left: auto; }
+.workbenchPrimaryActions { display: flex; align-items: center; gap: 8px; }
+.workbenchAccountActions .workbenchPrimaryActions > button { min-height: 36px; min-width: 88px; padding-inline: 14px; white-space: nowrap; font-size: 13px; }
 .workbenchAccountActions > button { white-space: nowrap; }
 .workbenchAccountHeader .launchButton { flex: 0 0 auto; white-space: nowrap; }
 .workbenchAccountContext { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
@@ -1563,6 +1566,7 @@ summary:focus-visible {
 .workbenchBody .brokerRow { padding: 16px; gap: 16px; border-radius: 12px; }
 .workbenchBody .brokerRowTop { flex-direction: column; }
 .workbenchBody .brokerRowActions { gap: 6px; }
+.workbenchBody .brokerRowActions:empty { display: none; }
 .workbenchBody .brokerRowMain > strong { font-size: 14px; }
 .workbenchBody .brokerStatus { gap: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
 .workbenchBody .brokerStatus b { font-size: 15px; font-weight: 600; }
@@ -2168,6 +2172,7 @@ h2 {
 .secondaryButton,
 .dangerButton,
 .launchButton,
+.authorizationButton,
 .subtleButton,
 .actionButton {
   display: inline-flex;
@@ -2216,6 +2221,7 @@ h2 {
 .secondaryButton:active,
 .dangerButton:active,
 .launchButton:active,
+.authorizationButton:active,
 .subtleButton:active,
 .actionButton:active {
   transform: translateY(1px);
@@ -2238,7 +2244,17 @@ h2 {
 
 .launchButton {
   flex: 0 0 auto;
+  background: #15803d;
+  border-color: transparent;
+  color: #ffffff;
 }
+.launchButton:hover:not(:disabled) { background: #166534; color: #ffffff; }
+.authorizationButton { border-color: transparent; background: var(--accent); color: #ffffff; }
+.authorizationButton:hover:not(:disabled) { background: #0066cc; }
+.authorizationButton-secondary, .launchButton.launchButton-cancel { border-color: rgba(0, 113, 227, 0.35); background: #f0f6ff; color: #0066cc; }
+.authorizationButton-secondary:hover:not(:disabled), .launchButton.launchButton-cancel:hover:not(:disabled) { background: #e0edff; color: #0066cc; }
+.authorizationButton:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.launchButton:focus-visible { outline: 2px solid #15803d; outline-offset: 3px; }
 
 .dangerButton {
   border-color: var(--danger);
@@ -3701,6 +3717,14 @@ button:disabled {
 .brokerQuotaResetCredits-available { border-color: rgba(23, 100, 59, 0.2); background: #edf8f0; color: #17643b; }
 .brokerQuotaResetCredits-empty { border-color: rgba(180, 35, 24, 0.22); background: #fff1f0; color: #b42318; }
 .brokerQuotaResetCredits-unavailable { border-color: rgba(154, 75, 0, 0.2); background: #fff4e6; color: #9a4b00; }
+@container (max-width: 560px) {
+  .workbenchAccountHeader .titleBlock { flex-basis: 100%; }
+  .workbenchAccountActions { margin-top: 0; }
+  .workbenchAuthorizationFilters .brokerFilterTabs { flex-wrap: wrap; }
+  .workbenchBody .brokerStatus { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .brokerQuotaWindows { grid-template-columns: 1fr; }
+  .brokerQuotaResetCredits { flex-wrap: wrap; }
+}
 .brokerError { color: var(--danger); font-size: 12px; margin: 0; }
 .brokerTransientError { color: #8a4b08; }
 .brokerJsonOverlay { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 24px; background: rgba(15, 23, 30, 0.24); backdrop-filter: blur(6px); }

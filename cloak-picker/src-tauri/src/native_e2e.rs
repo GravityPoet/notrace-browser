@@ -557,7 +557,21 @@ const NATIVE_E2E_DRIVER: &str = r#"
     search.dispatchEvent(new Event('input', { bubbles: true }));
     await waitFor(() => pane.querySelector('h1')?.textContent === closeAccount, '关闭授权测试账号被选中');
     document.querySelector('#workbench-broker-tab').click();
-    const closeAuthorize = () => Array.from(pane.querySelectorAll('.brokerRow button')).find(button => button.textContent.trim() === '授权并纳管');
+    const closeAuthorize = () => (
+      pane.querySelector('.workbenchPrimaryActions .authorizationButton')
+      || Array.from(pane.querySelectorAll('.brokerRow button')).find(button => button.textContent.trim() === '授权并纳管')
+      || Array.from(pane.querySelectorAll('.brokerRow button')).find(button => button.textContent.trim() === '重新授权并纳管')
+    );
+    const closeLaunch = () => pane.querySelector('.workbenchPrimaryActions .launchButton');
+    await waitFor(() => {
+      const authorizeButton = closeAuthorize();
+      const launchButton = closeLaunch();
+      return authorizeButton && launchButton && authorizeButton.parentElement === launchButton.parentElement
+        && authorizeButton.classList.contains('authorizationButton')
+        && launchButton.classList.contains('launchButton')
+        ? authorizeButton
+        : null;
+    }, '当前账号主操作同组');
     (await waitFor(() => { const button = closeAuthorize(); return button && !button.disabled ? button : null; }, '关闭授权测试入口可用')).click();
     await waitFor(() => document.body.textContent.includes('授权页已打开'), '原生授权等待开始');
     await sleep(12000);

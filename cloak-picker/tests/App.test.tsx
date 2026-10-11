@@ -252,7 +252,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(search.value).toBe("");
     expect(panel.querySelectorAll('.brokerRow')).toHaveLength(1);
     await inputText(search, "demo-alpha@example.test");
-    await click(buttonWithText("授权并纳管", panel));
+    await click(buttonWithText("授权", panel.querySelector('.workbenchAccountActions')!));
     await settle(400);
     expect(mockCommandCountForTest("login_account_auth")).toBe(1);
     expect(mockCommandCountForTest("broker_push_account")).toBe(1);
@@ -303,7 +303,7 @@ describe("Cloak Picker dialog regressions", () => {
     for (const view of ["授权与续期", "账号资料"]) {
       await click(buttonWithText(view));
       const actions = header.querySelector('.workbenchAccountActions')!;
-      expect(Array.from(actions.querySelectorAll('button'), button => button.textContent?.trim())).toEqual(["临时启动", "恢复"]);
+      expect(Array.from(actions.querySelectorAll('button'), button => button.textContent?.trim())).toEqual(["授权", "临时启动", "恢复"]);
       expect(buttonWithText("恢复", actions).closest('details')).toBeNull();
     }
     await click(buttonWithText("恢复", header));
@@ -311,7 +311,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(mockCommandCountForTest("restore_account")).toBe(1);
     expect(document.querySelector('.workbenchAccountHeader h1')?.textContent).toBe("demo-gamma");
     expect(document.querySelector('#cloak-account-active-tab')?.getAttribute('aria-selected')).toBe("true");
-    expect(Array.from(header.querySelectorAll('.workbenchAccountActions button'), button => button.textContent?.trim())).toEqual(["启动"]);
+    expect(Array.from(header.querySelectorAll('.workbenchAccountActions button'), button => button.textContent?.trim())).toEqual(["授权", "启动"]);
     expect(buttonWithText("账号资料").getAttribute('aria-selected')).toBe("true");
   });
 
@@ -359,7 +359,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(Array.from(document.querySelectorAll('.accountAuthorization'), element => element.textContent?.trim())).toEqual(["需重新授权", "需重新授权"]);
     await click(accountRow("demo-beta"));
     await click(buttonWithText("授权与续期"));
-    expect(buttonWithText("重新授权").className).toBe("primaryButton");
+    expect(buttonWithText("重新授权").className).toContain("authorizationButton");
     expect(document.querySelector('.workbenchAccountHeader h1')?.textContent).toBe("demo-beta");
     expect(mockCommandCountForTest("login_account_auth")).toBe(0);
     await click(buttonWithText("需重新授权", filters));
