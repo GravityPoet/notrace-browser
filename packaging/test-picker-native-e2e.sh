@@ -247,6 +247,7 @@ node -e '
     "close-all-native-command",
     "migration-tab-keyboard-aria-controls",
     "native-tag-membership-counts-and-navigation",
+    "native-tag-delete-removes-members-preserves-accounts",
     "account-delete-native-confirmation",
   ];
   const missing = required.filter((check) => !report.checks.includes(check));

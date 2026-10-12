@@ -266,7 +266,8 @@ type DialogState =
   | { kind: "bulkMark"; accounts: Account[]; value: string; color: MarkColor }
   | { kind: "bulkDelete"; accounts: Account[] }
   | { kind: "bulkPermanentDelete"; accounts: Account[] }
-  | { kind: "deleteGroup"; groupLabel: string; count: number; returnToManage?: boolean };
+  | { kind: "deleteGroup"; groupLabel: string; count: number; returnToManage?: boolean }
+  | { kind: "deleteTag"; label: string; accounts: Account[] };
 
 type GroupContextMenuState = {
   groupLabel: string;
@@ -343,6 +344,7 @@ const mockNoteOverrides = new Map<string, string | null>();
 const mockGroupOverrides = new Map<string, string | null>();
 const mockCommandCounts = new Map<string, number>();
 const mockCommandFailures = new Map<string, number>();
+const mockCommandFailuresByAccount = new Map<string, number>();
 const mockCancelledLaunches = new Set<string>();
 const mockStartupErrorCallbacks = new Map<string, Array<(message: string) => void>>();
 const mockTrashedOverrides = new Map<string, boolean>();
@@ -369,6 +371,7 @@ export function resetMockCommandsForTest() {
   mockGroupOverrides.clear();
   mockCommandCounts.clear();
   mockCommandFailures.clear();
+  mockCommandFailuresByAccount.clear();
   mockCancelledLaunches.clear();
   mockStartupErrorCallbacks.clear();
   mockTrashedOverrides.clear();
@@ -387,6 +390,18 @@ export function mockCommandCountForTest(command: string) {
 
 export function failNextMockCommandForTest(command: string) {
   mockCommandFailures.set(command, (mockCommandFailures.get(command) ?? 0) + 1);
+}
+
+export function failNextMockCommandForAccountForTest(command: string, accountName: string) {
+  mockCommandFailuresByAccount.set(`${command}:${accountName}`, (mockCommandFailuresByAccount.get(`${command}:${accountName}`) ?? 0) + 1);
+}
+
+export function readMockAccountsForTest() {
+  return mockAccounts();
+}
+
+export function setMockMarkForTest(name: string, note: string, color: MarkColor = "green") {
+  mockMarkOverrides.set(name, { marked: true, note, color });
 }
 
 export function cancelNextMockChallengeAuditForTest() {
@@ -416,6 +431,7 @@ const sidebarWidthStorageKey = "cloak-picker.sidebarWidth.v1";
 const legacyMarkPresetsStorageKey = "cloak-picker.markPresets.v1";
 const colorAwareMarkPresetsStorageKey = "cloak-picker.markPresets.v2";
 const markPresetsStorageKey = "cloak-picker.markPresets.v3";
+const hiddenMarkPresetsStorageKey = "cloak-picker.markPresets.hidden.v1";
 const defaultMarkPresets = ["Plus", "自用"] as const;
 const maxMarkLength = 24;
 const maxNoteLength = 1000;
@@ -618,6 +634,7 @@ export default function App() {
   const bulkActionButtonRef = useRef<HTMLButtonElement | null>(null);
   const markSaveInFlightRef = useRef(false);
   const noteSaveInFlightRef = useRef(false);
+  const tagDeleteInFlightRef = useRef(false);
 
   const allAccounts = useMemo(
     () => [...activeAccounts, ...trashedAccounts].sort(compareAccountsByCreatedAt),
@@ -1341,6 +1358,10 @@ export default function App() {
 
     if (dialog.kind === "deleteGroup") {
       await confirmDeleteGroup(dialog.groupLabel);
+      return;
+    }
+    if (dialog.kind === "deleteTag") {
+      await confirmDeleteTag(dialog.label, dialog.accounts);
       return;
     }
 
@@ -2812,6 +2833,71 @@ export default function App() {
     }
   }
 
+  async function confirmDeleteTag(label: string, accountsToClear: Account[]) {
+    if (tagDeleteInFlightRef.current) return;
+    tagDeleteInFlightRef.current = true;
+    setBusy(true);
+    setError("");
+    setDialogError("");
+    setBulkStatus("");
+    const attempted: Account[] = [];
+    let previousPresets: string[] = [];
+    let presetsWritten = false;
+    try {
+      const [active, trashed] = await Promise.all([
+        call<Account[]>("list_accounts"),
+        call<Account[]>("list_trashed_accounts"),
+      ]);
+      const changed = [...active, ...trashed].filter((account) => account.marked && account.mark_note?.trim() === label);
+      setActiveAccounts(active);
+      setTrashedAccounts(trashed);
+      // Never silently expand the confirmed scope, or clear a different tag
+      // after another window/CLI changes an account while the dialog is open.
+      const confirmed = new Map(accountsToClear.map((account) => [account.profile_id, account]));
+      const membersChanged = changed.length !== confirmed.size || changed.some((account) => {
+        const previous = confirmed.get(account.profile_id);
+        return !previous || previous.name !== account.name || previous.profile_path !== account.profile_path
+          || previous.trashed !== account.trashed;
+      });
+      if (membersChanged) {
+        setDialog({ kind: "deleteTag", label, accounts: changed });
+        setDialogError("标签成员已变化，已更新数量；尚未修改任何账号，请核对后再删除。");
+        return;
+      }
+      for (const account of changed) {
+        // set_mark can fail after removing one of its two metadata files.
+        // Include the failing attempt in rollback, not only resolved calls.
+        attempted.push(account);
+        await call<Account>("set_mark", { name: account.name, marked: false, note: null, color: null });
+      }
+      previousPresets = readStoredMarkPresets();
+      const nextPresets = previousPresets.filter((preset) => preset !== label);
+      if (!writeStoredMarkPresets(nextPresets)) throw new Error("无法保存标签列表，请检查本地存储后重试。");
+      presetsWritten = true;
+      setDialog({ kind: "manage", section: "marks" });
+      await refresh(selectedNameRef.current || undefined, accountView);
+      setBulkStatus(changed.length ? `已从 ${changed.length} 个账号移除标签“${label}”，账号本身未删除。` : `已删除未使用的标签“${label}”。`);
+    } catch (caught) {
+      const rollbackResults = await Promise.allSettled([...attempted].reverse().map((account) => call<Account>("set_mark", {
+        name: account.name,
+        marked: account.marked,
+        note: account.mark_note,
+        color: account.mark_color,
+      })));
+      const rollbackFailed = rollbackResults.some((result) => result.status === "rejected");
+      const presetRollbackFailed = presetsWritten && !writeStoredMarkPresets(previousPresets);
+      const message = `删除标签失败：${errorMessage(caught)}${attempted.length === 0
+        ? "；尚未修改任何账号。"
+        : rollbackFailed || presetRollbackFailed ? "；部分标签回滚失败，请刷新后核对。" : "；已恢复本轮账号的原标签与颜色。"}`;
+      setDialogError(message);
+      await refresh(selectedNameRef.current || undefined, accountView);
+      setError(message);
+    } finally {
+      setBusy(false);
+      tagDeleteInFlightRef.current = false;
+    }
+  }
+
   async function restoreAccount(account: Account) {
     const restored = await run(() => call<Account>("restore_account", { name: account.name }));
     if (!restored) return;
@@ -3852,7 +3938,9 @@ export default function App() {
           onClose={() => {
             setDialogError("");
             setDialog(
-              dialog.kind === "createGroup" || dialog.kind === "renameGroup" || dialog.kind === "deleteGroup"
+              dialog.kind === "deleteTag"
+                ? { kind: "manage", section: "marks" }
+                : dialog.kind === "createGroup" || dialog.kind === "renameGroup" || dialog.kind === "deleteGroup"
                 ? dialog.returnToManage
                   ? { kind: "manage", section: "groups" }
                   : null
@@ -3863,6 +3951,7 @@ export default function App() {
           onConfirmBulkDelete={confirmBulkDelete}
           onConfirmBulkPermanentDelete={confirmBulkPermanentDelete}
           onConfirmDeleteGroup={(groupLabel, returnToManage) => void confirmDeleteGroup(groupLabel, returnToManage)}
+          onConfirmDeleteTag={(label, accountsToClear) => void confirmDeleteTag(label, accountsToClear)}
           onConfirmPermanentDelete={confirmPermanentDeleteAccount}
           groupOptions={groupOptions}
           managedGroups={managedGroups}
@@ -4180,6 +4269,7 @@ function EditorDialog({
   onConfirmBulkDelete,
   onConfirmBulkPermanentDelete,
   onConfirmDeleteGroup,
+  onConfirmDeleteTag,
   onConfirmPermanentDelete,
   groupOptions,
   managedGroups,
@@ -4205,6 +4295,7 @@ function EditorDialog({
   onConfirmBulkDelete: (accounts: Account[]) => void;
   onConfirmBulkPermanentDelete: (accounts: Account[]) => void;
   onConfirmDeleteGroup: (groupLabel: string, returnToManage?: boolean) => void;
+  onConfirmDeleteTag: (label: string, accountsToClear: Account[]) => void;
   onConfirmPermanentDelete: (account: Account) => void;
   groupOptions: GroupOption[];
   managedGroups: ManagedGroup[];
@@ -4410,6 +4501,7 @@ function EditorDialog({
                 previouslyFocusedRef.current = null;
                 onSelectManagedAccount(account);
               }}
+              onDeleteTag={(label, members) => onChange({ kind: "deleteTag", label, accounts: members })}
             />
           )}
           <div className="modalActions manageModalActions">
@@ -4575,6 +4667,31 @@ function EditorDialog({
               onClick={() => onConfirmDeleteGroup(dialog.groupLabel, dialog.returnToManage)}
             >
               {busy ? "删除中..." : "删除分组"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (dialog.kind === "deleteTag") {
+    const activeCount = dialog.accounts.filter((account) => !account.trashed).length;
+    const trashedCount = dialog.accounts.length - activeCount;
+    return (
+      <div className="modalBackdrop">
+        <div aria-labelledby={dialogTitleId} aria-modal="true" className="modal" ref={(node) => { modalRef.current = node; }} role="alertdialog" tabIndex={-1}>
+          <button className="modalClose" disabled={busy} type="button" aria-label="关闭" onClick={onClose}><X size={15} /></button>
+          <h2 id={dialogTitleId} title={`删除标签「${dialog.label}」？`}>
+            删除标签「<span className="dialogAccountName">{middleTruncate(dialog.label, 28)}</span>」？
+          </h2>
+          <p>{dialog.accounts.length
+            ? `会从 ${dialog.accounts.length} 个账号移除该标签（活跃 ${activeCount}、回收站 ${trashedCount}）。`
+            : "该标签目前没有关联账号，将从标签列表移除。"}不会删除账号、浏览器环境或登录数据。</p>
+          {error ? <p className="modalError" role="alert">{error}</p> : null}
+          <div className="modalActions">
+            <button autoFocus className="secondaryButton" disabled={busy} type="button" onClick={onClose}>取消</button>
+            <button className="dangerButton" disabled={busy} type="button" onClick={() => onConfirmDeleteTag(dialog.label, dialog.accounts)}>
+              {busy ? "删除中..." : "删除标签"}
             </button>
           </div>
         </div>
@@ -5491,10 +5608,11 @@ function SortableGroupPicker({
   );
 }
 
-function ManageMarkPresets({ busy, accounts, onSelectAccount }: {
+function ManageMarkPresets({ busy, accounts, onSelectAccount, onDeleteTag }: {
   busy: boolean;
   accounts: Account[];
   onSelectAccount: (account: Account) => void;
+  onDeleteTag: (label: string, members: Account[]) => void;
 }) {
   const [presets, setPresets] = useState<string[]>(readStoredMarkPresets);
   const [newPreset, setNewPreset] = useState("");
@@ -5559,21 +5677,12 @@ function ManageMarkPresets({ busy, accounts, onSelectAccount }: {
     setPresetError("");
   }
 
-  function removePreset(value: string) {
-    persistPresets(presets.filter((preset) => preset !== value));
-    if (editingPreset === value) {
-      setEditingPreset("");
-      setEditingValue("");
-    }
-    setPresetError("");
-  }
-
   return (
     <section aria-label="标签管理" className="manageSection" id="cloak-manage-marks" role="tabpanel">
       <div className="manageSectionHeader">
         <div>
           <strong>标签与账号</strong>
-          <span>点击标签查看账号（含回收站）；删除快捷项不会改动账号已有标记。</span>
+          <span>点击标签查看账号（含回收站）；删除标签会移除账号标签，但不会删除账号。</span>
         </div>
       </div>
       <form
@@ -5684,32 +5793,28 @@ function ManageMarkPresets({ busy, accounts, onSelectAccount }: {
                       <X aria-hidden="true" size={13} />
                     </button>
                   </>
-                ) : isBuiltIn ? (
-                  <span className="manageBuiltInBadge">内置</span>
-                ) : !isPreset ? (
-                  <span className="manageBuiltInBadge">账号标签</span>
                 ) : (
                   <>
-                    <button
+                    {!isBuiltIn && isPreset ? <button
                       aria-label={`重命名标签 ${preset}`}
                       className="manageRowAction"
                       disabled={busy}
                       title="重命名快捷项，不改动账号标记"
                       type="button"
                       onClick={() => beginRenamePreset(preset)}
-                    >
-                      <Pencil aria-hidden="true" size={13} />
-                    </button>
+                    ><Pencil aria-hidden="true" size={13} /></button> : null}
                     <button
                       aria-label={`删除标签 ${preset}`}
                       className="manageRowAction danger"
                       disabled={busy}
-                      title="删除快捷项，不改动账号标记"
+                      title={members.length ? `移除 ${members.length} 个账号上的标签，不删除账号` : "删除未使用的快捷项"}
                       type="button"
-                      onClick={() => removePreset(preset)}
+                      onClick={() => onDeleteTag(preset, members)}
                     >
                       <Trash2 aria-hidden="true" size={13} />
                     </button>
+                    {members.length === 0 && isBuiltIn ? <span className="manageBuiltInBadge">默认</span> : null}
+                    {members.length === 0 && !isPreset ? <span className="manageBuiltInBadge">账号标签</span> : null}
                   </>
                 )}
               </span>
@@ -5916,6 +6021,7 @@ function dialogConfig(
     | { kind: "bulkDelete" }
     | { kind: "bulkPermanentDelete" }
     | { kind: "deleteGroup" }
+    | { kind: "deleteTag" }
     | { kind: "manage" }
     | { kind: "workspace" }
   >,
@@ -6500,7 +6606,8 @@ function normalizeMarkPreset(value: string): string | null {
 }
 
 function readStoredMarkPresets(): string[] {
-  const defaults = [...defaultMarkPresets];
+  const hidden = new Set(readStoredStringArray(hiddenMarkPresetsStorageKey));
+  const defaults = defaultMarkPresets.filter((label) => !hidden.has(label));
   try {
     const raw = window.localStorage.getItem(markPresetsStorageKey);
     if (raw !== null) {
@@ -6520,10 +6627,29 @@ function readStoredMarkPresets(): string[] {
   return normalizeMarkPresets(readStoredStringArray(legacyMarkPresetsStorageKey), defaults);
 }
 
-function writeStoredMarkPresets(values: string[]) {
-  const safeValues = normalizeMarkPresets(values, defaultMarkPresets);
+function writeStoredMarkPresets(values: string[]): boolean {
+  const safeValues = normalizeMarkPresets(values, []);
   const builtInLabels = new Set<string>(defaultMarkPresets);
-  writeStoredStringArray(markPresetsStorageKey, safeValues.filter((value) => !builtInLabels.has(value)));
+  let previousPresets: string | null | undefined;
+  let previousHidden: string | null | undefined;
+  try {
+    previousPresets = window.localStorage.getItem(markPresetsStorageKey);
+    previousHidden = window.localStorage.getItem(hiddenMarkPresetsStorageKey);
+    window.localStorage.setItem(hiddenMarkPresetsStorageKey, JSON.stringify(defaultMarkPresets.filter((label) => !safeValues.includes(label))));
+    window.localStorage.setItem(markPresetsStorageKey, JSON.stringify(safeValues.filter((value) => !builtInLabels.has(value))));
+    return true;
+  } catch {
+    // Preserve both previous keys if only the second write fails.
+    try {
+      for (const [key, previous] of [[markPresetsStorageKey, previousPresets], [hiddenMarkPresetsStorageKey, previousHidden]] as const) {
+        if (previous === null) window.localStorage.removeItem(key);
+        else if (previous !== undefined) window.localStorage.setItem(key, previous);
+      }
+    } catch {
+      // The caller reports the persistence failure; no account is deleted.
+    }
+    return false;
+  }
 }
 
 function normalizeMarkPresets(values: unknown[], defaults: readonly string[]): string[] {
@@ -6625,6 +6751,12 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
   ) {
     mockWorkspaceCancellation = false;
     throw new Error("workspace operation cancelled");
+  }
+  const failureKey = `${command}:${requestedName}`;
+  const accountFailures = mockCommandFailuresByAccount.get(failureKey) ?? 0;
+  if (accountFailures > 0) {
+    mockCommandFailuresByAccount.set(failureKey, accountFailures - 1);
+    throw new Error(`mock ${command} failed for ${requestedName}`);
   }
   const failures = mockCommandFailures.get(command) ?? 0;
   if (failures > 0) {

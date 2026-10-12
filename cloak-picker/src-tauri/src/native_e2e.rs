@@ -593,6 +593,62 @@ const NATIVE_E2E_DRIVER: &str = r#"
       && document.querySelector('#cloak-account-active-tab[aria-selected="true"]'), '标签成员定位到活跃账号');
     if (await invoke('account_is_running', { name: 'native-e2e-account' })) throw new Error('查看标签成员错误启动了浏览器');
     checks.push('native-tag-membership-counts-and-navigation');
+    // Deleting a tag must clear the metadata on both account locations without
+    // touching profile identity, group, seed, or browser data. Put the second
+    // member back in the trash so the real UI exercises the mixed-location path.
+    const tagDeleteBaseline = new Map((await invoke('list_accounts')).concat(await invoke('list_trashed_accounts'))
+      .filter(account => account.name === 'native-e2e-account' || account.name === 'native-e2e-sync-account')
+      .map(account => [account.name, {
+        profile_id: account.profile_id,
+        profile_path: account.profile_path,
+        serial: account.serial,
+        created_at: account.created_at,
+        seed: account.seed,
+        group: account.group,
+      }]));
+    const enabledTagAction = (parent, label) => {
+      const button = Array.from(parent.querySelectorAll('button')).find(button => button.textContent.trim() === label);
+      if (!button || button.disabled) throw new Error(`${label}按钮不可用`);
+      return button;
+    };
+    await invoke('delete_account', { name: 'native-e2e-sync-account' });
+    document.querySelector('button[aria-label="重新读取账号列表"]').click();
+    await waitFor(() => document.querySelector('.brand > div > span')?.textContent.includes('3 活跃'), '删除标签前恢复回收站成员');
+    tagsPane = await openTagManagement();
+    const deleteTagButton = await waitFor(() => tagsPane.querySelector(`button[aria-label="删除标签 ${membershipTag}"]`), '删除标签入口');
+    if (!deleteTagButton.closest('[data-tag-label]')?.textContent.includes('2 个账号 · 活跃 1 · 回收站 1')) throw new Error('删除标签确认范围未包含活跃与回收站账号');
+    deleteTagButton.click();
+    let deleteTagConfirmation = await waitFor(() => document.querySelector('[role="alertdialog"]'), '删除标签确认框');
+    if (!deleteTagConfirmation.textContent.includes('活跃 1、回收站 1') || !deleteTagConfirmation.textContent.includes('不会删除账号')) {
+      throw new Error('删除标签确认未说明账号不会删除或位置范围不完整');
+    }
+    enabledTagAction(deleteTagConfirmation, '取消').click();
+    tagsPane = await waitFor(() => document.querySelector('[role="dialog"] [aria-label="标签管理"]'), '取消后返回标签管理');
+    tagsPane.querySelector(`button[aria-label="删除标签 ${membershipTag}"]`).click();
+    deleteTagConfirmation = await waitFor(() => document.querySelector('[role="alertdialog"]'), '再次打开删除标签确认框');
+    enabledTagAction(deleteTagConfirmation, '删除标签').click();
+    await waitFor(() => !document.querySelector('[role="alertdialog"]')
+      && !document.querySelector(`[data-tag-label="${membershipTag}"]`), '删除标签完成');
+    const tagManageDialog = document.querySelector('[role="dialog"] [aria-label="标签管理"]');
+    if (tagManageDialog) {
+      enabledTagAction(tagManageDialog.closest('[role="dialog"]'), '完成').click();
+      await waitFor(() => !document.querySelector('[role="dialog"]'), '关闭标签管理');
+    }
+    const tagDeleteActive = await invoke('list_accounts');
+    const tagDeleteTrash = await invoke('list_trashed_accounts');
+    const tagDeleteAll = tagDeleteActive.concat(tagDeleteTrash);
+    for (const name of ['native-e2e-account', 'native-e2e-sync-account']) {
+      const account = tagDeleteAll.find(candidate => candidate.name === name);
+      const baseline = tagDeleteBaseline.get(name);
+      if (!account || !baseline || account.profile_id !== baseline.profile_id || account.profile_path !== baseline.profile_path
+          || account.serial !== baseline.serial || account.created_at !== baseline.created_at || account.seed !== baseline.seed
+          || account.group !== baseline.group || account.marked || account.mark_note !== null || account.mark_color !== null) {
+        throw new Error(`删除标签改变了账号或身份数据：${name}`);
+      }
+    }
+    if (!tagDeleteTrash.some(account => account.name === 'native-e2e-sync-account')
+        || !tagDeleteActive.some(account => account.name === 'native-e2e-account')) throw new Error('删除标签改变了账号所在位置');
+    checks.push('native-tag-delete-removes-members-preserves-accounts');
     // Later deletion checks expect this pre-existing fixture to remain active.
     await invoke('restore_account', { name: 'native-e2e-sync-account' });
     document.querySelector('button[aria-label="重新读取账号列表"]').click();
@@ -629,7 +685,7 @@ const NATIVE_E2E_DRIVER: &str = r#"
     if (!(await invoke('active_account_auth'))
         || (!pane.textContent.includes('授权页已打开') && !pane.textContent.includes('正在处理'))
         || !Array.from(pane.querySelectorAll('button')).some(button => button.textContent.trim() === '取消授权')) {
-      throw new Error('隐藏或最小化错误取消了授权');
+      throw new Error(`隐藏或最小化错误取消了授权：active=${JSON.stringify(await invoke('active_account_auth'))}; pane=${pane.textContent.slice(0, 1200)}`);
     }
     await waitFor(() => closeAuthorize()?.textContent.includes('确认凭证中'), '关闭后确认授权结果', 7000);
     if (!closeAuthorize()?.disabled || pane.querySelector('[role="alert"]')?.textContent.includes('授权浏览器已关闭')) {
