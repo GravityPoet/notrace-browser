@@ -36,6 +36,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -912,6 +913,24 @@ export default function App() {
     setAuthorizationFilter("all");
     setRightPaneMode("broker");
     if (account) setSelectedName(account.name);
+  }
+
+  function selectManagedTagAccount(account: Account) {
+    exitBulkSelection();
+    setAccountSearch("");
+    setAccountSearchScope("all");
+    setAuthorizationFilter("all");
+    setSelectedGroup(allGroupsValue);
+    setAccountView(account.trashed ? "trash" : "active");
+    setCollapsedGroups((current) => current.filter((label) => label !== accountGroupLabel(account)));
+    setSelectedName(account.name);
+    setRightPaneMode("account");
+    setDialog(null);
+    window.requestAnimationFrame(() => {
+      const row = accountListRef.current?.querySelector<HTMLElement>(".accountRow.selected");
+      row?.focus();
+      row?.scrollIntoView?.({ block: "center", inline: "nearest" });
+    });
   }
 
   function enterBulkSelection() {
@@ -3847,6 +3866,8 @@ export default function App() {
           onConfirmPermanentDelete={confirmPermanentDeleteAccount}
           groupOptions={groupOptions}
           managedGroups={managedGroups}
+          allAccounts={allAccounts}
+          onSelectManagedAccount={selectManagedTagAccount}
           onCreateGroup={createStandaloneGroup}
           onGroupOrderChange={setGroupOrder}
           onQuickGroup={(account, value) => void assignAccountGroup(account, value || null, true)}
@@ -4162,6 +4183,8 @@ function EditorDialog({
   onConfirmPermanentDelete,
   groupOptions,
   managedGroups,
+  allAccounts,
+  onSelectManagedAccount,
   onCreateGroup,
   onGroupOrderChange,
   onQuickGroup,
@@ -4185,6 +4208,8 @@ function EditorDialog({
   onConfirmPermanentDelete: (account: Account) => void;
   groupOptions: GroupOption[];
   managedGroups: ManagedGroup[];
+  allAccounts: Account[];
+  onSelectManagedAccount: (account: Account) => void;
   onCreateGroup: (value: string) => boolean;
   onGroupOrderChange: (labels: string[]) => void;
   onQuickGroup: (account: Account, value: string) => void;
@@ -4376,7 +4401,16 @@ function EditorDialog({
               </div>
             </section>
           ) : (
-            <ManageMarkPresets busy={busy} />
+            <ManageMarkPresets
+              busy={busy}
+              accounts={allAccounts}
+              onSelectAccount={(account) => {
+                // Account navigation replaces the modal's return target.
+                // Do not restore focus to the toolbar after selecting a row.
+                previouslyFocusedRef.current = null;
+                onSelectManagedAccount(account);
+              }}
+            />
           )}
           <div className="modalActions manageModalActions">
             <button className="secondaryButton" type="button" onClick={onClose}>完成</button>
@@ -5457,13 +5491,31 @@ function SortableGroupPicker({
   );
 }
 
-function ManageMarkPresets({ busy }: { busy: boolean }) {
+function ManageMarkPresets({ busy, accounts, onSelectAccount }: {
+  busy: boolean;
+  accounts: Account[];
+  onSelectAccount: (account: Account) => void;
+}) {
   const [presets, setPresets] = useState<string[]>(readStoredMarkPresets);
   const [newPreset, setNewPreset] = useState("");
   const [editingPreset, setEditingPreset] = useState("");
   const [editingValue, setEditingValue] = useState("");
   const [presetError, setPresetError] = useState("");
+  const [expandedLabel, setExpandedLabel] = useState("");
+  const accountListId = useId();
   const builtInLabels = new Set<string>(defaultMarkPresets);
+  const accountsByLabel = useMemo(() => {
+    const result = new Map<string, Account[]>();
+    for (const account of accounts) {
+      const label = account.marked ? account.mark_note?.trim() : "";
+      if (!label) continue;
+      const members = result.get(label) ?? [];
+      members.push(account);
+      result.set(label, members);
+    }
+    return result;
+  }, [accounts]);
+  const labels = [...new Set([...presets, ...accountsByLabel.keys()])];
 
   function persistPresets(next: string[]) {
     setPresets(next);
@@ -5520,8 +5572,8 @@ function ManageMarkPresets({ busy }: { busy: boolean }) {
     <section aria-label="标签管理" className="manageSection" id="cloak-manage-marks" role="tabpanel">
       <div className="manageSectionHeader">
         <div>
-          <strong>常用标签</strong>
-          <span>用于标记账号时的一键快捷项；删除快捷项不会改动账号已有标记。</span>
+          <strong>标签与账号</strong>
+          <span>点击标签查看账号（含回收站）；删除快捷项不会改动账号已有标记。</span>
         </div>
       </div>
       <form
@@ -5550,11 +5602,18 @@ function ManageMarkPresets({ busy }: { busy: boolean }) {
       </form>
       {presetError ? <p className="manageInlineError" role="alert">{presetError}</p> : null}
       <div className="manageList">
-        {presets.map((preset) => {
+        {labels.map((preset, index) => {
           const isBuiltIn = builtInLabels.has(preset);
+          const isPreset = presets.includes(preset);
           const isEditing = editingPreset === preset;
+          const members = accountsByLabel.get(preset) ?? [];
+          const activeCount = members.filter((account) => !account.trashed).length;
+          const trashedCount = members.length - activeCount;
+          const expanded = expandedLabel === preset;
+          const membersId = `${accountListId}-${index}`;
           return (
-            <div className={`manageRow ${isEditing ? "editing" : ""}`} key={preset}>
+            <div className="manageTagGroup" data-tag-label={preset} key={preset}>
+            <div className={`manageRow ${isEditing ? "editing" : ""}`}>
               <span className="manageRowIcon label" aria-hidden="true"><Tag size={14} /></span>
               {isEditing ? (
                 <input
@@ -5581,10 +5640,21 @@ function ManageMarkPresets({ busy }: { busy: boolean }) {
                   }}
                 />
               ) : (
-                <span className="manageRowMain">
-                  <strong title={preset}>{middleTruncate(preset, 34)}</strong>
-                  <small>{isBuiltIn ? "内置快捷项" : "自定义快捷项"}</small>
-                </span>
+                <button
+                  className="manageRowMain manageTagToggle"
+                  type="button"
+                  aria-label={`查看标签 ${preset} 的账号`}
+                  aria-expanded={expanded}
+                  aria-controls={membersId}
+                  disabled={busy}
+                  onClick={() => setExpandedLabel(expanded ? "" : preset)}
+                >
+                  <span className="manageTagTitle">
+                    <strong title={preset}>{middleTruncate(preset, 34)}</strong>
+                    {expanded ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />}
+                  </span>
+                  <small>{members.length} 个账号 · 活跃 {activeCount} · 回收站 {trashedCount}</small>
+                </button>
               )}
               <span className="manageRowActions">
                 {isEditing ? (
@@ -5616,13 +5686,15 @@ function ManageMarkPresets({ busy }: { busy: boolean }) {
                   </>
                 ) : isBuiltIn ? (
                   <span className="manageBuiltInBadge">内置</span>
+                ) : !isPreset ? (
+                  <span className="manageBuiltInBadge">账号标签</span>
                 ) : (
                   <>
                     <button
                       aria-label={`重命名标签 ${preset}`}
                       className="manageRowAction"
                       disabled={busy}
-                      title="重命名"
+                      title="重命名快捷项，不改动账号标记"
                       type="button"
                       onClick={() => beginRenamePreset(preset)}
                     >
@@ -5641,6 +5713,21 @@ function ManageMarkPresets({ busy }: { busy: boolean }) {
                   </>
                 )}
               </span>
+            </div>
+            <div id={membersId} hidden={!expanded}>
+              {expanded && (members.length ? (
+                <ul className="manageTagAccounts" aria-label={`标签 ${preset} 的账号`}>
+                  {members.map((account) => (
+                    <li key={account.profile_id}>
+                      <button className="manageTagAccount" type="button" aria-label={`查看账号 ${account.name}`} disabled={busy} onClick={() => onSelectAccount(account)}>
+                        <span>{account.name}</span>
+                        <small>{account.trashed ? "回收站" : "活跃"} · {accountGroupLabel(account)}</small>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p className="manageTagEmpty">尚无账号使用此标签。</p>)}
+            </div>
             </div>
           );
         })}

@@ -1121,6 +1121,101 @@ describe("Cloak Picker dialog regressions", () => {
     expect(mockCommandCountForTest("set_mark")).toBe(0);
   });
 
+  it("shows all tag members and counts independently of the main search and navigates without launching", async () => {
+    const markDialog = await openMarkDialog("demo-beta");
+    await inputText(markDialog.querySelector<HTMLInputElement>(".field input")!, "待检查");
+    await click(buttonWithText("保存标记", markDialog));
+    await settle(180);
+    const search = document.querySelector<HTMLInputElement>('input[aria-label="搜索账号"]')!;
+    await inputText(search, "missing-account");
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(0);
+
+    const dialog = await openManageDialog("管理标签");
+    const tagRow = dialog.querySelector<HTMLElement>('[data-tag-label="待检查"]')!;
+    expect(tagRow.textContent).toContain("2 个账号 · 活跃 1 · 回收站 1");
+    expect(tagRow.textContent).toContain("账号标签");
+    const toggle = tagRow.querySelector<HTMLButtonElement>('.manageTagToggle')!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    const panel = document.getElementById(toggle.getAttribute("aria-controls")!)!;
+    expect(panel.hidden).toBe(true);
+    await click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(panel.hidden).toBe(false);
+    expect(Array.from(panel.querySelectorAll(".manageTagAccount > span"), (node) => node.textContent).sort()).toEqual([
+      "demo-beta", "demo-gamma",
+    ]);
+    expect(panel.textContent).toContain("活跃 · codex");
+    expect(panel.textContent).toContain("回收站 · codex");
+    await click(panel.querySelector<HTMLButtonElement>('button[aria-label="查看账号 demo-gamma"]')!);
+    await settle(40);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector(".workbenchAccountHeader h1")?.textContent).toBe("demo-gamma");
+    expect(document.querySelector('#cloak-account-trash-tab')?.getAttribute("aria-selected")).toBe("true");
+    expect(document.querySelector('#workbench-account-tab')?.getAttribute("aria-selected")).toBe("true");
+    expect(search.value).toBe("");
+    expect(document.activeElement).toBe(accountRow("demo-gamma"));
+
+    const activeDialog = await openManageDialog("管理标签");
+    await click(activeDialog.querySelector<HTMLButtonElement>('[aria-label="查看标签 待检查 的账号"]')!);
+    await click(activeDialog.querySelector<HTMLButtonElement>('[aria-label="查看账号 demo-beta"]')!);
+    await settle(40);
+    expect(document.querySelector(".workbenchAccountHeader h1")?.textContent).toBe("demo-beta");
+    expect(document.querySelector('#cloak-account-active-tab')?.getAttribute("aria-selected")).toBe("true");
+    expect(mockCommandCountForTest("launch_account")).toBe(0);
+    expect(mockCommandCountForTest("login_account_auth")).toBe(0);
+    expect(mockCommandCountForTest("restore_account")).toBe(0);
+    expect(mockCommandCountForTest("set_mark")).toBe(1);
+  });
+
+  it("keeps used tags visible after removing a shortcut and shows empty presets without fake members", async () => {
+    const dialog = await openManageDialog("管理标签");
+    const presetInput = dialog.querySelector<HTMLInputElement>('[aria-label="新标签名称"]')!;
+    await inputText(presetInput, "待检查");
+    await click(buttonWithText("新增标签", dialog));
+    await click(dialog.querySelector<HTMLButtonElement>('[aria-label="查看标签 自用 的账号"]')!);
+    const empty = dialog.querySelector<HTMLElement>('[data-tag-label="自用"]')!;
+    expect(empty.textContent).toContain("0 个账号 · 活跃 0 · 回收站 0");
+    expect(empty.textContent).toContain("尚无账号使用此标签");
+    expect(empty.querySelector('.manageTagAccount')).toBeNull();
+    await click(dialog.querySelector<HTMLButtonElement>('[aria-label="查看标签 待检查 的账号"]')!);
+    expect(empty.querySelector('.manageTagAccounts')).toBeNull();
+    await click(dialog.querySelector<HTMLButtonElement>('[aria-label="删除标签 待检查"]')!);
+    const remaining = dialog.querySelector<HTMLElement>('[data-tag-label="待检查"]')!;
+    expect(remaining.textContent).toContain("1 个账号 · 活跃 0 · 回收站 1");
+    expect(remaining.textContent).toContain("demo-gamma");
+    expect(remaining.querySelector('[aria-label="删除标签 待检查"]')).toBeNull();
+    expect(window.localStorage.getItem("cloak-picker.markPresets.v3")).toBe("[]");
+    expect(mockCommandCountForTest("set_mark")).toBe(0);
+  });
+
+  it("shows the full email and leaves empty color-only marks out of named tag membership", async () => {
+    const markDialog = await openMarkDialog("demo-alpha@example.test");
+    await inputText(markDialog.querySelector<HTMLInputElement>(".field input")!, "自用");
+    await click(buttonWithText("保存标记", markDialog));
+    await settle(180);
+    const dialog = await openManageDialog("管理标签");
+    await click(dialog.querySelector<HTMLButtonElement>('[aria-label="查看标签 自用 的账号"]')!);
+    const list = dialog.querySelector<HTMLElement>('ul[aria-label="标签 自用 的账号"]')!;
+    expect(list.querySelector(".manageTagAccount > span")?.textContent).toBe("demo-alpha@example.test");
+    expect(dialog.querySelector('[data-tag-label="自用"]')?.textContent).toContain("1 个账号 · 活跃 1 · 回收站 0");
+    expect(dialog.querySelector('[data-tag-label=""]')).toBeNull();
+  });
+
+  it("reveals a collapsed group when navigating from tag management", async () => {
+    const markDialog = await openMarkDialog("demo-beta");
+    await click(buttonWithText("自用", markDialog));
+    await settle(180);
+    await click(buttonWithText("全部", document.querySelector('.groupFilter')!));
+    expect(document.querySelector('[data-account-group="codex"]')?.classList.contains("collapsed")).toBe(true);
+    const dialog = await openManageDialog("管理标签");
+    await click(dialog.querySelector<HTMLButtonElement>('[aria-label="查看标签 自用 的账号"]')!);
+    await click(dialog.querySelector<HTMLButtonElement>('[aria-label="查看账号 demo-beta"]')!);
+    await settle(40);
+    expect(window.localStorage.getItem("cloak-picker.collapsedGroups.v1")).not.toContain("codex");
+    expect(accountRow("demo-beta").hidden).toBe(false);
+    expect(document.activeElement).toBe(accountRow("demo-beta"));
+  });
+
   it("creates an account in a newly named group from the create dialog", async () => {
     const initialGroupOrder = groupFilterLabels();
     await click(buttonWithText("新建"));

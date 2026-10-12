@@ -246,6 +246,7 @@ node -e '
     "runtime-source-provenance",
     "close-all-native-command",
     "migration-tab-keyboard-aria-controls",
+    "native-tag-membership-counts-and-navigation",
     "account-delete-native-confirmation",
   ];
   const missing = required.filter((check) => !report.checks.includes(check));

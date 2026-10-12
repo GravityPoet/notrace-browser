@@ -553,6 +553,51 @@ const NATIVE_E2E_DRIVER: &str = r#"
     // commands, but only the runner's disposable synthetic profiles.
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     await waitFor(() => !document.querySelector('[role="dialog"], [role="alertdialog"]'), '关闭迁移弹窗');
+
+    // Tag membership must include both account locations, independently of
+    // the main search. Mutate only the runner's synthetic profiles.
+    const membershipTag = 'native-e2e-membership';
+    await invoke('set_mark', { name: 'native-e2e-account', marked: true, note: membershipTag, color: 'green' });
+    await invoke('set_mark', { name: 'native-e2e-sync-account', marked: true, note: membershipTag, color: 'blue' });
+    await invoke('delete_account', { name: 'native-e2e-sync-account' });
+    document.querySelector('button[aria-label="重新读取账号列表"]').click();
+    await waitFor(() => document.querySelector('.brand > div > span')?.textContent.includes('3 活跃'), '标签成员元数据刷新');
+    const openTagManagement = async () => {
+      (await waitFor(() => Array.from(document.querySelectorAll('.workspaceTool')).find(button => button.textContent.includes('管理标签') && !button.disabled), '标签管理入口')).click();
+      return waitFor(() => document.querySelector('[role="dialog"] [aria-label="标签管理"]'), '标签管理已打开');
+    };
+    setter.call(search, 'no-matching-native-account');
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await waitFor(() => document.querySelectorAll('.accountRow').length === 0, '标签管理前主搜索无匹配');
+    let tagsPane = await openTagManagement();
+    const memberToggle = await waitFor(() => tagsPane.querySelector(`button[aria-label="查看标签 ${membershipTag} 的账号"]`), '未保存为快捷项的账号标签');
+    if (!memberToggle.textContent.includes('2 个账号 · 活跃 1 · 回收站 1')) throw new Error('标签人数被主搜索或账号位置错误截断');
+    memberToggle.click();
+    let membersList = await waitFor(() => tagsPane.querySelector(`ul[aria-label="标签 ${membershipTag} 的账号"]`), '展开标签成员');
+    if (membersList.querySelectorAll('.manageTagAccount').length !== 2) throw new Error('标签成员名单不完整');
+    const modalBounds = document.querySelector('.manageModal').getBoundingClientRect();
+    const memberBounds = membersList.getBoundingClientRect();
+    const longAccount = membersList.querySelector('.manageTagAccount > span');
+    if (modalBounds.left < 0 || modalBounds.right > innerWidth || modalBounds.bottom > innerHeight
+        || memberBounds.left < modalBounds.left || memberBounds.right > modalBounds.right
+        || longAccount.scrollWidth > longAccount.clientWidth + 1) throw new Error('标签成员或长账号被裁切');
+    membersList.querySelector('button[aria-label="查看账号 native-e2e-sync-account"]').click();
+    await waitFor(() => !document.querySelector('[role="dialog"]') && pane.querySelector('h1')?.textContent === 'native-e2e-sync-account', '标签成员定位到回收站账号');
+    if (!document.querySelector('#cloak-account-trash-tab[aria-selected="true"]') || search.value
+        || !document.querySelector('#workbench-account-tab[aria-selected="true"]')) throw new Error('标签导航没有清理旧搜索或切换账号位置');
+    tagsPane = await openTagManagement();
+    tagsPane.querySelector(`button[aria-label="查看标签 ${membershipTag} 的账号"]`).click();
+    membersList = await waitFor(() => tagsPane.querySelector(`ul[aria-label="标签 ${membershipTag} 的账号"]`), '再次展开标签成员');
+    membersList.querySelector('button[aria-label="查看账号 native-e2e-account"]').click();
+    await waitFor(() => !document.querySelector('[role="dialog"]') && pane.querySelector('h1')?.textContent === 'native-e2e-account'
+      && document.querySelector('#cloak-account-active-tab[aria-selected="true"]'), '标签成员定位到活跃账号');
+    if (await invoke('account_is_running', { name: 'native-e2e-account' })) throw new Error('查看标签成员错误启动了浏览器');
+    checks.push('native-tag-membership-counts-and-navigation');
+    // Later deletion checks expect this pre-existing fixture to remain active.
+    await invoke('restore_account', { name: 'native-e2e-sync-account' });
+    document.querySelector('button[aria-label="重新读取账号列表"]').click();
+    await waitFor(() => document.querySelector('.brand > div > span')?.textContent.includes('4 活跃'), '标签验收恢复夹具原状态');
+
     // A native disposable browser window follows the real authorization IPC.
     // It hides/minimizes/restores before closing; no OAuth callback is sent.
     const closeAccount = 'native-e2e-auth-close-account';

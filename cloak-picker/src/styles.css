@@ -2923,6 +2923,88 @@ button:disabled {
   font-size: 10px;
 }
 
+.manageTagGroup {
+  border-bottom: 1px solid var(--border);
+}
+
+.manageTagGroup:last-child,
+.manageTagGroup > .manageRow {
+  border-bottom: 0;
+}
+
+.manageTagToggle {
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  padding: 3px 0;
+  text-align: left;
+}
+
+.manageTagTitle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.manageTagTitle > svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.manageTagToggle:hover:not(:disabled) strong {
+  color: var(--accent);
+}
+
+.manageTagToggle:disabled,
+.manageTagAccount:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.manageTagAccounts {
+  list-style: none;
+  margin: 0;
+  padding: 0 9px 8px 45px;
+}
+
+.manageTagAccount {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 7px 8px;
+  text-align: left;
+}
+
+.manageTagAccount:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.manageTagAccount > span {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.manageTagAccount > small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.manageTagEmpty {
+  margin: 0 !important;
+  padding: 0 12px 10px 45px;
+  color: var(--muted);
+  font-size: 11px !important;
+}
+
 .manageRowActions {
   display: inline-flex;
   align-items: center;
