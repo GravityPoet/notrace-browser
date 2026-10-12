@@ -400,6 +400,7 @@ export function emitMockStartupErrorForTest(name: string, message: string, attem
 }
 
 type AccountView = "all" | "active" | "trash";
+type AccountSearchScope = "all" | "account" | "group" | "tag" | "note";
 type RightPaneMode = "broker" | "account";
 const allGroupsValue = "__all__";
 const allGroupsLabel = "全部";
@@ -422,6 +423,17 @@ const defaultSidebarWidth = 360;
 const minSidebarWidth = 280;
 const minDetailWidth = 360;
 const paneResizerWidth = 8;
+const accountSearchScopes: Array<{ value: AccountSearchScope; label: string; placeholder: string }> = [
+  { value: "all", label: "全部字段", placeholder: "搜索账号、分组、标签或备注" },
+  { value: "account", label: "账号", placeholder: "搜索账号名称或邮箱" },
+  { value: "group", label: "分组", placeholder: "搜索分组名称" },
+  { value: "tag", label: "标签", placeholder: "搜索账号标签" },
+  { value: "note", label: "备注", placeholder: "搜索账号备注" },
+];
+
+function accountSearchScopeLabel(scope: AccountSearchScope) {
+  return accountSearchScopes.find((option) => option.value === scope)?.label ?? "全部字段";
+}
 
 type MarkColorDefinition = {
   label: string;
@@ -529,6 +541,7 @@ export default function App() {
   const [accountSort, setAccountSort] = useState<BrokerAccountSort>("default");
   const [selectedGroup, setSelectedGroup] = useState<string>(allGroupsValue);
   const [accountSearch, setAccountSearch] = useState("");
+  const [accountSearchScope, setAccountSearchScope] = useState<AccountSearchScope>("all");
   const [draggingAccountName, setDraggingAccountName] = useState<string>("");
   const [pressedAccountName, setPressedAccountName] = useState<string>("");
   const [accountDropTarget, setAccountDropTarget] = useState<AccountDropTarget | null>(null);
@@ -641,9 +654,9 @@ export default function App() {
   const accountSearchMatches = useMemo(
     () =>
       hasAccountSearch
-        ? searchAccounts(allOrderedAccounts, normalizedAccountSearch).filter(matchesAuthorization)
+        ? searchAccounts(allOrderedAccounts, normalizedAccountSearch, accountSearchScope).filter(matchesAuthorization)
         : [],
-    [allOrderedAccounts, hasAccountSearch, normalizedAccountSearch, authorizationFilter, brokerRows],
+    [accountSearchScope, allOrderedAccounts, hasAccountSearch, normalizedAccountSearch, authorizationFilter, brokerRows],
   );
   const selectedAccountSearchIndex = accountSearchMatches.findIndex((account) => account.name === selectedName);
   const accountSearchIndex = selectedAccountSearchIndex >= 0 ? selectedAccountSearchIndex : 0;
@@ -815,7 +828,7 @@ export default function App() {
 
     setSelectedGroup(allGroupsValue);
     setAccountView("all");
-    const match = searchAccounts(allOrderedAccounts, normalizedSearch).filter(matchesAuthorization)[0] ?? null;
+    const match = searchAccounts(allOrderedAccounts, normalizedSearch, accountSearchScope).filter(matchesAuthorization)[0] ?? null;
     if (!match) return;
 
     const matchingGroup = accountGroupLabel(match);
@@ -823,6 +836,13 @@ export default function App() {
       current.includes(matchingGroup) ? current.filter((label) => label !== matchingGroup) : current,
     );
     setSelectedName(match.name);
+  }
+
+  function handleAccountSearchScopeChange(scope: AccountSearchScope) {
+    setAccountSearchScope(scope);
+    if (!hasAccountSearch) return;
+    const match = searchAccounts(allOrderedAccounts, normalizedAccountSearch, scope).filter(matchesAuthorization)[0] ?? null;
+    if (match) setSelectedName(match.name);
   }
 
   function moveAccountSearchMatch(offset: number) {
@@ -2880,11 +2900,20 @@ export default function App() {
         <div className="accountSearch">
           <div className={`accountSearchField ${hasAccountSearch && !accountSearchMatch ? "notFound" : ""}`}>
             <Search aria-hidden="true" size={15} />
+            <select
+              aria-label="搜索范围"
+              className="accountSearchScope"
+              title={`限定搜索字段：${accountSearchScopeLabel(accountSearchScope)}`}
+              value={accountSearchScope}
+              onChange={(event) => handleAccountSearchScopeChange(event.currentTarget.value as AccountSearchScope)}
+            >
+              {accountSearchScopes.map((scope) => <option key={scope.value} value={scope.value}>{scope.label}</option>)}
+            </select>
             <input
               aria-describedby={hasAccountSearch ? "account-search-result-status" : undefined}
               aria-label="搜索账号"
               autoComplete="off"
-              placeholder="搜索所有账号、分组、标记或备注"
+              placeholder={accountSearchScopes.find((scope) => scope.value === accountSearchScope)?.placeholder ?? "搜索账号、分组、标签或备注"}
               spellCheck={false}
               type="search"
               value={accountSearch}
@@ -6060,21 +6089,43 @@ function normalizeAccountSearch(value: string) {
   return value.normalize("NFKC").trim().toLocaleLowerCase();
 }
 
-function accountSearchRank(account: Account, normalizedSearch: string): number | null {
+function accountSearchValues(account: Account, scope: AccountSearchScope): string[] {
+  const group = accountGroupLabel(account);
+  const tags = [
+    account.mark_note ?? "",
+    account.marked ? "已标记" : "",
+    account.marked && account.mark_color ? markColorLabel(account.mark_color) : "",
+  ];
+  switch (scope) {
+    case "account":
+      return [account.name];
+    case "group":
+      return [group];
+    case "tag":
+      return tags;
+    case "note":
+      return [account.note ?? ""];
+    case "all":
+    default:
+      return [account.name, group, ...tags, account.note ?? ""];
+  }
+}
+
+function accountSearchRank(account: Account, normalizedSearch: string, scope: AccountSearchScope): number | null {
   const name = normalizeAccountSearch(account.name);
-  const metadata = [account.group ?? "", account.mark_note ?? "", account.note ?? ""].map(normalizeAccountSearch);
-  if (name === normalizedSearch) return 0;
-  if (metadata.some((value) => value === normalizedSearch)) return 1;
-  if (name.startsWith(normalizedSearch)) return 2;
-  if (metadata.some((value) => value.startsWith(normalizedSearch))) return 3;
-  if (name.includes(normalizedSearch)) return 4;
-  if (metadata.some((value) => value.includes(normalizedSearch))) return 5;
+  const values = accountSearchValues(account, scope).map(normalizeAccountSearch);
+  if ((scope === "all" || scope === "account") && name === normalizedSearch) return 0;
+  if (values.some((value) => value === normalizedSearch)) return scope === "account" ? 0 : 1;
+  if ((scope === "all" || scope === "account") && name.startsWith(normalizedSearch)) return 2;
+  if (values.some((value) => value.startsWith(normalizedSearch))) return 3;
+  if ((scope === "all" || scope === "account") && name.includes(normalizedSearch)) return 4;
+  if (values.some((value) => value.includes(normalizedSearch))) return 5;
   return null;
 }
 
-function searchAccounts(accounts: Account[], normalizedSearch: string): Account[] {
+function searchAccounts(accounts: Account[], normalizedSearch: string, scope: AccountSearchScope = "all"): Account[] {
   return accounts
-    .map((account, index) => ({ account, index, rank: accountSearchRank(account, normalizedSearch) }))
+    .map((account, index) => ({ account, index, rank: accountSearchRank(account, normalizedSearch, scope) }))
     .filter((result): result is { account: Account; index: number; rank: number } => result.rank !== null)
     .sort((left, right) => left.rank - right.rank || left.index - right.index)
     .map((result) => result.account);

@@ -83,6 +83,14 @@ async function inputText(element: HTMLInputElement | HTMLTextAreaElement, value:
   });
 }
 
+async function selectValue(element: HTMLSelectElement, value: string) {
+  await act(async () => {
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+    valueSetter?.call(element, value);
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
 async function openContextMenu(element: HTMLElement) {
   await act(async () => {
     element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, button: 2 }));
@@ -1557,7 +1565,7 @@ describe("Cloak Picker dialog regressions", () => {
 
   it("temporarily launches a trashed account without restoring it", async () => {
     const accountSearch = document.querySelector<HTMLInputElement>('input[type="search"]');
-    expect(accountSearch?.placeholder).toBe("搜索所有账号、分组、标记或备注");
+    expect(accountSearch?.placeholder).toBe("搜索账号、分组、标签或备注");
     expect(accountSearch?.closest(".accountWorkbench")).not.toBeNull();
     expect(document.querySelector('.sidebar input[type="search"]')).toBeNull();
 
@@ -1598,6 +1606,42 @@ describe("Cloak Picker dialog regressions", () => {
 
     expect(mockCommandCountForTest("launch_account")).toBe(1);
     expect(mockCommandCountForTest("restore_account")).toBe(0);
+  });
+
+  it("searches by an explicit scope for groups, tags, notes, and account names", async () => {
+    const search = document.querySelector<HTMLInputElement>('input[aria-label="搜索账号"]')!;
+    const scope = document.querySelector<HTMLSelectElement>('select[aria-label="搜索范围"]')!;
+    expect(Array.from(scope.options).map((option) => option.textContent)).toEqual([
+      "全部字段",
+      "账号",
+      "分组",
+      "标签",
+      "备注",
+    ]);
+
+    await selectValue(scope, "group");
+    await inputText(search, "codex");
+    await settle(30);
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(3);
+    expect(document.querySelector(".accountSearchResultStatus")?.textContent).toBe("1/3");
+
+    await selectValue(scope, "tag");
+    await inputText(search, "待检查");
+    await settle(30);
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(1);
+    expect(document.querySelector(".detail h1")?.textContent).toBe("demo-gamma");
+
+    await selectValue(scope, "note");
+    await inputText(search, "客户偏好");
+    await settle(30);
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(1);
+    expect(document.querySelector(".detail h1")?.textContent).toBe("demo-alpha@example.test");
+
+    await selectValue(scope, "account");
+    await inputText(search, "demo-beta");
+    await settle(30);
+    expect(document.querySelectorAll(".accountRow")).toHaveLength(1);
+    expect(document.querySelector(".detail h1")?.textContent).toBe("demo-beta");
   });
 
   it("orders the recycle bin from newest deletion to oldest across original groups", async () => {

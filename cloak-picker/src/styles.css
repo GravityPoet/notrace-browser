@@ -462,6 +462,26 @@ summary:focus-visible {
   flex: 0 0 auto;
 }
 
+.accountSearchScope {
+  flex: 0 0 auto;
+  max-width: 76px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 0;
+}
+
+.accountSearchScope:focus-visible {
+  border-radius: 5px;
+  box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.2);
+  color: var(--accent);
+}
+
 .accountSearchField input {
   width: 100%;
   min-width: 0;
