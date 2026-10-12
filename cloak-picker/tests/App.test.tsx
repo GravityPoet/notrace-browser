@@ -13,6 +13,7 @@ import App, {
   mockCommandCountForTest,
   readMockAccountsForTest,
   resetMockCommandsForTest,
+  setMockRunningAccountForTest,
   setMockCloseSeatsForTest,
   setMockBrokerAccountsForTest,
   setMockMarkForTest,
@@ -1105,7 +1106,7 @@ describe("Cloak Picker dialog regressions", () => {
   it("adds, renames, and removes custom label shortcuts without editing accounts", async () => {
     const dialog = await openManageDialog("管理标签");
     expect(buttonWithText("标签", dialog).getAttribute("aria-selected")).toBe("true");
-    expect(dialog.textContent).toContain("删除标签会移除账号标签，但不会删除账号");
+    expect(dialog.textContent).toContain("可只删除标签，或彻底删除账号及标签");
     expect(dialog.querySelector('[aria-label="删除标签 Plus"]')).not.toBeNull();
 
     const newLabelInput = dialog.querySelector<HTMLInputElement>('input[aria-label="新标签名称"]');
@@ -1122,7 +1123,7 @@ describe("Cloak Picker dialog regressions", () => {
     await click(dialog.querySelector<HTMLButtonElement>('[aria-label="删除标签 待办"]') as HTMLButtonElement);
     const confirmation = document.querySelector<HTMLElement>('[role="alertdialog"]')!;
     expect(confirmation.textContent).toContain("目前没有关联账号");
-    await click(buttonWithText("删除标签", confirmation));
+    await click(buttonWithText("只删除标签", confirmation));
     await settle(240);
     expect(window.localStorage.getItem("cloak-picker.markPresets.v3")).toBe("[]");
     expect(mockCommandCountForTest("set_mark")).toBe(0);
@@ -1201,7 +1202,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(document.querySelector('[data-tag-label="待检查"]')?.textContent).toContain("2 个账号");
     await click(document.querySelector<HTMLButtonElement>('[aria-label="删除标签 待检查"]')!);
     const secondConfirmation = document.querySelector<HTMLElement>('[role="alertdialog"]')!;
-    await click(buttonWithText("删除标签", secondConfirmation));
+    await click(buttonWithText("只删除标签", secondConfirmation));
     await settle(420);
     expect(document.querySelector('[role="alertdialog"]')).toBeNull();
     const remaining = document.querySelector<HTMLElement>('[data-tag-label="待检查"]');
@@ -1223,6 +1224,55 @@ describe("Cloak Picker dialog regressions", () => {
     expect(document.querySelector('.accountRow[data-account-name="demo-gamma"]')).toBeTruthy();
   });
 
+  it("offers permanent account-and-tag deletion as a separate second-confirmed action", async () => {
+    const markDialog = await openMarkDialog("demo-beta");
+    await inputText(markDialog.querySelector<HTMLInputElement>(".field input")!, "待检查");
+    await click(buttonWithText("保存标记", markDialog));
+    await settle(180);
+    const dialog = await openManageDialog("管理标签");
+    const tagRow = dialog.querySelector<HTMLElement>('[data-tag-label="待检查"]')!;
+    await click(tagRow.querySelector<HTMLButtonElement>('[aria-label="删除标签 待检查"]')!);
+    const firstConfirmation = document.querySelector<HTMLElement>('[role="alertdialog"]')!;
+    expect(firstConfirmation.textContent).toContain("不会删除账号");
+    await click(buttonWithText("删除账号及标签…", firstConfirmation));
+    const permanentConfirmation = document.querySelector<HTMLElement>('[role="alertdialog"]')!;
+    expect(permanentConfirmation.textContent).toContain("彻底删除账号及标签");
+    expect(permanentConfirmation.textContent).toContain("2 个账号");
+    expect(permanentConfirmation.textContent).toContain("此操作不可恢复");
+    expect(mockCommandCountForTest("permanently_delete_account")).toBe(0);
+    await click(buttonWithText("取消", permanentConfirmation));
+    expect(document.querySelector<HTMLElement>('[role="alertdialog"]')?.textContent).toContain("不会删除账号");
+    await click(buttonWithText("删除账号及标签…", document.querySelector('[role="alertdialog"]')!));
+    const secondPermanentConfirmation = document.querySelector<HTMLElement>('[role="alertdialog"]')!;
+    await click(buttonWithText("彻底删除账号及标签", secondPermanentConfirmation));
+    await settle(520);
+    expect(mockCommandCountForTest("account_is_running")).toBe(2);
+    expect(mockCommandCountForTest("permanently_delete_account")).toBe(2);
+    expect(mockCommandCountForTest("delete_account")).toBe(0);
+    expect(document.querySelector('.accountRow[data-account-name="demo-beta"]')).toBeNull();
+    await click(buttonWithText("回收站"));
+    await settle(100);
+    expect(document.querySelector('.accountRow[data-account-name="demo-gamma"]')).toBeNull();
+    expect(document.querySelector('[data-tag-label="待检查"]')).toBeNull();
+  });
+
+  it("blocks permanent account-and-tag deletion while any tagged account is running", async () => {
+    const markDialog = await openMarkDialog("demo-beta");
+    await inputText(markDialog.querySelector<HTMLInputElement>(".field input")!, "待检查");
+    await click(buttonWithText("保存标记", markDialog));
+    await settle(180);
+    const dialog = await openManageDialog("管理标签");
+    await click(dialog.querySelector<HTMLButtonElement>('[aria-label="删除标签 待检查"]')!);
+    const first = document.querySelector<HTMLElement>('[role="alertdialog"]')!;
+    await click(buttonWithText("删除账号及标签…", first));
+    setMockRunningAccountForTest("demo-beta");
+    await click(buttonWithText("彻底删除账号及标签", document.querySelector('[role="alertdialog"]')!));
+    await settle(300);
+    expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain("请先关闭正在运行的账号");
+    expect(mockCommandCountForTest("permanently_delete_account")).toBe(0);
+    expect(readMockAccountsForTest().some(account => account.name === "demo-beta")).toBe(true);
+  });
+
   it("rolls back every changed account when removing a tag fails", async () => {
     const markDialog = await openMarkDialog("demo-beta");
     await inputText(markDialog.querySelector<HTMLInputElement>(".field input")!, "待检查");
@@ -1236,7 +1286,7 @@ describe("Cloak Picker dialog regressions", () => {
     await click(tagRow.querySelector<HTMLButtonElement>('[aria-label="删除标签 待检查"]')!);
     failNextMockCommandForAccountForTest("set_mark", "demo-gamma");
     const confirmation = document.querySelector<HTMLElement>('[role="alertdialog"]')!;
-    await click(buttonWithText("删除标签", confirmation));
+    await click(buttonWithText("只删除标签", confirmation));
     await settle(600);
     expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
     expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain("已恢复本轮账号的原标签与颜色");
@@ -1252,13 +1302,13 @@ describe("Cloak Picker dialog regressions", () => {
     const before = readMockAccountsForTest();
     let dialog = await openManageDialog("管理标签");
     await click(dialog.querySelector<HTMLButtonElement>('[aria-label="删除标签 待检查"]')!);
-    await click(buttonWithText("删除标签", document.querySelector('[role="alertdialog"]')!));
+    await click(buttonWithText("只删除标签", document.querySelector('[role="alertdialog"]')!));
     await settle(340);
     expect(document.querySelector('[data-tag-label="待检查"]')).toBeNull();
     expect(readMockAccountsForTest()).toEqual(before.map(account => account.mark_note === "待检查"
       ? { ...account, marked: false, mark_note: null, mark_color: null } : account));
     await click(document.querySelector<HTMLButtonElement>('[aria-label="删除标签 Plus"]')!);
-    await click(buttonWithText("删除标签", document.querySelector('[role="alertdialog"]')!));
+    await click(buttonWithText("只删除标签", document.querySelector('[role="alertdialog"]')!));
     await settle(240);
     expect(window.localStorage.getItem("cloak-picker.markPresets.hidden.v1")).toBe('["Plus"]');
     await click(buttonWithText("完成", document.querySelector('[role="dialog"]')!));
@@ -1279,11 +1329,11 @@ describe("Cloak Picker dialog regressions", () => {
     const before = readMockAccountsForTest();
     setMockMarkForTest("demo-beta", "待检查", "blue");
     setMockMarkForTest("demo-gamma", "新标签", "red");
-    await click(buttonWithText("删除标签", document.querySelector('[role="alertdialog"]')!));
+    await click(buttonWithText("只删除标签", document.querySelector('[role="alertdialog"]')!));
     await settle(140);
     expect(document.querySelector('[role="alertdialog"] [role="alert"]')?.textContent).toContain("标签成员已变化");
     expect(mockCommandCountForTest("set_mark")).toBe(0);
-    await click(buttonWithText("删除标签", document.querySelector('[role="alertdialog"]')!));
+    await click(buttonWithText("只删除标签", document.querySelector('[role="alertdialog"]')!));
     await settle(340);
     const after = readMockAccountsForTest();
     expect(after.find(account => account.name === "demo-beta")?.marked).toBe(false);
@@ -1298,7 +1348,7 @@ describe("Cloak Picker dialog regressions", () => {
     await click(dialog.querySelector<HTMLButtonElement>('[aria-label="删除标签 待检查"]')!);
     const before = readMockAccountsForTest();
     failNextMockCommandForTest("list_accounts");
-    await click(buttonWithText("删除标签", document.querySelector('[role="alertdialog"]')!));
+    await click(buttonWithText("只删除标签", document.querySelector('[role="alertdialog"]')!));
     await settle(240);
     expect(document.querySelector('[role="alertdialog"] [role="alert"]')?.textContent).toContain("尚未修改任何账号");
     expect(readMockAccountsForTest()).toEqual(before);
@@ -1314,7 +1364,7 @@ describe("Cloak Picker dialog regressions", () => {
       if (key === "cloak-picker.markPresets.v3") throw new Error("storage unavailable");
       originalSet(key, value);
     });
-    await click(buttonWithText("删除标签", document.querySelector('[role="alertdialog"]')!));
+    await click(buttonWithText("只删除标签", document.querySelector('[role="alertdialog"]')!));
     await settle(440);
     expect(document.querySelector('[role="alertdialog"] [role="alert"]')?.textContent).toContain("无法保存标签列表");
     expect(readMockAccountsForTest()).toEqual(before);

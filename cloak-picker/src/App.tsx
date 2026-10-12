@@ -267,7 +267,8 @@ type DialogState =
   | { kind: "bulkDelete"; accounts: Account[] }
   | { kind: "bulkPermanentDelete"; accounts: Account[] }
   | { kind: "deleteGroup"; groupLabel: string; count: number; returnToManage?: boolean }
-  | { kind: "deleteTag"; label: string; accounts: Account[] };
+  | { kind: "deleteTag"; label: string; accounts: Account[] }
+  | { kind: "permanentDeleteTag"; label: string; accounts: Account[] };
 
 type GroupContextMenuState = {
   groupLabel: string;
@@ -402,6 +403,10 @@ export function readMockAccountsForTest() {
 
 export function setMockMarkForTest(name: string, note: string, color: MarkColor = "green") {
   mockMarkOverrides.set(name, { marked: true, note, color });
+}
+
+export function setMockRunningAccountForTest(name: string) {
+  mockRunningAccounts.add(name);
 }
 
 export function cancelNextMockChallengeAuditForTest() {
@@ -1362,6 +1367,10 @@ export default function App() {
     }
     if (dialog.kind === "deleteTag") {
       await confirmDeleteTag(dialog.label, dialog.accounts);
+      return;
+    }
+    if (dialog.kind === "permanentDeleteTag") {
+      await confirmBulkPermanentDelete(dialog.accounts, dialog.label);
       return;
     }
 
@@ -2714,17 +2723,33 @@ export default function App() {
     });
   }
 
-  async function confirmBulkPermanentDelete(targets: Account[]) {
+  async function confirmBulkPermanentDelete(targets: Account[], tagLabel?: string) {
     if (targets.length === 0) return;
+    if (tagLabel && tagDeleteInFlightRef.current) return;
+    if (tagLabel) tagDeleteInFlightRef.current = true;
     setBusy(true);
     setError("");
     setDialogError("");
     setBulkStatus("");
     setBulkActionMenuOpen(false);
     let deletedCount = 0;
+    let currentTargets = targets;
     try {
+      if (tagLabel) {
+        const [active, trashed] = await Promise.all([
+          call<Account[]>("list_accounts"), call<Account[]>("list_trashed_accounts"),
+        ]);
+        currentTargets = [...active, ...trashed].filter(account => account.marked && account.mark_note?.trim() === tagLabel);
+        setActiveAccounts(active);
+        setTrashedAccounts(trashed);
+        if (!sameTagMembers(targets, currentTargets)) {
+          setDialog({ kind: "permanentDeleteTag", label: tagLabel, accounts: currentTargets });
+          setDialogError("标签成员已变化，已更新名单；尚未删除任何账号，请核对后再次确认。");
+          return;
+        }
+      }
       const runningStates = await Promise.all(
-        targets.map(async (account) => ({
+        currentTargets.map(async (account) => ({
           account,
           running: await call<boolean>("account_is_running", { name: account.name }),
         })),
@@ -2733,28 +2758,40 @@ export default function App() {
       if (runningNames.length > 0) {
         throw new Error(`请先关闭正在运行的账号：${runningNames.map((name) => middleTruncate(name, 24)).join("、")}`);
       }
-      for (const account of targets) {
+      for (const account of currentTargets) {
         await call<void>("permanently_delete_account", { name: account.name });
         deletedCount += 1;
       }
-      setDialog(null);
+      if (tagLabel && !writeStoredMarkPresets(readStoredMarkPresets().filter(label => label !== tagLabel))) {
+        throw new Error("账号已删除，但标签快捷项保存失败，请重试删除空标签。");
+      }
+      setDialog(tagLabel ? { kind: "manage", section: "marks" } : null);
       setPlan(null);
       exitBulkSelection();
       await refresh(undefined, accountView);
-      setBulkStatus(`已彻底删除 ${targets.length} 个账号。`);
+      setBulkStatus(tagLabel
+        ? `已彻底删除标签“${tagLabel}”下 ${currentTargets.length} 个账号，并删除标签。`
+        : `已彻底删除 ${targets.length} 个账号。`);
     } catch (caught) {
       const message = deletedCount > 0
-        ? `已彻底删除 ${deletedCount} 个账号，其余账号未处理：${errorMessage(caught)}`
+        ? tagLabel
+          ? `已彻底删除 ${deletedCount} 个账号，无法回滚；标签快捷项保留：${errorMessage(caught)}`
+          : `已彻底删除 ${deletedCount} 个账号，其余账号未处理：${errorMessage(caught)}`
         : `批量彻底删除失败：${errorMessage(caught)}`;
-      if (deletedCount > 0) {
+      if (tagLabel) {
+        setDialog(deletedCount >= currentTargets.length
+          ? { kind: "deleteTag", label: tagLabel, accounts: [] }
+          : { kind: "permanentDeleteTag", label: tagLabel, accounts: currentTargets.slice(deletedCount) });
+      } else if (deletedCount > 0) {
         setDialog(null);
         setBulkSelectedNames(targets.slice(deletedCount).map((account) => account.name));
       }
       setDialogError(message);
-      setError(message);
       await refresh(undefined, accountView);
+      setError(message);
     } finally {
       setBusy(false);
+      if (tagLabel) tagDeleteInFlightRef.current = false;
     }
   }
 
@@ -2853,13 +2890,7 @@ export default function App() {
       setTrashedAccounts(trashed);
       // Never silently expand the confirmed scope, or clear a different tag
       // after another window/CLI changes an account while the dialog is open.
-      const confirmed = new Map(accountsToClear.map((account) => [account.profile_id, account]));
-      const membersChanged = changed.length !== confirmed.size || changed.some((account) => {
-        const previous = confirmed.get(account.profile_id);
-        return !previous || previous.name !== account.name || previous.profile_path !== account.profile_path
-          || previous.trashed !== account.trashed;
-      });
-      if (membersChanged) {
+      if (!sameTagMembers(accountsToClear, changed)) {
         setDialog({ kind: "deleteTag", label, accounts: changed });
         setDialogError("标签成员已变化，已更新数量；尚未修改任何账号，请核对后再删除。");
         return;
@@ -3940,6 +3971,8 @@ export default function App() {
             setDialog(
               dialog.kind === "deleteTag"
                 ? { kind: "manage", section: "marks" }
+                : dialog.kind === "permanentDeleteTag"
+                  ? { kind: "deleteTag", label: dialog.label, accounts: dialog.accounts }
                 : dialog.kind === "createGroup" || dialog.kind === "renameGroup" || dialog.kind === "deleteGroup"
                 ? dialog.returnToManage
                   ? { kind: "manage", section: "groups" }
@@ -3952,6 +3985,7 @@ export default function App() {
           onConfirmBulkPermanentDelete={confirmBulkPermanentDelete}
           onConfirmDeleteGroup={(groupLabel, returnToManage) => void confirmDeleteGroup(groupLabel, returnToManage)}
           onConfirmDeleteTag={(label, accountsToClear) => void confirmDeleteTag(label, accountsToClear)}
+          onConfirmDeleteTagAndAccounts={(label, accountsToDelete) => void confirmBulkPermanentDelete(accountsToDelete, label)}
           onConfirmPermanentDelete={confirmPermanentDeleteAccount}
           groupOptions={groupOptions}
           managedGroups={managedGroups}
@@ -4270,6 +4304,7 @@ function EditorDialog({
   onConfirmBulkPermanentDelete,
   onConfirmDeleteGroup,
   onConfirmDeleteTag,
+  onConfirmDeleteTagAndAccounts,
   onConfirmPermanentDelete,
   groupOptions,
   managedGroups,
@@ -4296,6 +4331,7 @@ function EditorDialog({
   onConfirmBulkPermanentDelete: (accounts: Account[]) => void;
   onConfirmDeleteGroup: (groupLabel: string, returnToManage?: boolean) => void;
   onConfirmDeleteTag: (label: string, accountsToClear: Account[]) => void;
+  onConfirmDeleteTagAndAccounts: (label: string, accountsToDelete: Account[]) => void;
   onConfirmPermanentDelete: (account: Account) => void;
   groupOptions: GroupOption[];
   managedGroups: ManagedGroup[];
@@ -4685,13 +4721,45 @@ function EditorDialog({
             删除标签「<span className="dialogAccountName">{middleTruncate(dialog.label, 28)}</span>」？
           </h2>
           <p>{dialog.accounts.length
-            ? `会从 ${dialog.accounts.length} 个账号移除该标签（活跃 ${activeCount}、回收站 ${trashedCount}）。`
-            : "该标签目前没有关联账号，将从标签列表移除。"}不会删除账号、浏览器环境或登录数据。</p>
+            ? `关联 ${dialog.accounts.length} 个账号（活跃 ${activeCount}、回收站 ${trashedCount}）。只删除标签不会删除账号或登录数据；删除账号及标签将永久删除，需再次确认。`
+            : "该标签目前没有关联账号，将从标签列表移除，不会删除账号。"}</p>
           {error ? <p className="modalError" role="alert">{error}</p> : null}
           <div className="modalActions">
             <button autoFocus className="secondaryButton" disabled={busy} type="button" onClick={onClose}>取消</button>
-            <button className="dangerButton" disabled={busy} type="button" onClick={() => onConfirmDeleteTag(dialog.label, dialog.accounts)}>
-              {busy ? "删除中..." : "删除标签"}
+            <button className="secondaryButton" disabled={busy} type="button" onClick={() => onConfirmDeleteTag(dialog.label, dialog.accounts)}>
+              {busy ? "处理中..." : "只删除标签"}
+            </button>
+            {dialog.accounts.length > 0 ? <button className="dangerButton" disabled={busy} type="button" onClick={() => onChange({ kind: "permanentDeleteTag", label: dialog.label, accounts: dialog.accounts })}>
+              删除账号及标签…
+            </button> : null}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (dialog.kind === "permanentDeleteTag") {
+    const activeCount = dialog.accounts.filter((account) => !account.trashed).length;
+    const trashedCount = dialog.accounts.length - activeCount;
+    return (
+      <div className="modalBackdrop">
+        <div aria-labelledby={dialogTitleId} aria-modal="true" className="modal" ref={(node) => { modalRef.current = node; }} role="alertdialog" tabIndex={-1}>
+          <button className="modalClose" disabled={busy} type="button" aria-label="关闭" onClick={onClose}><X size={15} /></button>
+          <h2 id={dialogTitleId} title={`彻底删除账号及标签「${dialog.label}」？`}>
+            彻底删除账号及标签「<span className="dialogAccountName">{middleTruncate(dialog.label, 28)}</span>」？
+          </h2>
+          <p>
+            将永久删除 {dialog.accounts.length} 个账号（活跃 {activeCount}、回收站 {trashedCount}）的账号目录、登录数据和缓存，并移除该标签。此操作不可恢复。
+          </p>
+          <ul aria-label="将永久删除的账号" className="bulkDialogAccountList">
+            {dialog.accounts.slice(0, 4).map((account) => <li key={account.profile_id}>{account.name}</li>)}
+            {dialog.accounts.length > 4 ? <li>以及另外 {dialog.accounts.length - 4} 个账号</li> : null}
+          </ul>
+          {error ? <p className="modalError" role="alert">{error}</p> : null}
+          <div className="modalActions">
+            <button autoFocus className="secondaryButton" disabled={busy} type="button" onClick={onClose}>取消</button>
+            <button className="dangerButton" disabled={busy} type="button" onClick={() => onConfirmDeleteTagAndAccounts(dialog.label, dialog.accounts)}>
+              {busy ? "删除中..." : "彻底删除账号及标签"}
             </button>
           </div>
         </div>
@@ -5682,7 +5750,7 @@ function ManageMarkPresets({ busy, accounts, onSelectAccount, onDeleteTag }: {
       <div className="manageSectionHeader">
         <div>
           <strong>标签与账号</strong>
-          <span>点击标签查看账号（含回收站）；删除标签会移除账号标签，但不会删除账号。</span>
+          <span>点击标签查看账号（含回收站）；可只删除标签，或彻底删除账号及标签。</span>
         </div>
       </div>
       <form
@@ -6022,6 +6090,7 @@ function dialogConfig(
     | { kind: "bulkPermanentDelete" }
     | { kind: "deleteGroup" }
     | { kind: "deleteTag" }
+    | { kind: "permanentDeleteTag" }
     | { kind: "manage" }
     | { kind: "workspace" }
   >,
@@ -6722,6 +6791,15 @@ function accountGroupLabel(account: Account) {
   return account.group?.trim() || ungroupedLabel;
 }
 
+function sameTagMembers(confirmed: Account[], current: Account[]): boolean {
+  const confirmedById = new Map(confirmed.map(account => [account.profile_id, account]));
+  return current.length === confirmedById.size && current.every(account => {
+    const previous = confirmedById.get(account.profile_id);
+    return previous && previous.name === account.name && previous.profile_path === account.profile_path
+      && previous.trashed === account.trashed;
+  });
+}
+
 function shouldUseMockTauri() {
   return import.meta.env.DEV && !("__TAURI_INTERNALS__" in window);
 }
@@ -6764,6 +6842,7 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
     throw new Error(`mock ${command} failed`);
   }
   if (command === "browser_process_status") return { browser_count: mockRunningAccounts.size, helper_count: 0 } as T;
+  if (command === "account_is_running") return mockRunningAccounts.has(requestedName) as T;
   if (command === "license_session_status") return mockCloseSeats as T;
   if (command === "force_close_all_browsers") {
     const closed = mockRunningAccounts.size;

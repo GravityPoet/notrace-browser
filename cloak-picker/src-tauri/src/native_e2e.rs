@@ -626,7 +626,7 @@ const NATIVE_E2E_DRIVER: &str = r#"
     tagsPane = await waitFor(() => document.querySelector('[role="dialog"] [aria-label="标签管理"]'), '取消后返回标签管理');
     tagsPane.querySelector(`button[aria-label="删除标签 ${membershipTag}"]`).click();
     deleteTagConfirmation = await waitFor(() => document.querySelector('[role="alertdialog"]'), '再次打开删除标签确认框');
-    enabledTagAction(deleteTagConfirmation, '删除标签').click();
+    enabledTagAction(deleteTagConfirmation, '只删除标签').click();
     await waitFor(() => !document.querySelector('[role="alertdialog"]')
       && !document.querySelector(`[data-tag-label="${membershipTag}"]`), '删除标签完成');
     const tagManageDialog = document.querySelector('[role="dialog"] [aria-label="标签管理"]');
@@ -649,10 +649,47 @@ const NATIVE_E2E_DRIVER: &str = r#"
     if (!tagDeleteTrash.some(account => account.name === 'native-e2e-sync-account')
         || !tagDeleteActive.some(account => account.name === 'native-e2e-account')) throw new Error('删除标签改变了账号所在位置');
     checks.push('native-tag-delete-removes-members-preserves-accounts');
-    // Later deletion checks expect this pre-existing fixture to remain active.
-    await invoke('restore_account', { name: 'native-e2e-sync-account' });
+    // The second action permanently deletes the same mixed-location set only
+    // after its own counted confirmation. Cancel the first destructive prompt
+    // and verify that no profile changes, then confirm and verify both profile
+    // directories disappear while an unrelated fixture remains.
+    await invoke('set_mark', { name: 'native-e2e-account', marked: true, note: membershipTag, color: 'green' });
+    await invoke('set_mark', { name: 'native-e2e-sync-account', marked: true, note: membershipTag, color: 'blue' });
+    await invoke('delete_account', { name: 'native-e2e-sync-account' });
     document.querySelector('button[aria-label="重新读取账号列表"]').click();
-    await waitFor(() => document.querySelector('.brand > div > span')?.textContent.includes('4 活跃'), '标签验收恢复夹具原状态');
+    await waitFor(() => document.querySelector('.brand > div > span')?.textContent.includes('3 活跃'), '永久删除标签前恢复混合位置');
+    tagsPane = await openTagManagement();
+    tagsPane.querySelector('button[aria-label="删除标签 ' + membershipTag + '"]').click();
+    let firstPermanentTagPrompt = await waitFor(() => document.querySelector('[role="alertdialog"]'), '账号及标签删除入口');
+    enabledTagAction(firstPermanentTagPrompt, '删除账号及标签…').click();
+    let permanentTagPrompt = await waitFor(() => document.querySelector('[role="alertdialog"]'), '账号及标签二次确认');
+    if (!permanentTagPrompt.textContent.includes('彻底删除账号及标签') || !permanentTagPrompt.textContent.includes('此操作不可恢复')) throw new Error('永久删除标签确认文案不完整');
+    enabledTagAction(permanentTagPrompt, '取消').click();
+    await waitFor(() => document.querySelector('[role="alertdialog"]')?.textContent.includes('不会删除账号'), '取消永久删除回到第一层');
+    enabledTagAction(document.querySelector('[role="alertdialog"]'), '删除账号及标签…').click();
+    permanentTagPrompt = await waitFor(() => document.querySelector('[role="alertdialog"]'), '再次打开账号及标签二次确认');
+    enabledTagAction(permanentTagPrompt, '彻底删除账号及标签').click();
+    await waitFor(() => !document.querySelector('[role="alertdialog"]') && !document.querySelector('[data-tag-label="' + membershipTag + '"]'), '永久删除账号及标签完成');
+    const permanentTagManageDialog = document.querySelector('[role="dialog"] [aria-label="标签管理"]');
+    if (permanentTagManageDialog) {
+      enabledTagAction(permanentTagManageDialog.closest('[role="dialog"]'), '完成').click();
+      await waitFor(() => !document.querySelector('[role="dialog"]'), '关闭永久删除后的标签管理');
+    }
+    if ((await invoke('list_accounts')).some(account => ['native-e2e-account', 'native-e2e-sync-account'].includes(account.name))
+        || (await invoke('list_trashed_accounts')).some(account => ['native-e2e-account', 'native-e2e-sync-account'].includes(account.name))) {
+      throw new Error('永久删除账号及标签后仍有目标账号');
+    }
+    if (!(await invoke('list_accounts')).some(account => account.name === 'native-e2e-auth-close-account')) throw new Error('永久删除标签误删了无关账号');
+    checks.push('native-tag-permanent-delete-accounts-and-tag');
+    // Later auth checks use the sync fixture; recreate only this disposable
+    // test profile through the normal account command and let the runner clean
+    // it with its temporary root.
+    await invoke('create_account', { name: 'native-e2e-account', group: 'codex' });
+    await invoke('create_account', { name: 'native-e2e-sync-account', group: 'codex' });
+    await invoke('set_mark', { name: 'native-e2e-account', marked: false, note: null, color: null });
+    await invoke('set_mark', { name: 'native-e2e-sync-account', marked: false, note: null, color: null });
+    document.querySelector('button[aria-label="重新读取账号列表"]').click();
+    await waitFor(() => document.querySelector('.accountRow[data-account-name="native-e2e-sync-account"]'), '永久删除后恢复后续测试夹具');
 
     // A native disposable browser window follows the real authorization IPC.
     // It hides/minimizes/restores before closing; no OAuth callback is sent.
