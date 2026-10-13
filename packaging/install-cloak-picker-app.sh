@@ -58,7 +58,9 @@ chmod 755 "$BUILT_APP/Contents/Resources/授权续期后台任务.sh"
 # Tauri may leave a CodeResources file from an earlier bundle shape. Remove
 # only that generated signature metadata before signing the final file set.
 # Do not strip arbitrary extended attributes from the installed app.
-/bin/rm -rf "$BUILT_APP/Contents/_CodeSignature"
+if [[ -e "$BUILT_APP/Contents/_CodeSignature" ]]; then
+  bash "$ROOT/packaging/recycle-paths.sh" "$BUILT_APP/Contents/_CodeSignature"
+fi
 
 if [[ -e "$INSTALL_APP/Contents/Info.plist" ]]; then
   existing_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INSTALL_APP/Contents/Info.plist" 2>/dev/null || true)"
@@ -84,17 +86,31 @@ if ! cloak_signature_matches_identity "$BUILT_APP" "$CODESIGN_IDENTITY"; then
   exit 1
 fi
 
-/bin/rm -rf "$INSTALL_TMP"
+[[ ! -e "$INSTALL_TMP" && ! -L "$INSTALL_TMP" ]] || {
+  printf 'error: install staging path already exists: %s\n' "$INSTALL_TMP" >&2
+  exit 1
+}
 /usr/bin/ditto "$BUILT_APP" "$INSTALL_TMP"
 /usr/bin/codesign --verify --deep --strict "$INSTALL_TMP"
 
-/bin/rm -rf "$INSTALL_APP"
-/bin/mv "$INSTALL_TMP" "$INSTALL_APP"
-/usr/bin/codesign --verify --deep --strict "$INSTALL_APP"
+displaced_app="$INSTALL_PARENT/.cloak-picker-previous.$$"
+[[ ! -e "$displaced_app" && ! -L "$displaced_app" ]] || exit 1
+if [[ -e "$INSTALL_APP" ]]; then
+  /bin/mv "$INSTALL_APP" "$displaced_app"
+fi
+if ! /bin/mv "$INSTALL_TMP" "$INSTALL_APP" || ! /usr/bin/codesign --verify --deep --strict "$INSTALL_APP"; then
+  [[ ! -e "$INSTALL_APP" ]] || bash "$ROOT/packaging/recycle-paths.sh" "$INSTALL_APP"
+  [[ ! -e "$displaced_app" ]] || /bin/mv "$displaced_app" "$INSTALL_APP"
+  printf '%s\n' 'error: install failed; previous app restored' >&2
+  exit 1
+fi
 if ! cloak_signature_matches_identity "$INSTALL_APP" "$CODESIGN_IDENTITY"; then
+  bash "$ROOT/packaging/recycle-paths.sh" "$INSTALL_APP"
+  [[ ! -e "$displaced_app" ]] || /bin/mv "$displaced_app" "$INSTALL_APP"
   printf 'error: installed Picker signature does not match requested identity: %s\n' "$CODESIGN_IDENTITY" >&2
   exit 1
 fi
+[[ ! -e "$displaced_app" ]] || bash "$ROOT/packaging/recycle-paths.sh" "$displaced_app"
 /usr/bin/touch "$INSTALL_APP"
 if [[ -x "$LSREG" ]]; then
   "$LSREG" -f "$INSTALL_APP" >/dev/null 2>&1 || true
@@ -124,7 +140,7 @@ fi
 # The generated bundle is only a staging artifact. Keeping it creates a second
 # LaunchServices candidate with the same bundle identifier as the canonical app.
 if [[ "$BUILT_APP" != "$INSTALL_APP" ]]; then
-  /bin/rm -rf "$BUILT_APP"
+  bash "$ROOT/packaging/recycle-paths.sh" "$BUILT_APP"
 fi
 
 # Re-register an existing auth-refresh job after replacing the signed bundle.

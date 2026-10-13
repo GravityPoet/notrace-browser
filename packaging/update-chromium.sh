@@ -38,7 +38,7 @@ WRAPPER_DIR="$ROOT/packaging/cloakbrowser-wrapper"
 WRAPPER_BIN="${CLOAK_WRAPPER_BIN:-$WRAPPER_DIR/node_modules/.bin/cloakbrowser}"
 WRAPPER_LOCK="$WRAPPER_DIR/package-lock.json"
 WRAPPER_MARKER="$WRAPPER_DIR/node_modules/.notrace-package-lock.sha256"
-WRAPPER_VERSION="0.5.12"
+WRAPPER_VERSION="0.6.2"
 COMPATIBILITY_AUDIT="$ROOT/packaging/audit-cloakbrowser-compatibility.mjs"
 CHANNEL="${CLOAK_BROWSER_CHANNEL:-stable}"
 LSREG="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
@@ -292,10 +292,10 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/notrace-cloak-update.XXXXXX")"
 stage_work=""
 stage_container=""
 cleanup() {
-  rm -rf "$tmp"
+  bash "$ROOT/packaging/recycle-paths.sh" "$tmp"
   if [[ -n "$stage_container" && -d "$stage_container" ]]; then
     case "$stage_container" in
-      "$CB_REAL"/update-staging/.stage."$$") rm -rf "$stage_container" ;;
+      "$CB_REAL"/update-staging/.stage."$$") bash "$ROOT/packaging/recycle-paths.sh" "$stage_container" ;;
       *) log "warn: refusing to clean unexpected staging path: $stage_container" ;;
     esac
   fi
@@ -575,10 +575,10 @@ if [[ "$gate_runtime_dir" != "$runtime_dir" ]]; then
 fi
 
 candidate_link="$CB_REAL/.current.promote.$$"
-rm -f "$candidate_link"
+[[ ! -e "$candidate_link" && ! -L "$candidate_link" ]] || die "promotion link already exists: $candidate_link"
 ln -s "$runtime_dir" "$candidate_link"
 if ! /bin/mv -f -h "$candidate_link" "$CB_REAL/current"; then
-  rm -f "$candidate_link"
+  bash "$ROOT/packaging/recycle-paths.sh" "$candidate_link"
   die "atomic current promotion failed; stable build unchanged"
 fi
 write_hash_file "$RUNTIME_SHA_FILE" "$runtime_sha" "$CB_REAL/current/Chromium.app/Contents/MacOS/Chromium"

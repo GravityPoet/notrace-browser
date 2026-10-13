@@ -11,12 +11,10 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { disposableProfile } from "./disposable-profile.mjs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -495,7 +493,7 @@ function stripCompanionPageScripts(manifestPath) {
 
 function prepareCompanion(plan) {
   const dest = plan.extension_runtime_path;
-  rmSync(dest, { recursive: true, force: true });
+  if (existsSync(dest)) throw new Error("audit extension destination already exists");
   cpSync(EXT_SOURCE, dest, { recursive: true });
   const identity = plan.browser_identity || null;
   // Non-enumerable, matching what cloak-core generates. See run-selftest.mjs.
@@ -913,7 +911,8 @@ async function run() {
   const browser = verifyBrowserHash();
   ensureCli();
 
-  const tempRoot = mkdtempSync(join(tmpdir(), "cloak-live-audit-"));
+  const fixture = disposableProfile("cloak-live-audit-");
+  const tempRoot = fixture.path;
   const resultDir = opts.resultDir || join(ROOT, "selftest", "live-results", new Date().toISOString().replace(/[:.]/g, "-"));
   mkdirSync(resultDir, { recursive: true });
 
@@ -1089,7 +1088,7 @@ async function run() {
     if (browserClient) await browserClient.close();
     if (localAuditServer) await localAuditServer.close();
     if (!opts.keep) {
-      rmSync(tempRoot, { recursive: true, force: true });
+      report.fixture_recovery = fixture.recycle();
     } else {
       report.temp_root = tempRoot;
       report.browser_pid = child.pid;

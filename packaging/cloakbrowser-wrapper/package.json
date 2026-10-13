@@ -4,9 +4,9 @@
   "version": "1.0.0",
   "description": "Pinned official CloakBrowser binary installer used by NoTrace update staging.",
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "dependencies": {
-    "cloakbrowser": "0.5.12"
+    "cloakbrowser": "0.6.2"
   }
 }

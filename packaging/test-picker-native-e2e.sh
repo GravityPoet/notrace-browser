@@ -24,6 +24,13 @@ executable="$APP/Contents/MacOS/$executable_name"
 [[ -x "$executable" ]] || { printf 'Picker executable not found: %s\n' "$executable" >&2; exit 1; }
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/cloak-picker-native-e2e.XXXXXX")"
+tmp_real="$(cd "$tmp" && pwd -P)"
+case "$tmp_real" in
+  /private/tmp/cloak-picker-native-e2e.*|/private/var/folders/*/T/cloak-picker-native-e2e.*) ;;
+  *) printf '%s\n' 'native E2E fixture is outside the permitted temporary root' >&2; exit 1 ;;
+esac
+fixture_parent="$(dirname "$tmp_real")"
+parent_identity="$(stat -f '%d:%i' "$fixture_parent")"
 picker_pid=""
 broker_pid=""
 cleanup() {
@@ -32,7 +39,14 @@ cleanup() {
     kill -TERM "$picker_pid" 2>/dev/null || true
     wait "$picker_pid" 2>/dev/null || true
   fi
-  if [[ "${CLOAK_PICKER_NATIVE_E2E_KEEP_TMP:-}" != "1" ]]; then rm -rf "$tmp"; else printf 'native-e2e-temp=%s\n' "$tmp" >&2; fi
+  test "$(stat -f '%d:%i' "$fixture_parent")" = "$parent_identity"
+  if [[ "${CLOAK_PICKER_NATIVE_E2E_KEEP_TMP:-}" != "1" ]]; then
+    bash "$ROOT/packaging/recycle-paths.sh" "$tmp_real"
+    test -d "$HOME/.Trash/$(basename "$tmp_real")"
+    printf 'native-e2e-recovery=%s\n' "$HOME/.Trash/$(basename "$tmp_real")" >&2
+  else
+    printf 'native-e2e-temp=%s\n' "$tmp_real" >&2
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -160,7 +174,8 @@ for line in sys.stdin:
         result = {"loginId": "native-e2e", "authUrl": "https://auth.openai.com/oauth/authorize?state=synthetic"}
         trace("login-start")
         phases = profile / ".native-auth-window-phases"
-        phases.unlink(missing_ok=True)
+        if phases.exists():
+            phases.rename(phases.with_name(phases.name + ".previous"))
         emit({"id": message["id"], "result": result})
         deadline = time.monotonic() + 30
         while not phases.exists() or "close" not in phases.read_text().splitlines():
@@ -187,6 +202,10 @@ for line in sys.stdin:
     emit({"id": message["id"], "result": result})
 PYFIX
 chmod 700 "$tmp/codex-fixture"
+# Keep the synthetic profiles recoverable even when the permanent-delete UI
+# test removes them. No live account tree or real credentials are copied.
+/usr/bin/ditto "$tmp/accounts" "$tmp/profile-recovery"
+printf '%s\n' 'outside-account-root-sentinel' > "$tmp/outside-account-root-sentinel"
 CLOAK_SKIP_GEO=1 \
 CLOAK_AUTH_TEST_TIMED=1 \
 CLOAK_AUTH_TEST_SINGLETON=1 \
@@ -258,3 +277,6 @@ node -e '
 ' "$report"
 
 printf '%s\n' 'native Picker E2E checks passed'
+test "$(stat -f '%d:%i' "$fixture_parent")" = "$parent_identity"
+test "$(< "$tmp/outside-account-root-sentinel")" = 'outside-account-root-sentinel'
+test -d "$tmp/profile-recovery"

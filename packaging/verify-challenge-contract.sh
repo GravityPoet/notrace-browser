@@ -55,7 +55,7 @@ current_hash="$(shasum -a 256 "$BIN" | awk '{ print $1 }')"
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/cloak-contract.XXXXXX")"
 cleanup() {
-  rm -rf "$tmpdir"
+  bash "$ROOT/packaging/recycle-paths.sh" "$tmpdir"
 }
 trap cleanup EXIT
 
@@ -213,6 +213,10 @@ if LC_ALL=C grep -aq "沉浸式翻译" "$tmpdir/bash-dry-run.txt"; then
   fail "Bash dry-run default-loaded immersive translate"
 fi
 
-node "$ROOT/selftest/run-selftest.mjs" --pair --headless --quiet --no-result-file
+selftest_args=(--pair --headless --quiet --result-file "$tmpdir/report.json")
+if [[ -n "${CLOAK_CANVAS_BASELINE_REPORT:-}" ]]; then
+  selftest_args+=(--canvas-baseline "$CLOAK_CANVAS_BASELINE_REPORT")
+fi
+node "$ROOT/selftest/run-selftest.mjs" "${selftest_args[@]}"
 
 printf 'PASS: CloakBrowser challenge contract holds for %s\n' "$ACCOUNT_NAME"

@@ -1,18 +1,18 @@
 {
   "schema_version": 1,
-  "reviewed_at": "2026-10-05",
+  "reviewed_at": "2026-10-13",
   "platform": "macos",
   "wrapper": {
     "package": "cloakbrowser",
-    "approved_versions": ["0.5.12"],
-    "node": ">=20.0.0",
+    "approved_versions": ["0.6.2"],
+    "node": "^20.19.0 || >=22.12.0",
     "license": "MIT",
-    "integrity": "sha512-UmGCQX3Gy/WSo7zS3tsY3kddPXyaNlFVZYOs19d1Xl1/kTG+POt+1vc5F7MJefVFnHy+OenL/5CTttA2+WXYDQ==",
-    "upstream_git_head": "1c867a7046effc5f0324941e4569006d05411344",
+    "integrity": "sha512-/37JlfgvBbjfCPfUWiowPvg3aA436o6ZBLSqfdxgChnkG5oK2rR50ZadzbJyS9X+rv4PSuhMvs8PZQhICdljzg==",
+    "upstream_git_head": "4a1b8f9c89adb43d7b1f853055ac41e3e59876ab",
     "dependencies": {
       "tar": "^7.0.0"
     },
-    "macos_stable_engine": "151.0.7922.108.3",
+    "macos_stable_engine": "154.0.8037.57.1",
     "upstream_release_api": "https://api.github.com/repos/CloakHQ/CloakBrowser/releases/latest",
     "upstream_changelog": "https://raw.githubusercontent.com/CloakHQ/CloakBrowser/main/CHANGELOG.md"
   },
@@ -53,7 +53,14 @@
       "status": "approved",
       "identity_mode": "native-engine",
       "runtime_modes": ["source-cache", "local-tcc-runtime"],
-      "notes": "Current upstream macOS Stable build. Promotion remains gated by the local contract, headed live challenge, and native Picker E2E checks; keep 145 available for rollback."
+      "notes": "Previous official macOS Stable retained as the rollback target for the 154 upgrade."
+    },
+    {
+      "version": "154.0.8037.57.1",
+      "status": "approved",
+      "identity_mode": "native-engine",
+      "runtime_modes": ["source-cache", "local-tcc-runtime"],
+      "notes": "Official macOS ARM64 Stable published on 2026-10-06 UTC. Eligible for staging only: promotion still requires signed wrapper download, local contract, headed live challenge and native Picker E2E gates. Retain official 151 for rollback."
     }
   ]
 }

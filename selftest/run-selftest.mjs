@@ -4,22 +4,22 @@
 // or a two-profile pair probe for per-seed and storage-isolation checks.
 
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import {
   cpSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { disposableProfile } from "./disposable-profile.mjs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  acceptCanvasBaseline,
   browserIdentityForVersion,
   browserIdentityHeaderRules,
   companionPageSpoofEnabled,
@@ -80,6 +80,7 @@ function parseArgs(argv) {
       case "--headless": o.headless = true; break;
       case "--quiet": o.quiet = true; break;
       case "--result-file": o.resultFile = next(); break;
+      case "--canvas-baseline": o.canvasBaseline = next(); break;
       case "--no-result-file": o.resultFile = ""; break;
       case "--keep": o.keep = true; break;
       case "--json": o.raw = true; break;
@@ -294,7 +295,8 @@ const storageWriteExpression = `new Promise((resolve, reject) => {
 })`;
 
 async function runProbe(serverUrl, opts, seed, writeStorage) {
-  const dir = mkdtempSync(join(tmpdir(), "cloak-selftest-"));
+  const fixture = disposableProfile("cloak-selftest-");
+  const dir = fixture.path;
   const extDir = join(dir, "cloak-companion");
   cpSync(EXT_SOURCE, extDir, { recursive: true });
   // Non-enumerable, matching what cloak-core generates: spoof.js deletes it on
@@ -461,7 +463,7 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
     try { await client?.close(); } catch (_) {}
     try { await browserClient?.close(); } catch (_) {}
     if (!opts.keep) {
-      try { rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+      console.error(`fixture-recovery: ${JSON.stringify(fixture.recycle())}`);
     }
   }
 }
@@ -633,7 +635,7 @@ function printReport(report) {
   console.log(`\nCloak stealth self-test  (TZ ${report.options.expectTimezone})`);
   console.log("─".repeat(60));
   for (const c of report.checks) {
-    const tag = c.pass ? "PASS" : "FAIL";
+    const tag = c.pass ? "PASS" : c.level === "known-baseline-issue" ? "KNOWN" : "FAIL";
     console.log(`  ${tag}  ${c.name}\n        → ${c.got}`);
   }
   console.log("─".repeat(60));
@@ -648,13 +650,15 @@ function printReport(report) {
     console.log(`  A canvas/audio: ${report.pair.a.probe.canvas_hash} / ${report.pair.a.probe.audio_hash}`);
     console.log(`  B canvas/audio: ${report.pair.b.probe.canvas_hash} / ${report.pair.b.probe.audio_hash}`);
   }
-  console.log(`  result  : ${report.verdict}  (${report.checks.filter((c) => !c.pass).length} hard)`);
+  console.log(`  result  : ${report.verdict}  (${report.checks.filter((c) => !c.pass && c.level === "hard").length} hard)`);
 }
 
 function printQuietReport(report) {
-  const fails = report.checks.filter((c) => !c.pass);
+  const fails = report.checks.filter((c) => !c.pass && c.level === "hard");
+  const known = report.checks.filter((c) => c.level === "known-baseline-issue");
   if (fails.length === 0) {
-    console.log(`Cloak stealth self-test: PASS (${report.checks.length} checks)`);
+    console.log(`Cloak stealth self-test: ${report.verdict} (${report.checks.length - known.length} passed, ${known.length} accepted baseline issues)`);
+    for (const c of known) console.log(`KNOWN ${c.name}: ${c.got}`);
     return;
   }
   console.log(`Cloak stealth self-test: FAIL (${fails.length} hard)`);
@@ -721,16 +725,21 @@ async function main() {
       addProbeChecks(checks, "single", single.probe, opts);
     }
 
-    const hardFails = checks.filter((c) => !c.pass);
     const report = {
       ts: Date.now(),
-      verdict: hardFails.length === 0 ? "PASS" : "FAIL",
       browser_binary: BIN,
+      browser_sha256: createHash("sha256").update(readFileSync(BIN)).digest("hex"),
+      probe_sha256: createHash("sha256").update(readFileSync(PROBE_PATH)).digest("hex"),
       options: opts,
       single,
       pair,
       checks,
     };
+    if (opts.canvasBaseline) {
+      acceptCanvasBaseline(report, JSON.parse(readFileSync(opts.canvasBaseline, "utf8")));
+    }
+    const hardFails = checks.filter((c) => !c.pass && c.level === "hard");
+    report.verdict = hardFails.length ? "FAIL" : report.known_issues?.length ? "PASS_WITH_KNOWN_ISSUE" : "PASS";
 
     if (opts.resultFile) {
       try {

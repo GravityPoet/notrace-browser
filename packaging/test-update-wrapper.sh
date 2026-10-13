@@ -3,7 +3,13 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
-cleanup() { rm -rf "$tmp"; }
+parent_identity="$(stat -f '%d:%i' "$(dirname "$tmp")")"
+cleanup() {
+  bash "$ROOT/packaging/recycle-paths.sh" "$tmp"
+  test "$(stat -f '%d:%i' "$(dirname "$tmp")")" = "$parent_identity"
+  test -d "$HOME/.Trash/$(basename "$tmp")"
+  printf 'fixture-recovery=%s\n' "$HOME/.Trash/$(basename "$tmp")"
+}
 trap cleanup EXIT
 
 version="145.0.7632.109.2"
@@ -133,8 +139,8 @@ test "$(wc -l < "$calls" | tr -d ' ')" = "1"
 
 # A pristine bundle is copied, TCC-patched, locally signed, gated, and promoted
 # without changing the pristine source hash.
-rm -rf "$runtime_dir"
-rm -f "$tmp/cache/current"
+mv "$runtime_dir" "$tmp/previous-runtime"
+mv "$tmp/cache/current" "$tmp/previous-current"
 ln -s "$pristine_dir" "$tmp/cache/current"
 printf '%s  %s\n' "$runtime_sha" "$runtime_bin" >"$gate_dir/live-challenge.sha256"
 

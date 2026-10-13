@@ -1,11 +1,12 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, renameSync, symlinkSync } from "node:fs";
+import { disposableProfile } from "./disposable-profile.mjs";
 import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 
 import {
+  acceptCanvasBaseline,
   browserIdentityForVersion,
   browserIdentityHeaderRules,
   companionPageSpoofEnabled,
@@ -19,6 +20,39 @@ import {
   parseChromiumVersion,
   redactProxyCredentials,
 } from "./browser-contract.mjs";
+
+test("the accepted Canvas baseline is exact-version, exact-output and cannot waive unrelated failures", () => {
+  const name = "canvas reads and encoded pixels agree across <canvas> and OffscreenCanvas";
+  const realms = { html_pixels: "same", offscreen_pixels: "same", pixels_after_encode: "same",
+    html_blob_pixels: { hash: "first" }, offscreen_blob_pixels: { hash: "second" } };
+  const sample = seed => ({ seed, probe: { canvas_realms: structuredClone(realms) } });
+  const baseline = { browser_binary: "/cache/chromium-151.0.7922.108.3-pro-notrace/Chromium.app/Contents/MacOS/Chromium",
+    probe_sha256: "test-probe", options: { headless: true }, pair: { a: sample("1"), b: sample("2") },
+    checks: [{ name: `A: ${name}`, pass: false, level: "hard" }, { name: `B: ${name}`, pass: false, level: "hard" },
+      { name: "WebRTC", pass: true, level: "hard" }] };
+  const candidate = () => ({ ...structuredClone(baseline),
+    browser_binary: "/cache/chromium-154.0.8037.57.1-pro-notrace/Chromium.app/Contents/MacOS/Chromium" });
+  const approved = candidate();
+  assert.equal(acceptCanvasBaseline(approved, baseline), true);
+  assert.equal(approved.checks[0].pass, false);
+  assert.equal(approved.checks[0].level, "known-baseline-issue");
+  const unrelated = candidate();
+  unrelated.checks[2].pass = false;
+  assert.equal(acceptCanvasBaseline(unrelated, baseline), true);
+  assert.equal(unrelated.checks[2].level, "hard");
+  for (const change of [
+    value => { value.browser_binary = value.browser_binary.replace("154.", "155."); },
+    value => { value.probe_sha256 = "changed"; },
+    value => { value.options.headless = false; },
+    value => { value.pair.a.seed = "different"; },
+    value => { value.pair.a.probe.canvas_realms.html_blob_pixels.hash = "new-defect"; },
+    value => { value.pair.a.probe.canvas_realms.error = "new-error"; },
+  ]) {
+    const rejected = candidate(); change(rejected);
+    assert.equal(acceptCanvasBaseline(rejected, baseline), false);
+    assert.equal(rejected.checks[0].level, "hard");
+  }
+});
 
 test("browser identity follows the installed Chromium version", () => {
   const version = parseChromiumVersion("Chromium 145.0.7632.109");
@@ -94,7 +128,8 @@ test("independent locale keeps fallback tags without passing HTTP quality weight
 });
 
 test("independent provenance rejects framework changes, unknown fields and symlink markers", () => {
-  const root = mkdtempSync(join(tmpdir(), "notrace-independent-contract-"));
+  const fixture = disposableProfile("cloak-independent-contract-");
+  const root = fixture.path;
   try {
     const binary = join(root, "Chromium.app/Contents/MacOS/Chromium");
     const framework = join(root, "Chromium.app/Contents/Frameworks/Chromium Framework.framework/Versions/152.0.7977.82/Chromium Framework");
@@ -116,17 +151,18 @@ test("independent provenance rejects framework changes, unknown fields and symli
     writeFileSync(framework, "fingerprints");
     writeFileSync(marker, JSON.stringify({ ...data, extra: true }));
     assert.throws(() => independentEngineMetadata(binary), /fields/);
-    rmSync(marker);
+    renameSync(marker, join(root, "marker-before-symlink.json"));
     writeFileSync(join(root, "other.json"), JSON.stringify(data));
     symlinkSync(join(root, "other.json"), marker);
     assert.throws(() => independentEngineMetadata(binary), /marker/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    fixture.recycle();
   }
 });
 
 test("native independent provenance accepts the local source and patch contract", () => {
-  const root = mkdtempSync(join(tmpdir(), "notrace-native-contract-"));
+  const fixture = disposableProfile("cloak-native-contract-");
+  const root = fixture.path;
   try {
     const binary = join(root, "Chromium.app/Contents/MacOS/Chromium");
     const framework = join(root, "Chromium.app/Contents/Frameworks/Chromium Framework.framework/Versions/152.0.7977.82/Chromium Framework");
@@ -147,7 +183,7 @@ test("native independent provenance accepts the local source and patch contract"
     }));
     assert.equal(independentEngineMetadata(binary).provider, "notrace-native");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    fixture.recycle();
   }
 });
 

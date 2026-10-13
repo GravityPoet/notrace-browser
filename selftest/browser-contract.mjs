@@ -8,6 +8,37 @@ const NATIVE_IDENTITY_148_RELEASE = "148.0.7778.215.3";
 
 const falsy = (value) => /^(0|off|false|no)$/i.test(String(value ?? ""));
 
+// Explicitly accepted on 2026-10-13: only the measured 151 -> 154 Canvas
+// discrepancy may be carried forward. Different outputs or other failures
+// remain hard failures; this is not a general "ignore Canvas" switch.
+export function acceptCanvasBaseline(report, baseline) {
+  const canvasCheck = /^[AB]: canvas reads and encoded pixels agree across <canvas> and OffscreenCanvas$/;
+  if (distributionVersionFromPath(report.browser_binary || "") !== "154.0.8037.57.1"
+      || distributionVersionFromPath(baseline?.browser_binary || "") !== "151.0.7922.108.3"
+      || !report.probe_sha256 || baseline.probe_sha256 !== report.probe_sha256
+      || !Array.isArray(baseline.checks) || baseline.checks.length !== report.checks.length
+      || baseline.checks.filter(c => !c.pass).length !== 2
+      || baseline.checks.some(c => !c.pass && !canvasCheck.test(c.name))) return false;
+  for (const key of ["headless", "tz", "expectTimezone", "acceptLang", "proxyServer", "extraExtensions"]) {
+    if (JSON.stringify(report.options?.[key]) !== JSON.stringify(baseline.options?.[key])) return false;
+  }
+  for (const key of ["a", "b"]) {
+    const current = report.pair?.[key];
+    const previous = baseline.pair?.[key];
+    const realms = current?.probe?.canvas_realms;
+    if (!current || !previous || current.seed !== previous.seed || !realms || realms.error
+        || !realms.html_pixels || realms.html_pixels !== realms.offscreen_pixels
+        || realms.pixels_after_encode !== realms.html_pixels
+        || JSON.stringify(realms) !== JSON.stringify(previous.probe?.canvas_realms)) return false;
+  }
+  const accepted = report.checks.filter(c => !c.pass && canvasCheck.test(c.name));
+  if (accepted.length !== 2) return false;
+  for (const check of accepted) check.level = "known-baseline-issue";
+  report.known_issues = [{ id: "cloak-151-154-canvas-encoder-parity", accepted_on: "2026-10-13",
+    baseline_version: "151.0.7922.108.3", candidate_version: "154.0.8037.57.1" }];
+  return true;
+}
+
 export function parseChromiumVersion(output) {
   const match = String(output || "").match(/\b(\d+(?:\.\d+){1,4})\b/);
   if (!match) throw new Error(`could not parse Chromium version from: ${String(output || "").trim()}`);

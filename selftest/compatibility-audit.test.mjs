@@ -7,8 +7,8 @@ const auditUrl = new URL("../packaging/audit-cloakbrowser-compatibility.mjs", im
 const { wrapper } = JSON.parse(readFileSync(
   new URL("../packaging/cloakbrowser-compatibility.json", import.meta.url), "utf8",
 ));
-const macVersion = "151.0.7922.108.3";
-const linuxVersion = "151.0.7922.108.4";
+const macVersion = wrapper.macos_stable_engine;
+const linuxVersion = `${Number(macVersion.split(".")[0]) + 1}.0.0.1`;
 const macRelease = {
   tag_name: `chromium-v${macVersion}-pro`,
   body: `Chromium ${macVersion} is Stable on macOS.\ncloakbrowser-darwin-arm64.tar.gz`,
