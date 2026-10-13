@@ -268,6 +268,23 @@ const NATIVE_E2E_DRIVER: &str = r#"
         && !syncErrorAlert();
     }, '重试成功后开启自动同步');
     checks.push('cpa-sync-pending-retry-success');
+    const cockpitButton = await waitFor(() => {
+      const button = syncButton('刷新并导入 Cockpit');
+      return button && !button.disabled ? button : null;
+    }, 'Cockpit 一键导入入口');
+    cockpitButton.scrollIntoView({ block: 'nearest' });
+    const cockpitBounds = cockpitButton.getBoundingClientRect();
+    const bodyBounds = pane.querySelector('.workbenchBody').getBoundingClientRect();
+    if (cockpitBounds.width < 100 || cockpitBounds.height < 24
+        || cockpitBounds.left < bodyBounds.left || cockpitBounds.right > bodyBounds.right
+        || document.elementFromPoint(cockpitBounds.x + cockpitBounds.width / 2, cockpitBounds.y + cockpitBounds.height / 2)?.closest('button') !== cockpitButton) {
+      throw new Error('Cockpit 导入按钮被裁切或遮挡');
+    }
+    cockpitButton.click();
+    await waitFor(() => Array.from(pane.querySelectorAll('[role="alert"]')).some(alert => alert.textContent.includes('授权已失效，需要重新授权')), 'Cockpit 刷新失败具体提示');
+    await waitFor(() => syncButton('刷新并导入 Cockpit') && !syncButton('刷新并导入 Cockpit').disabled, 'Cockpit 失败后恢复入口');
+    if (pane.textContent.includes('凭据已交给 Cockpit')) throw new Error('刷新失败被误报为 Cockpit 导入成功');
+    checks.push('native-cockpit-refresh-failure-and-layout');
     // A context action must not reset the search and replace the targeted row.
     // Open only the confirmation, then cancel; both fixtures stay on disk.
     for (const [name, trashed] of [['native-e2e-account', false], ['native-e2e-sync-account', true]]) {

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowDownUp, Clock3, Download, FileJson, KeyRound, Link2, Loader2, RefreshCw, RotateCcw, Search, UploadCloud, X } from "lucide-react";
+import { ArrowDownUp, Clock3, Download, ExternalLink, FileJson, KeyRound, Link2, Loader2, RefreshCw, RotateCcw, Search, UploadCloud, X } from "lucide-react";
 import { authProgressLabels, type ActiveAuth, type AuthCall, type AuthLoginPhase, type AuthStatus } from "./AuthPanel";
 
 export type BrokerMetadata = {
@@ -24,6 +24,7 @@ export type BrokerRow = { name: string; profile_id: string; trashed: boolean; lo
 export type BrokerOverview = { configured: boolean; endpoint: string | null; connected: boolean; message: string | null; accounts: BrokerRow[]; unmatched: BrokerMetadata[] };
 type BrokerJsonFormat = "cockpit_tools" | "auth_json" | "cpa" | "sub2api";
 type BrokerJsonTransferSummary = { path: string; format: string; account_count: number; refresh_token_exported: boolean };
+type BrokerCockpitImportSummary = { email: string; account_id: string; generation: number; expires_at: number; handed_off: boolean };
 type BrokerJsonImportSummary = { email: string; account_id: string; profile_id: string; generation: number };
 type BrokerJsonPreviewAccount = { email: string | null; account_id: string | null; has_access_token: boolean; has_id_token: boolean; has_refresh_token: boolean };
 type BrokerJsonPreview = { path: string; detected_format: string; account_count: number; accounts: BrokerJsonPreviewAccount[]; contains_refresh_token: boolean; message: string };
@@ -140,6 +141,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState("");
   const [cpaAction, setCpaAction] = useState<{ profileId: string; enabled: boolean; pending: boolean } | null>(null);
+  const [cockpitProfile, setCockpitProfile] = useState<string | null>(null);
   const [quotaByProfile, setQuotaByProfile] = useState<Record<string, CodexQuotaSnapshot>>({});
   const [quotaLoadingProfile, setQuotaLoadingProfile] = useState<string | null>(null);
   const quotaRequestProfile = useRef<string | null>(null);
@@ -348,6 +350,17 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     const result = await call<BrokerJsonTransferSummary>("broker_export_json", { profileId: row.profile_id, accountName: row.name, format: jsonFormat, includeRefreshToken: preserveRefreshToken });
     if (mounted.current) { setExportRow(null); setMessage(`${row.name} 的 ${jsonFormats.find((item) => item.value === jsonFormat)?.label ?? "JSON"} 已保存（${result.refresh_token_exported ? "包含 refresh_token" : "access-only"}）`); }
   }
+  async function importCockpitAccess(row: BrokerRow) {
+    setCockpitProfile(row.profile_id);
+    try {
+      const result = await call<BrokerCockpitImportSummary>("broker_import_cockpit_access", { profileId: row.profile_id });
+      if (!result.handed_off) throw new Error("Cockpit 尚未读取导入包，未确认导入");
+      if (mounted.current) setMessage(`${result.email} 已刷新一次，access-only 凭据已交给 Cockpit；到期 ${time(result.expires_at)}。导入结果和额度刷新请在 Cockpit 查看。`);
+    } finally {
+      try { await read(); } catch { /* Keep the handoff result or original failure visible. */ }
+      if (mounted.current) setCockpitProfile(null);
+    }
+  }
   async function convertImportedJson() {
     if (!importPreview) return;
     const result = await call<BrokerJsonTransferSummary>("broker_convert_json", { path: importPreview.path, format: jsonFormat, includeRefreshToken: !clearImportedRefreshToken });
@@ -542,6 +555,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
             {!historicalAuthorization && <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { try { await call("broker_refresh_account", { profileId: row.profile_id }); } catch (caught) { await read(); throw caught; } await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>}
             {cpaButtonLabel && <button className={workbench && !historicalAuthorization && !cpaSynced ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected || (historicalAuthorization && !remote.cpa_enabled)} onClick={() => void run(row.profile_id, () => updateCpa(row, historicalAuthorization ? false : !cpaSynced))}>{cpaButtonLabel}</button>}
             {!historicalAuthorization && <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected || quotaLoadingProfile !== null} title="仅读取上游 Codex 额度，不会刷新授权或消耗主动重置次数" onClick={() => void readQuota(row)}>{quotaLoading ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}{quotaLoading ? "读取中…" : "读取额度"}</button>}
+            {!historicalAuthorization && <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} title="Broker 先刷新一次，仅发送 access token / id token；Cockpit 导入后自动读取一次额度，不负责续期" onClick={() => void run(row.profile_id, () => importCockpitAccess(row))}>{cockpitProfile === row.profile_id ? <Loader2 className="spin" size={14} /> : <ExternalLink size={14} />}{cockpitProfile === row.profile_id ? "刷新并交付中…" : "刷新并导入 Cockpit"}</button>}
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={event => { jsonTriggerRef.current = event.currentTarget; setPreserveRefreshToken(false); setImportPreview(null); setExportRow(row); setJsonFormat("auth_json"); }}><Download size={14} />导出 JSON</button>
           </> : !headerOwnsAuthorization && <button className={workbench ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected || browserBusy} onClick={() => void run(row.profile_id, () => externalGrant ? reauthorize(row) : manage(row))}>{rowBusy ? <Loader2 className="spin" size={14} /> : needsLogin || needsReauthLocal || externalGrant ? <KeyRound size={14} /> : <UploadCloud size={14} />}{rowBusy ? "授权处理中…" : needsLogin ? "授权并纳管" : needsReauthLocal || externalGrant ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
         </div>
@@ -564,7 +578,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
               </div>;
             })()}
           </section>}
-          <div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span title="从启用统计起累计，只计成功续期；首次授权、重新授权和失败重试不计入。">成功续期<b>{refreshCountLabel(remote.refresh_count)}</b>{remote.refresh_count !== undefined && remote.automatic_refresh_count !== undefined && <small>自动 {remote.automatic_refresh_count} 次 · 手动 {Math.max(0, remote.refresh_count - remote.automatic_refresh_count)} 次</small>}<small>启用统计后累计</small></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? "已确认" : "使用导出 JSON 导入"}</b></span></div>
+          <div className="brokerStatus"><span>访问凭据到期<b>{time(remote.expires_at)}</b></span><span>最近续期<b>{time(remote.last_refresh_at)}</b></span><span title="从启用统计起累计，只计成功续期；首次授权、重新授权和失败重试不计入。">成功续期<b>{refreshCountLabel(remote.refresh_count)}</b>{remote.refresh_count !== undefined && remote.automatic_refresh_count !== undefined && <small>自动 {remote.automatic_refresh_count} 次 · 手动 {Math.max(0, remote.refresh_count - remote.automatic_refresh_count)} 次</small>}<small>启用统计后累计</small></span><span>{remote.next_retry_at ? "计划重试" : "计划续期"}<b>{time(remote.next_retry_at ?? remote.next_refresh_at)}</b></span><span>CPA<b>{syncLabel(remote.cpa_enabled, remote.cpa_synced_generation, remote.generation, remote.cpa_sync_error)}</b></span><span>Cockpit<b>{remote.cockpit_synced_generation === remote.generation ? "已确认" : "按需导入 · 不自动续期"}</b></span></div>
           {quotaErrors[row.profile_id] && !historicalAuthorization && <p className="brokerError" role="alert">{quotaErrors[row.profile_id].replace(/^(?:Error:\s*)?(?:ChatGPT 授权[：:]\s*)?/, "")}{quota ? "（保留上次快照）" : ""}</p>}
           {remote.error && !historicalAuthorization && <p className="brokerError brokerTransientError">{errors[remote.error] ?? "授权操作未完成"}</p>}
         </>}

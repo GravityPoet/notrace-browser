@@ -1,6 +1,7 @@
 use cloak_core::{
     account_is_running as core_account_is_running, auth_status as core_auth_status,
     broker_convert_json as core_broker_convert_json, broker_export_json as core_broker_export_json,
+    broker_import_cockpit_access as core_broker_import_cockpit_access,
     broker_import_json as core_broker_import_json, broker_overview as core_broker_overview,
     broker_preview_json as core_broker_preview_json,
     broker_push_account as core_broker_push_account,
@@ -23,11 +24,11 @@ use cloak_core::{
     set_auth_auto_refresh as core_set_auth_auto_refresh, set_group as core_set_group,
     set_mark as core_set_mark, set_note as core_set_note, set_proxy as core_set_proxy,
     set_region as core_set_region, toggle_locale as core_toggle_locale, Account, AuthAuthority,
-    AuthLoginProgress, AuthRefreshSummary, AuthStatus, BrokerJsonImportPreview,
-    BrokerJsonImportSummary, BrokerJsonTransferSummary, BrokerMetadata, BrokerOverview,
-    CloakConfig, CodexQuotaSnapshot, ForceCloseResult, LaunchOptions, LaunchPlan, LaunchResult,
-    SeatUsage, WorkspaceExportSummary, WorkspaceImportMapping, WorkspaceImportPreview,
-    WorkspaceImportSummary, WorkspacePickerState,
+    AuthLoginProgress, AuthRefreshSummary, AuthStatus, BrokerCockpitImportSummary,
+    BrokerJsonImportPreview, BrokerJsonImportSummary, BrokerJsonTransferSummary, BrokerMetadata,
+    BrokerOverview, CloakConfig, CodexQuotaSnapshot, ForceCloseResult, LaunchOptions, LaunchPlan,
+    LaunchResult, SeatUsage, WorkspaceExportSummary, WorkspaceImportMapping,
+    WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
 };
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -739,6 +740,16 @@ async fn broker_refresh_account(profile_id: String) -> Result<BrokerMetadata, St
 }
 
 #[tauri::command]
+async fn broker_import_cockpit_access(
+    profile_id: String,
+) -> Result<BrokerCockpitImportSummary, String> {
+    run_blocking(move || {
+        core_broker_import_cockpit_access(&config()?, &profile_id).map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
 async fn broker_quota_snapshot(profile_id: String) -> Result<CodexQuotaSnapshot, String> {
     run_blocking(move || {
         core_broker_quota_snapshot(&config()?, &profile_id).map_err(|err| err.to_string())
@@ -1362,6 +1373,7 @@ pub fn run() {
             broker_push_account,
             broker_quota_snapshot,
             broker_refresh_account,
+            broker_import_cockpit_access,
             broker_set_cpa,
             choose_broker_json_import_path,
             broker_preview_json,

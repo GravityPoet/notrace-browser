@@ -118,6 +118,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(rows).encode())
     def do_POST(self) -> None:
         settings = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+        if self.path.endswith("/refresh?force=1"):
+            # Exercise the real native command's fail-closed path. No JSON may
+            # be fetched and no external app may be opened after this failure.
+            self.send_response(409)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "reauth_required"}).encode())
+            return
         if self.path.endswith("/grant"):
             # Only disposable synthetic OAuth bytes from this test can arrive.
             profile_id = self.path.split("/")[-2]
@@ -251,6 +259,7 @@ node -e '
     "renewal-search-authorize-seat-error",
     "renewal-header-active-and-trash-launch",
     "cpa-sync-pending-retry-success",
+    "native-cockpit-refresh-failure-and-layout",
     "native-quota-weekly-only-progress",
     "native-auth-browser-close-stops-and-retry-recovers",
     "native-auth-reuses-existing-profile-tab",

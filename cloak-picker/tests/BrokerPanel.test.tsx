@@ -42,7 +42,7 @@ describe("统一授权续期窗口", () => {
     expect(document.body.textContent).toContain("自动 2 次 · 手动 1 次");
     expect(document.body.textContent).toContain("启用统计后累计");
     expect(document.body.textContent).not.toContain("9 次");
-    expect(document.body.textContent).toContain("使用导出 JSON 导入");
+    expect(document.body.textContent).toContain("按需导入 · 不自动续期");
     expect(document.body.textContent).not.toContain("refresh_token");
   });
 
@@ -403,6 +403,70 @@ describe("统一授权续期窗口", () => {
     expect(document.querySelector('input[type="checkbox"]')).toHaveProperty("checked", true);
     expect(document.body.textContent).toContain("Cockpit Tools");
     expect(document.body.textContent).toContain("Sub2API");
+  });
+
+  it("offers one-click refresh and access-only Cockpit import", async () => {
+    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const calls: Array<{ command: string; args?: unknown }> = [];
+    const refreshed = { ...remote, generation: 4, last_refresh_at: 1_899_100_000 };
+    const call: AuthCall = async function call<T>(command: string, args?: unknown): Promise<T> {
+      calls.push({ command, args });
+      if (command === "broker_overview") return overview(refreshed) as T;
+      if (command === "broker_import_cockpit_access") return { email: remote.email, account_id: remote.account_id, generation: 4, expires_at: remote.expires_at, handed_off: true } as T;
+      return overview(refreshed) as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    const button = [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("刷新并导入 Cockpit"));
+    expect(button).toBeTruthy();
+    await act(async () => button?.click());
+    await settle();
+    expect(calls.map(item => item.command)).toContain("broker_import_cockpit_access");
+    expect(calls.find(item => item.command === "broker_import_cockpit_access")?.args).toEqual({ profileId: "profile-1" });
+    expect(document.body.textContent).toContain("access-only 凭据已交给 Cockpit");
+    expect(document.body.textContent).toContain("导入结果和额度刷新请在 Cockpit 查看");
+    expect(calls.some(item => ["broker_refresh_account", "broker_export_json", "broker_set_cpa"].includes(item.command))).toBe(false);
+  });
+
+  it("blocks repeated Cockpit clicks and recovers after refresh failure without claiming import", async () => {
+    const remote: BrokerMetadata = { key: "profile-1", email: local.email, account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    let rejectImport: ((error: Error) => void) | undefined;
+    const commands: string[] = [];
+    const call: AuthCall = async function call<T>(command: string): Promise<T> {
+      commands.push(command);
+      if (command === "broker_overview") return overview(remote) as T;
+      if (command === "broker_import_cockpit_access") return new Promise((_resolve, reject) => { rejectImport = reject; });
+      return null as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    const findButton = () => [...document.querySelectorAll("button")].find(button => /刷新并(导入 Cockpit|交付中)/.test(button.textContent ?? ""));
+    await act(async () => { findButton()?.click(); findButton()?.click(); });
+    await settle();
+    expect(findButton()?.disabled).toBe(true);
+    expect(findButton()?.textContent).toContain("刷新并交付中…");
+    expect(commands.filter(command => command === "broker_import_cockpit_access")).toHaveLength(1);
+    await act(async () => rejectImport?.(new Error("授权已失效，需要重新授权")));
+    await settle();
+    expect(findButton()?.disabled).toBe(false);
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("重新授权");
+    expect(document.body.textContent).not.toContain("凭据已交给 Cockpit");
+  });
+
+  it("does not offer Cockpit import for invalidated grants and disables it offline", async () => {
+    const remote: BrokerMetadata = { key: "profile-1", email: local.email, account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: "reauth_required", cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    let data = overview(remote);
+    const call: AuthCall = async function call<T>(command: string): Promise<T> { return (command === "broker_overview" ? data : null) as T; };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await settle();
+    expect([...document.querySelectorAll("button")].some(button => button.textContent === "刷新并导入 Cockpit")).toBe(false);
+    data = { ...overview({ ...remote, error: null }), connected: false };
+    await act(async () => (document.querySelector('[aria-label="读取授权状态"]') as HTMLButtonElement).click());
+    await settle();
+    expect([...document.querySelectorAll("button")].find(button => button.textContent === "刷新并导入 Cockpit")?.disabled).toBe(true);
   });
 
   it("keeps refresh token clearing enabled by default and only preserves it when unchecked", async () => {

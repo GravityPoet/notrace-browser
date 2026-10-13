@@ -4,13 +4,18 @@ use crate::{
     format_access_credentials, AccessCredential, AuthStatus, BrokerJsonFormat,
     BrokerJsonImportPreview, BrokerMetadata, CloakConfig, CloakError, CodexQuotaSnapshot, Result,
 };
+use rand::RngCore;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(target_os = "macos")]
+use std::process::Command;
 use std::{
     fs,
-    io::Read,
+    io::{Read, Write},
+    net::{Ipv4Addr, TcpListener, TcpStream},
     path::{Path, PathBuf},
+    thread,
     time::Duration,
 };
 use zeroize::Zeroizing;
@@ -50,6 +55,15 @@ pub struct BrokerJsonImportSummary {
     pub account_id: String,
     pub profile_id: String,
     pub generation: u64,
+}
+
+#[derive(Serialize)]
+pub struct BrokerCockpitImportSummary {
+    pub email: String,
+    pub account_id: String,
+    pub generation: u64,
+    pub expires_at: u64,
+    pub handed_off: bool,
 }
 fn connection_path(config: &CloakConfig) -> PathBuf {
     config
@@ -148,6 +162,225 @@ pub fn broker_refresh_account(config: &CloakConfig, profile_id: &str) -> Result<
         ),
         Some(json!({})),
     )
+}
+
+/// Refresh one Broker grant and hand the resulting access-only projection to
+/// the official Cockpit Tools app. The rotating refresh token never crosses
+/// this boundary: it stays encrypted inside Broker, while Cockpit receives a
+/// short-lived JSON bundle through a one-shot loopback HTTP URL.
+pub fn broker_import_cockpit_access(
+    config: &CloakConfig,
+    profile_id: &str,
+) -> Result<BrokerCockpitImportSummary> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (config, profile_id);
+        Err(CloakError::Auth("一键导入 Cockpit 目前仅支持 macOS".into()))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let app = Path::new("/Applications/Cockpit Tools.app");
+        if !app.join("Contents/MacOS/cockpit-tools").is_file() {
+            return Err(CloakError::Auth("请先安装官方 Cockpit Tools".into()));
+        }
+        import_cockpit_access(config, profile_id, Duration::from_secs(45), |deep_link| {
+            let opened = Command::new("/usr/bin/open")
+                .arg("-a")
+                .arg(app)
+                .arg(deep_link)
+                .output()
+                .map_err(|_| CloakError::Auth("无法唤起官方 Cockpit Tools".into()))?;
+            if !opened.status.success() {
+                return Err(CloakError::Auth("官方 Cockpit Tools 未接受导入请求".into()));
+            }
+            Ok(())
+        })
+    }
+}
+
+fn import_cockpit_access(
+    config: &CloakConfig,
+    profile_id: &str,
+    timeout: Duration,
+    open: impl FnOnce(&str) -> Result<()>,
+) -> Result<BrokerCockpitImportSummary> {
+    let connection = load(config)?.ok_or_else(|| CloakError::Auth("请先连接 Broker".into()))?;
+    let key = segment(profile_id)?;
+    let metadata: BrokerMetadata = request(
+        &connection,
+        "POST",
+        &format!("/v1/admin/accounts/{key}/refresh?force=1"),
+        Some(json!({})),
+    )?;
+    if metadata.key != profile_id || metadata.error.is_some() {
+        return Err(CloakError::Auth(
+            "Broker 未确认刷新成功，未导入 Cockpit".into(),
+        ));
+    }
+    let credential: AccessCredential = request(
+        &connection,
+        "GET",
+        &format!("/v1/admin/accounts/{key}/credential"),
+        None,
+    )?;
+    if !credential.refresh_token.is_empty() {
+        return Err(CloakError::Auth(
+            "Cockpit 导入边界异常：拒绝发送 refresh_token".into(),
+        ));
+    }
+    if credential.notrace_key != profile_id
+        || credential.notrace_generation != metadata.generation
+        || credential.account_id != metadata.account_id
+        || !credential.email.eq_ignore_ascii_case(&metadata.email)
+        || credential.expires_at != metadata.expires_at
+        || credential.expires_at <= crate::current_epoch_secs()
+        || credential.access_token.is_empty()
+        || credential.id_token.is_empty()
+        || credential.refresh_owner != "notrace_broker"
+    {
+        return Err(CloakError::Auth(
+            "刷新后的授权代次与账号不一致，未交给 Cockpit".into(),
+        ));
+    }
+    let payload = Zeroizing::new(format_access_credentials(
+        std::slice::from_ref(&credential),
+        BrokerJsonFormat::CockpitTools,
+        false,
+    )?);
+    let handed_off = serve_cockpit_import(payload, timeout, open)?;
+    if !handed_off {
+        return Err(CloakError::Auth(
+            "Cockpit 未在有效期内读取导入包，未确认导入".into(),
+        ));
+    }
+    Ok(BrokerCockpitImportSummary {
+        email: metadata.email,
+        account_id: metadata.account_id,
+        generation: metadata.generation,
+        expires_at: metadata.expires_at,
+        handed_off,
+    })
+}
+
+fn serve_cockpit_import(
+    payload: Zeroizing<Vec<u8>>,
+    timeout: Duration,
+    open: impl FnOnce(&str) -> Result<()>,
+) -> Result<bool> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .map_err(|_| CloakError::Auth("无法启动 Cockpit 本地导入服务".into()))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|_| CloakError::Auth("无法配置 Cockpit 本地导入服务".into()))?;
+    let port = listener
+        .local_addr()
+        .map_err(|_| CloakError::Auth("无法读取 Cockpit 本地导入端口".into()))?
+        .port();
+    let mut random = [0u8; 24];
+    rand::rngs::OsRng.fill_bytes(&mut random);
+    let token = random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let path = format!("/notrace-cockpit-import/{token}");
+    let import_url = format!("http://127.0.0.1:{port}{path}");
+    let deep_link = cockpit_deep_link(&import_url);
+    open(&deep_link)?;
+    let deadline = std::time::Instant::now() + timeout;
+    let host = format!("127.0.0.1:{port}");
+    while std::time::Instant::now() < deadline {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                if import_request_matches(&mut stream, &path, &host, deadline) {
+                    write_import_response(&mut stream, &payload)?;
+                    return Ok(true);
+                }
+                let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n");
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => return Err(CloakError::Auth("Cockpit 导入连接失败".into())),
+        }
+    }
+    Ok(false)
+}
+
+fn cockpit_deep_link(import_url: &str) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("provider", "codex")
+        .append_pair("import_url", import_url)
+        .append_pair("auto_import", "true")
+        .finish();
+    format!("cockpit-tools://import?{query}")
+}
+
+fn import_request_matches(
+    stream: &mut TcpStream,
+    expected_path: &str,
+    expected_host: &str,
+    deadline: std::time::Instant,
+) -> bool {
+    let deadline = deadline.min(std::time::Instant::now() + Duration::from_secs(2));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let mut request = Vec::new();
+    let mut chunk = [0u8; 512];
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() || stream.set_read_timeout(Some(remaining)).is_err() {
+            return false;
+        }
+        let Ok(size) = stream.read(&mut chunk) else {
+            return false;
+        };
+        if size == 0 || request.len() + size > 8192 {
+            return false;
+        }
+        request.extend_from_slice(&chunk[..size]);
+        if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+            break;
+        }
+    }
+    let Ok(header) = std::str::from_utf8(&request) else {
+        return false;
+    };
+    let mut lines = header.lines();
+    let first = lines.next().unwrap_or_default();
+    let mut parts = first.split_ascii_whitespace();
+    if parts.next() != Some("GET")
+        || parts.next() != Some(expected_path)
+        || !matches!(parts.next(), Some("HTTP/1.1" | "HTTP/1.0"))
+        || parts.next().is_some()
+    {
+        return false;
+    }
+    let mut host = None;
+    for line in lines.take_while(|line| !line.is_empty()) {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        if name.eq_ignore_ascii_case("origin") || name.eq_ignore_ascii_case("transfer-encoding") {
+            return false;
+        }
+        if name.eq_ignore_ascii_case("content-length") && value.trim() != "0" {
+            return false;
+        }
+        if name.eq_ignore_ascii_case("host") && host.replace(value.trim()).is_some() {
+            return false;
+        }
+    }
+    host == Some(expected_host) && std::time::Instant::now() < deadline
+}
+
+fn write_import_response(stream: &mut TcpStream, payload: &[u8]) -> Result<()> {
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
+        payload.len()
+    );
+    stream
+        .write_all(header.as_bytes())
+        .and_then(|_| stream.write_all(payload))
+        .map_err(|_| CloakError::Auth("Cockpit 导入响应失败".into()))
 }
 
 /// Read-only usage/quota query. The Broker uses the current access token and
@@ -474,10 +707,14 @@ fn request<T: serde::de::DeserializeOwned>(
             .into(),
         ));
     }
-    let mut body = String::new();
+    let mut body = Zeroizing::new(String::new());
     response
         .take(2 * 1024 * 1024)
         .read_to_string(&mut body)
         .map_err(|_| CloakError::Auth("读取 Broker 状态失败".into()))?;
     serde_json::from_str(&body).map_err(|_| CloakError::Auth("Broker 状态数据无效".into()))
 }
+
+#[cfg(test)]
+#[path = "broker_client_tests.rs"]
+mod tests;
