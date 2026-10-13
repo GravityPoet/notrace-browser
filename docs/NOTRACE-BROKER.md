@@ -139,3 +139,32 @@ projection of later renewals. Failed or pending synchronization offers an
 explicit retry instead of showing a pause button solely because the switch
 is enabled. An idempotent retry of the same handoff preserves its current
 settings, and normal OAuth renewals preserve the enabled sync policy.
+
+### CPA file ACL compatibility
+
+CPA's Codex atomic writer creates a root-owned `0600` replacement. This masks
+the inherited `notrace-broker` ACL even though the directory ACL is correct,
+causing `cpa_sync_error: storage` for previously synchronized accounts.
+
+Deploy `packaging/cpa-broker-acl.py` as the root-owned executable
+`/usr/local/libexec/notrace-cpa-acl.py`, and the matching `.service` and
+`.path` units under `/etc/systemd/system/`. Create the root-owned `0700`
+`/var/lib/notrace-cpa-acl` directory first. Both directories must have root-owned
+ancestors; do not place this privileged helper under the Broker-owned `/opt/notrace-broker`.
+The Linux-root installer `packaging/install-cpa-broker-acl.sh` performs these
+checks, enables the path unit and runs the service once for existing files.
+The path unit reacts to CPA directory
+changes and survives CPA container upgrades without changing the vendor image.
+
+The helper never reads credential bodies. It changes only ACL xattrs on
+root-owned regular `.json` files with a single existing Broker ACL and no
+group/other access. It restores read access only, refuses links and other named
+principals, and retains at most two ACL-only rollback records. File contents,
+owners and Broker sync policies are unchanged. To revoke Broker access, remove
+the named ACL instead of only masking it, or stop the path unit.
+
+For rollback, stop and disable `notrace-cpa-acl.path`, then run
+`python3 /usr/local/libexec/notrace-cpa-acl.py --rollback` to inspect the
+latest snapshot and add `--repair` to apply it. Inodes replaced since the
+snapshot are skipped. Validate with the pure Python tests and the isolated
+Linux `--linux-fixture` test before deployment; neither test uses real accounts.

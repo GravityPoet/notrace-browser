@@ -1,0 +1,17 @@
+[Unit]
+Description=NoTrace CPA 文件读取权限兼容修复
+After=local-fs.target
+ConditionPathIsDirectory=/opt/cliproxyapi/auths
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/notrace-cpa-acl.py --repair
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/cliproxyapi/auths /var/lib/notrace-cpa-acl
+TimeoutStartSec=30

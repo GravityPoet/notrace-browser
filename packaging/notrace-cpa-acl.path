@@ -1,0 +1,9 @@
+[Unit]
+Description=NoTrace CPA 文件变更权限兼容
+
+[Path]
+PathChanged=/opt/cliproxyapi/auths
+Unit=notrace-cpa-acl.service
+
+[Install]
+WantedBy=multi-user.target
