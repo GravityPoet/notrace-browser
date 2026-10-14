@@ -287,7 +287,7 @@ const NATIVE_E2E_DRIVER: &str = r#"
     cockpitButton.click();
     await waitFor(() => Array.from(pane.querySelectorAll('[role="alert"]')).some(alert => alert.textContent.includes('授权已失效，需要重新授权')), 'Cockpit 凭据读取失败提示');
     await waitFor(() => syncButton('导入 Cockpit') && !syncButton('导入 Cockpit').disabled, 'Cockpit 失败后恢复入口');
-    if (pane.textContent.includes('凭据已交给 Cockpit')) throw new Error('凭据读取失败被误报为 Cockpit 导入成功');
+    if (pane.textContent.includes('Cockpit 已接收凭据') || pane.textContent.includes('已接收 · 保存待确认')) throw new Error('凭据读取失败被误报为 Cockpit 已接收');
     checks.push('native-cockpit-import-layout-and-order');
     // A context action must not reset the search and replace the targeted row.
     // Open only the confirmation, then cancel; both fixtures stay on disk.

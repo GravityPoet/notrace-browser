@@ -64,6 +64,7 @@ pub struct BrokerCockpitImportSummary {
     pub generation: u64,
     pub expires_at: u64,
     pub handed_off: bool,
+    pub background_requested: bool,
 }
 fn connection_path(config: &CloakConfig) -> PathBuf {
     config
@@ -171,10 +172,11 @@ pub fn broker_refresh_account(config: &CloakConfig, profile_id: &str) -> Result<
 pub fn broker_import_cockpit_access(
     config: &CloakConfig,
     profile_id: &str,
+    background_window: impl FnOnce() -> bool,
 ) -> Result<BrokerCockpitImportSummary> {
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (config, profile_id);
+        let _ = (config, profile_id, background_window);
         Err(CloakError::Auth("一键导入 Cockpit 目前仅支持 macOS".into()))
     }
     #[cfg(target_os = "macos")]
@@ -183,18 +185,29 @@ pub fn broker_import_cockpit_access(
         if !app.join("Contents/MacOS/cockpit-tools").is_file() {
             return Err(CloakError::Auth("请先安装官方 Cockpit Tools".into()));
         }
-        import_cockpit_access(config, profile_id, Duration::from_secs(45), |deep_link| {
-            let opened = Command::new("/usr/bin/open")
-                .arg("-a")
-                .arg(app)
-                .arg(deep_link)
-                .output()
-                .map_err(|_| CloakError::Auth("无法唤起官方 Cockpit Tools".into()))?;
-            if !opened.status.success() {
-                return Err(CloakError::Auth("官方 Cockpit Tools 未接受导入请求".into()));
-            }
-            Ok(())
-        })
+        let did_open = std::cell::Cell::new(false);
+        let result =
+            import_cockpit_access(config, profile_id, Duration::from_secs(45), |deep_link| {
+                let opened = Command::new("/usr/bin/open")
+                    .arg("-g")
+                    .arg("-j")
+                    .arg("-a")
+                    .arg(app)
+                    .arg(deep_link)
+                    .output()
+                    .map_err(|_| CloakError::Auth("无法唤起官方 Cockpit Tools".into()))?;
+                if !opened.status.success() {
+                    return Err(CloakError::Auth("官方 Cockpit Tools 未接受导入请求".into()));
+                }
+                did_open.set(true);
+                Ok(())
+            });
+        // No focus watcher: restore once, and only if Cockpit is still active.
+        // A user who has switched to another app must not be interrupted.
+        let background_requested = !did_open.get() || background_window();
+        let mut result = result?;
+        result.background_requested = background_requested;
+        Ok(result)
     }
 }
 
@@ -259,6 +272,7 @@ fn import_cockpit_access(
         generation: metadata.generation,
         expires_at: metadata.expires_at,
         handed_off,
+        background_requested: false,
     })
 }
 

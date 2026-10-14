@@ -70,6 +70,15 @@ disable CPA synchronization, and it does not rotate the Broker grant.
 
 The Picker opens `/Applications/Cockpit Tools.app` with the official
 `cockpit-tools://import?provider=codex&import_url=...&auto_import=true` protocol.
+It requests background/hidden launch (`open -g -j`). Cockpit 1.3.68 itself
+forcibly activates its main window, so a brief foreground flash remains possible.
+After the handoff (including a failed or timed-out handoff), the Picker uses
+`NSRunningApplication.hide()` once on the Picker's main event thread, restoring the former application only if
+Cockpit is still active. It never runs a repeated focus watcher or activates
+the Picker over an unrelated foreground app. An already-hidden app is a no-op.
+The native result reports accepted dispatch, not synchronous hide completion
+(AppKit's time-varying properties are run-loop cached). An unconfirmed window
+request is shown separately from delivery; it never triggers another import.
 The JSON bundle stays in memory and is served once from `127.0.0.1` on a random
 port and a 192-bit random path, for at most 45 seconds. Invalid paths, browser
 origins, unexpected Host headers and non-GET requests cannot consume it. No
@@ -82,9 +91,12 @@ after saving the account.
 It receives `access_token` and identity metadata, with `refresh_token` empty;
 Broker remains the renewal owner. Later Broker renewals are not automatically
 pushed to Cockpit: click the action again to replace its access-only copy.
-NoTrace's success message confirms bundle delivery only, not Cockpit's final
-save or upstream quota success; those results are shown in Cockpit's own import
-dialog. A timeout or ambiguous handoff failure must not be retried automatically.
+NoTrace shows **已接收 · 保存待确认** for the delivered generation, not final
+success. The official protocol has no save/quota completion callback; these
+results remain in Cockpit's own import dialog, which the user can open manually.
+The delivery indicator expires when the Broker endpoint or generation changes,
+or when the panel is reopened. It does not acknowledge a Broker consumer sync.
+A timeout or ambiguous handoff failure must not be retried automatically.
 
 For the original CPA upload endpoint, select the CPA format: one JSON metadata
 object per account, with `access_token` at the top level. Cockpit's array export

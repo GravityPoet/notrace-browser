@@ -42,6 +42,7 @@ use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 use zeroize::Zeroizing;
 
+mod cockpit_import_window;
 mod native_e2e;
 
 fn config() -> Result<CloakConfig, String> {
@@ -741,10 +742,15 @@ async fn broker_refresh_account(profile_id: String) -> Result<BrokerMetadata, St
 
 #[tauri::command]
 async fn broker_import_cockpit_access(
+    app: tauri::AppHandle,
     profile_id: String,
 ) -> Result<BrokerCockpitImportSummary, String> {
+    let previous = cockpit_import_window::foreground_pid(&app).await;
     run_blocking(move || {
-        core_broker_import_cockpit_access(&config()?, &profile_id).map_err(|err| err.to_string())
+        core_broker_import_cockpit_access(&config()?, &profile_id, || {
+            cockpit_import_window::restore_background(&app, previous)
+        })
+        .map_err(|err| err.to_string())
     })
     .await
 }

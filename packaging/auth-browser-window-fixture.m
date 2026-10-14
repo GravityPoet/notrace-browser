@@ -66,10 +66,9 @@ static BOOL forwardExistingProfileTabIfNeeded(int argc, char **argv) {
             [self.window deminiaturize:nil];
             [self.window orderFront:nil];
         } else if ([action isEqual:@"close"]) {
-            // Match Chromium destroying the window while keeping its main
-            // application alive. AppKit's retained closed window is not a
-            // valid browser-closure fixture.
-            self.window.releasedWhenClosed = YES;
+            // The retained property releases the final owner below. Asking
+            // AppKit to release it too can over-release during pool draining.
+            self.window.releasedWhenClosed = NO;
             [self.window close];
             self.window = nil;
         } else if ([action isEqual:@"quit"]) [NSApp terminate:nil];
