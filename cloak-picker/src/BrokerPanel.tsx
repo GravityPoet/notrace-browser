@@ -24,7 +24,7 @@ export type BrokerRow = { name: string; profile_id: string; trashed: boolean; lo
 export type BrokerOverview = { configured: boolean; endpoint: string | null; connected: boolean; message: string | null; accounts: BrokerRow[]; unmatched: BrokerMetadata[] };
 type BrokerJsonFormat = "cockpit_tools" | "auth_json" | "cpa" | "sub2api";
 type BrokerJsonTransferSummary = { path: string; format: string; account_count: number; refresh_token_exported: boolean };
-type BrokerCockpitImportSummary = { email: string; account_id: string; generation: number; expires_at: number; handed_off: boolean; background_requested: boolean };
+type BrokerCockpitImportSummary = { email: string; account_id: string; generation: number; expires_at: number; handed_off: boolean; background_requested: boolean; background_note?: string | null };
 type BrokerJsonImportSummary = { email: string; account_id: string; profile_id: string; generation: number };
 type BrokerJsonPreviewAccount = { email: string | null; account_id: string | null; has_access_token: boolean; has_id_token: boolean; has_refresh_token: boolean };
 type BrokerJsonPreview = { path: string; detected_format: string; account_count: number; accounts: BrokerJsonPreviewAccount[]; contains_refresh_token: boolean; message: string };
@@ -360,7 +360,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       if (!result.handed_off) throw new Error("Cockpit 尚未读取导入包，未确认导入");
       if (mounted.current && overviewRef.current?.endpoint === endpointAtStart) {
         setCockpitDeliveries(current => ({ ...current, [row.profile_id]: { endpoint: endpointAtStart, generation: result.generation } }));
-        setMessage(`${result.email}：Cockpit 已接收凭据，将继续保存并读取一次额度；官方未回传最终结果，不必重复点击。${result.background_requested ? "" : "系统未确认窗口隐藏，可手动切回。"}`);
+        setMessage(`${result.email}：Cockpit 已接收凭据，将继续保存并读取一次额度；官方未回传最终结果，不必重复点击。${result.background_requested ? "" : result.background_note ?? "系统未确认窗口隐藏，可手动切回。"}`);
       }
     } finally {
       try { await read(); } catch { /* Keep the handoff result or original failure visible. */ }

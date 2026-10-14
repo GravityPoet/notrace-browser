@@ -79,6 +79,10 @@ the Picker over an unrelated foreground app. An already-hidden app is a no-op.
 The native result reports accepted dispatch, not synchronous hide completion
 (AppKit's time-varying properties are run-loop cached). An unconfirmed window
 request is shown separately from delivery; it never triggers another import.
+If a hide request is refused while the cached state still says visible, the
+Picker performs at most three later read-only main-loop observations. An
+already-hidden result is accepted; otherwise the specific window failure is
+shown without changing the successful credential delivery result.
 The JSON bundle stays in memory and is served once from `127.0.0.1` on a random
 port and a 192-bit random path, for at most 45 seconds. Invalid paths, browser
 origins, unexpected Host headers and non-GET requests cannot consume it. No

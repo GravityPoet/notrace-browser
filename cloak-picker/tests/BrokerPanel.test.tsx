@@ -411,7 +411,7 @@ describe("统一授权续期窗口", () => {
     const call: AuthCall = async function call<T>(command: string, args?: unknown): Promise<T> {
       calls.push({ command, args });
       if (command === "broker_overview") return overview(remote) as T;
-      if (command === "broker_import_cockpit_access") return { email: remote.email, account_id: remote.account_id, generation: 3, expires_at: remote.expires_at, handed_off: true, background_requested: backgroundRequested } as T;
+      if (command === "broker_import_cockpit_access") return { email: remote.email, account_id: remote.account_id, generation: 3, expires_at: remote.expires_at, handed_off: true, background_requested: backgroundRequested, background_note: backgroundRequested ? null : "macOS 未接受 Cockpit 隐藏请求；已尝试恢复原前台" } as T;
       return overview(remote) as T;
     };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -427,7 +427,7 @@ describe("统一授权续期窗口", () => {
     expect(document.body.textContent).toContain("保存并读取一次额度");
     expect(document.body.textContent).toContain("官方未回传最终结果");
     expect(document.body.textContent).toContain("已接收 · 保存待确认");
-    expect(document.body.textContent?.includes("系统未确认窗口隐藏")).toBe(!backgroundRequested);
+    expect(document.body.textContent?.includes("macOS 未接受 Cockpit 隐藏请求")).toBe(!backgroundRequested);
     expect(document.body.textContent).not.toContain("导入成功");
     expect(document.body.textContent).not.toContain("已确认");
     expect(document.body.textContent).not.toContain("已刷新一次");

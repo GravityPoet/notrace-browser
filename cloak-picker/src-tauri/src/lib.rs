@@ -747,10 +747,19 @@ async fn broker_import_cockpit_access(
 ) -> Result<BrokerCockpitImportSummary, String> {
     let previous = cockpit_import_window::foreground_pid(&app).await;
     run_blocking(move || {
-        core_broker_import_cockpit_access(&config()?, &profile_id, || {
-            cockpit_import_window::restore_background(&app, previous)
+        let mut background_note = None;
+        let mut summary = core_broker_import_cockpit_access(&config()?, &profile_id, || {
+            match cockpit_import_window::restore_background(&app, previous) {
+                Ok(()) => true,
+                Err(note) => {
+                    background_note = Some(note.to_string());
+                    false
+                }
+            }
         })
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+        summary.background_note = background_note;
+        Ok(summary)
     })
     .await
 }

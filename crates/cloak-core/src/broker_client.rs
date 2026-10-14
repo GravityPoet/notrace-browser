@@ -65,6 +65,7 @@ pub struct BrokerCockpitImportSummary {
     pub expires_at: u64,
     pub handed_off: bool,
     pub background_requested: bool,
+    pub background_note: Option<String>,
 }
 fn connection_path(config: &CloakConfig) -> PathBuf {
     config
@@ -273,6 +274,7 @@ fn import_cockpit_access(
         expires_at: metadata.expires_at,
         handed_off,
         background_requested: false,
+        background_note: None,
     })
 }
 
