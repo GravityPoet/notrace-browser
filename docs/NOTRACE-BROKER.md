@@ -63,11 +63,10 @@ ownership where the consumer supports it.
 
 ### One-click official Cockpit import (macOS)
 
-**刷新并导入 Cockpit** requests exactly one forced Broker refresh before
-reading the resulting access-only projection. It refuses refresh failures,
-expired credentials, unexpected refresh tokens, and mismatched account or
-generation metadata. It does not enable or disable CPA synchronization; the
-existing Broker refresh endpoint can still project an already-enabled CPA.
+**导入 Cockpit** reads the current Broker access-only projection without
+forcing a Broker refresh. It refuses expired credentials, unexpected refresh
+tokens, and mismatched account or generation metadata. It does not enable or
+disable CPA synchronization, and it does not rotate the Broker grant.
 
 The Picker opens `/Applications/Cockpit Tools.app` with the official
 `cockpit-tools://import?provider=codex&import_url=...&auto_import=true` protocol.
@@ -78,13 +77,14 @@ temporary credential file, raw-token URL, clipboard copy, private Cockpit
 database edit or Broker consumer acknowledgement is used.
 
 Cockpit Tools 1.3.68 (official source `af5e90bc12151945e0f9c2058f849471c4ed529a`)
-supports this protocol and automatically reads imported account quota once.
+supports this protocol and automatically reads imported account quota once
+after saving the account.
 It receives `access_token` and identity metadata, with `refresh_token` empty;
 Broker remains the renewal owner. Later Broker renewals are not automatically
 pushed to Cockpit: click the action again to replace its access-only copy.
 NoTrace's success message confirms bundle delivery only, not Cockpit's final
 save or upstream quota success; those results are shown in Cockpit's own import
-dialog. A timeout or ambiguous OAuth failure must not be retried automatically.
+dialog. A timeout or ambiguous handoff failure must not be retried automatically.
 
 For the original CPA upload endpoint, select the CPA format: one JSON metadata
 object per account, with `access_token` at the top level. Cockpit's array export

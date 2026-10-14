@@ -164,10 +164,10 @@ pub fn broker_refresh_account(config: &CloakConfig, profile_id: &str) -> Result<
     )
 }
 
-/// Refresh one Broker grant and hand the resulting access-only projection to
-/// the official Cockpit Tools app. The rotating refresh token never crosses
-/// this boundary: it stays encrypted inside Broker, while Cockpit receives a
-/// short-lived JSON bundle through a one-shot loopback HTTP URL.
+/// Hand the current Broker access-only projection to the official Cockpit Tools
+/// app. This action deliberately does not refresh or rotate the Broker grant:
+/// the official Cockpit import flow refreshes its quota view after saving the
+/// access-only account, while Broker remains the sole refresh-token owner.
 pub fn broker_import_cockpit_access(
     config: &CloakConfig,
     profile_id: &str,
@@ -206,16 +206,16 @@ fn import_cockpit_access(
 ) -> Result<BrokerCockpitImportSummary> {
     let connection = load(config)?.ok_or_else(|| CloakError::Auth("请先连接 Broker".into()))?;
     let key = segment(profile_id)?;
-    let metadata: BrokerMetadata = request(
-        &connection,
-        "POST",
-        &format!("/v1/admin/accounts/{key}/refresh?force=1"),
-        Some(json!({})),
-    )?;
-    if metadata.key != profile_id || metadata.error.is_some() {
-        return Err(CloakError::Auth(
-            "Broker 未确认刷新成功，未导入 Cockpit".into(),
-        ));
+    let accounts: Vec<BrokerMetadata> = request(&connection, "GET", "/v1/admin/accounts", None)?;
+    let metadata = accounts
+        .into_iter()
+        .find(|value| value.key == profile_id)
+        .ok_or_else(|| CloakError::Auth("Broker 中找不到此账号".into()))?;
+    if matches!(
+        metadata.error,
+        Some(crate::BrokerError::ReauthRequired | crate::BrokerError::RecoveryRequired)
+    ) {
+        return Err(CloakError::Auth("授权已失效，需要重新授权".into()));
     }
     let credential: AccessCredential = request(
         &connection,
@@ -239,7 +239,7 @@ fn import_cockpit_access(
         || credential.refresh_owner != "notrace_broker"
     {
         return Err(CloakError::Auth(
-            "刷新后的授权代次与账号不一致，未交给 Cockpit".into(),
+            "当前授权代次与账号不一致，未交给 Cockpit".into(),
         ));
     }
     let payload = Zeroizing::new(format_access_credentials(

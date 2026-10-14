@@ -110,10 +110,12 @@ fn import_url(link: &str) -> String {
 }
 
 #[test]
-fn cockpit_refreshes_once_then_hands_off_only_latest_access_and_returns_metadata() {
+fn cockpit_import_reads_current_access_without_refreshing_broker_and_returns_metadata() {
     let credential = credential();
-    let (_dir, config, broker) =
-        broker_fixture(vec![(200, metadata(&credential)), (200, credential)]);
+    let (_dir, config, broker) = broker_fixture(vec![
+        (200, json!([metadata(&credential)])),
+        (200, credential),
+    ]);
     let (tx, rx) = mpsc::channel();
     let receiver = thread::spawn(move || {
         let url: String = rx.recv().unwrap();
@@ -151,7 +153,7 @@ fn cockpit_refreshes_once_then_hands_off_only_latest_access_and_returns_metadata
     assert_eq!(
         broker.join().unwrap(),
         vec![
-            "POST /v1/admin/accounts/synthetic-profile/refresh?force=1 HTTP/1.1",
+            "GET /v1/admin/accounts HTTP/1.1",
             "GET /v1/admin/accounts/synthetic-profile/credential HTTP/1.1",
         ]
     );
@@ -163,13 +165,21 @@ fn cockpit_refreshes_once_then_hands_off_only_latest_access_and_returns_metadata
 }
 
 #[test]
-fn cockpit_refresh_failure_never_reads_or_hands_off_stale_credentials() {
-    let (_dir, config, broker) = broker_fixture(vec![(409, json!({"error": "reauth_required"}))]);
-    let error = import_cockpit_access(&config, "synthetic-profile", Duration::from_secs(1), |_| {
-        panic!("must not open Cockpit")
-    });
-    assert!(error.err().unwrap().to_string().contains("重新授权"));
-    assert_eq!(broker.join().unwrap().len(), 1);
+fn cockpit_invalidated_or_recovery_grant_never_reads_credentials_or_opens_app() {
+    for state in ["reauth_required", "recovery_required"] {
+        let mut metadata = metadata(&credential());
+        metadata["error"] = json!(state);
+        let (_dir, config, broker) = broker_fixture(vec![(200, json!([metadata]))]);
+        let error =
+            import_cockpit_access(&config, "synthetic-profile", Duration::from_secs(1), |_| {
+                panic!("must not open Cockpit")
+            });
+        assert!(error.err().unwrap().to_string().contains("重新授权"));
+        assert_eq!(
+            broker.join().unwrap(),
+            vec!["GET /v1/admin/accounts HTTP/1.1"]
+        );
+    }
 }
 
 #[test]
@@ -188,7 +198,8 @@ fn cockpit_rejects_mismatched_expired_or_refresh_capable_projection() {
         let mut projection = credential();
         let metadata = metadata(&projection);
         projection[field] = value;
-        let (_dir, config, broker) = broker_fixture(vec![(200, metadata), (200, projection)]);
+        let (_dir, config, broker) =
+            broker_fixture(vec![(200, json!([metadata])), (200, projection)]);
         assert!(
             import_cockpit_access(
                 &config,

@@ -269,7 +269,7 @@ const NATIVE_E2E_DRIVER: &str = r#"
     }, '重试成功后开启自动同步');
     checks.push('cpa-sync-pending-retry-success');
     const cockpitButton = await waitFor(() => {
-      const button = syncButton('刷新并导入 Cockpit');
+      const button = syncButton('导入 Cockpit');
       return button && !button.disabled ? button : null;
     }, 'Cockpit 一键导入入口');
     cockpitButton.scrollIntoView({ block: 'nearest' });
@@ -280,11 +280,15 @@ const NATIVE_E2E_DRIVER: &str = r#"
         || document.elementFromPoint(cockpitBounds.x + cockpitBounds.width / 2, cockpitBounds.y + cockpitBounds.height / 2)?.closest('button') !== cockpitButton) {
       throw new Error('Cockpit 导入按钮被裁切或遮挡');
     }
+    if (cockpitButton.textContent.trim() !== '导入 Cockpit') throw new Error('Cockpit 导入入口文案不符合默认导入语义');
+    if (Array.from(findCurrentSyncRow().querySelectorAll('button')).map(button => button.textContent.trim()).join('|') !== '立即刷新|读取额度|暂停 CPA 同步|导入 Cockpit|导出 JSON') {
+      throw new Error('授权操作顺序不符合约定');
+    }
     cockpitButton.click();
-    await waitFor(() => Array.from(pane.querySelectorAll('[role="alert"]')).some(alert => alert.textContent.includes('授权已失效，需要重新授权')), 'Cockpit 刷新失败具体提示');
-    await waitFor(() => syncButton('刷新并导入 Cockpit') && !syncButton('刷新并导入 Cockpit').disabled, 'Cockpit 失败后恢复入口');
-    if (pane.textContent.includes('凭据已交给 Cockpit')) throw new Error('刷新失败被误报为 Cockpit 导入成功');
-    checks.push('native-cockpit-refresh-failure-and-layout');
+    await waitFor(() => Array.from(pane.querySelectorAll('[role="alert"]')).some(alert => alert.textContent.includes('授权已失效，需要重新授权')), 'Cockpit 凭据读取失败提示');
+    await waitFor(() => syncButton('导入 Cockpit') && !syncButton('导入 Cockpit').disabled, 'Cockpit 失败后恢复入口');
+    if (pane.textContent.includes('凭据已交给 Cockpit')) throw new Error('凭据读取失败被误报为 Cockpit 导入成功');
+    checks.push('native-cockpit-import-layout-and-order');
     // A context action must not reset the search and replace the targeted row.
     // Open only the confirmation, then cancel; both fixtures stay on disk.
     for (const [name, trashed] of [['native-e2e-account', false], ['native-e2e-sync-account', true]]) {
