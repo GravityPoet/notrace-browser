@@ -238,6 +238,30 @@ const NATIVE_E2E_DRIVER: &str = r#"
       throw new Error('Pro 账号额度窗口或顺序不符合真实 UI 契约');
     }
     checks.push('native-quota-weekly-only-progress');
+    const resetStyle = getComputedStyle(quotaReset);
+    if (resetStyle.color !== 'rgb(0, 102, 204)'
+        || resetStyle.backgroundColor !== 'rgba(0, 113, 227, 0.1)'
+        || !quotaReset.querySelector('svg.lucide-clock3')) {
+      throw new Error('正常重置时间必须显示为蓝字浅蓝底时钟，而非告警色');
+    }
+    for (const [tone, color, background] of [
+      ['available', 'rgb(23, 100, 59)', 'rgb(237, 248, 240)'],
+      ['empty', 'rgb(180, 35, 24)', 'rgb(255, 241, 240)'],
+      ['unavailable', 'rgba(0, 0, 0, 0.58)', 'rgb(238, 238, 239)'],
+    ]) {
+      const probe = resetCredits.cloneNode(true);
+      probe.className = `brokerQuotaResetCredits brokerQuotaResetCredits-${tone}`;
+      probe.setAttribute('aria-hidden', 'true');
+      probe.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none';
+      quotaCard.append(probe);
+      try {
+        const style = getComputedStyle(probe);
+        if (style.color !== color || style.backgroundColor !== background) {
+          throw new Error(`主动重置次数 ${tone} 的实际状态颜色错误`);
+        }
+      } finally { probe.remove(); }
+    }
+    checks.push('native-quota-semantic-colors');
     const syncButton = (label) => {
       const row = findCurrentSyncRow();
       return row ? Array.from(row.querySelectorAll('button')).find(e => e.textContent.trim() === label) : null;

@@ -260,6 +260,7 @@ node -e '
     "cpa-sync-pending-retry-success",
     "native-cockpit-import-layout-and-order",
     "native-quota-weekly-only-progress",
+    "native-quota-semantic-colors",
     "native-auth-browser-close-stops-and-retry-recovers",
     "native-auth-reuses-existing-profile-tab",
     "native-auth-success-after-browser-close-retained",
