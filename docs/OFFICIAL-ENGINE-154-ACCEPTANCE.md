@@ -103,7 +103,7 @@ Canvas 复现：按 `packaging/verify-challenge-contract.sh` 读取本机已有 
 关闭正在运行的浏览器后可执行：
 
 ```bash
-cd $HOME/Tools/AI-tools/notrace-browser && bash packaging/rollback-chromium.sh 151.0.7922.108.3-pro-notrace
+cd "$(git rev-parse --show-toplevel)" && bash packaging/rollback-chromium.sh 151.0.7922.108.3-pro-notrace
 ```
 
 此次没有迁移或重写真实账号配置。Seed 和数据保留不代表跨 Chromium

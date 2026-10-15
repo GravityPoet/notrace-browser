@@ -138,9 +138,9 @@ cloak auth refresh-all                 # 只检查到期窗口，不做无条件
 本机可选择 BSD-3-Clause 开源的 [Chromix 152.0.7977.82](https://github.com/xiaozhou26/Chromix/releases/tag/v152.0.7977.82)，不使用 CloakBrowser 的许可或席位服务。这不是破解旧二进制，而是替换指纹内核；原 CloakBrowser 版本和许可证文件均保留。候选压缩包固定 SHA-256，安装后校验主程序及 Framework 哈希、版本、签名和 TCC 声明。
 
 ```bash
-cd $HOME/Tools/AI-tools/notrace-browser && bash packaging/install-independent-engine.sh
-cd $HOME/Tools/AI-tools/notrace-browser && bash packaging/install-cloak-picker-app.sh
-cd $HOME/Tools/AI-tools/notrace-browser && bash packaging/switch-independent-engine.sh activate
+cd "$(git rev-parse --show-toplevel)" && bash packaging/install-independent-engine.sh
+cd "$(git rev-parse --show-toplevel)" && bash packaging/install-cloak-picker-app.sh
+cd "$(git rev-parse --show-toplevel)" && bash packaging/switch-independent-engine.sh activate
 ```
 
 切换前须退出浏览器和 Picker。激活脚本会完整克隆并逐文件核对 `Accounts`，保存旧指针后原子切换；已激活时重复运行不会再切换。它保留账号 Seed 和存储，但更换指纹算法、GPU 模板和 Chromium 版本会改变部分网站可见指纹，不保证与旧内核字节级相同。正式启动仍走 LaunchServices；独立内核不读取/发送许可 key，不受单席位限制，也不关闭 Chromium sandbox。

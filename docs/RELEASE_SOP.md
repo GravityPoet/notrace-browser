@@ -3,7 +3,7 @@
 ## Project
 
 - Repository: `GravityPoet/notrace-browser`
-- GitHub remote: `git@github.com:GravityPoet/notrace-browser.git`
+- GitHub remote: `https://github.com/GravityPoet/notrace-browser.git`
 - Default release branch: `main`
 - Package ecosystem: Rust workspace plus two npm workspaces (`cloak-picker` and the pinned CloakBrowser wrapper)
 - Package manager: `cargo` and `npm`
@@ -31,7 +31,7 @@
 ### Install
 
 ```bash
-cd $HOME/Tools/AI-tools/notrace-browser
+cd "$(git rev-parse --show-toplevel)"
 (cd packaging/cloakbrowser-wrapper && npm ci --omit=optional --ignore-scripts)
 (cd cloak-picker && npm ci)
 cargo fetch
@@ -40,7 +40,7 @@ cargo fetch
 ### Verify
 
 ```bash
-cd $HOME/Tools/AI-tools/notrace-browser
+cd "$(git rev-parse --show-toplevel)"
 git diff --check
 (cd packaging/cloakbrowser-wrapper && npm audit --omit=optional --audit-level=high)
 node packaging/audit-cloakbrowser-compatibility.mjs
@@ -72,7 +72,7 @@ The repository does not redistribute the CloakBrowser binary. For a source
 release, create an archive from the exact tag and a detached checksum:
 
 ```bash
-cd $HOME/Tools/AI-tools/notrace-browser
+cd "$(git rev-parse --show-toplevel)"
 mkdir -p dist
 git archive --format=tar.gz --prefix=notrace-browser-v0.1.1/ v0.1.1 > dist/notrace-browser-v0.1.1.tar.gz
 shasum -a 256 dist/notrace-browser-v0.1.1.tar.gz > dist/notrace-browser-v0.1.1.tar.gz.sha256
@@ -81,7 +81,7 @@ shasum -a 256 dist/notrace-browser-v0.1.1.tar.gz > dist/notrace-browser-v0.1.1.t
 ### GitHub distribution
 
 ```bash
-cd $HOME/Tools/AI-tools/notrace-browser
+cd "$(git rev-parse --show-toplevel)"
 git tag -a v0.1.1 -m "NoTrace Browser v0.1.1"
 git push origin main
 git push origin v0.1.1

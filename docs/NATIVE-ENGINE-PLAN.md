@@ -30,8 +30,8 @@
 依赖为完整 Xcode（SDK 26+）、Apple Metal Toolchain、Python 3、Git、Go、GNU patch (`gpatch`) 和 Ninja；全部检出为固定提交的浅历史。不安装到 `/Applications`，不操作运行中的浏览器或账号。源归档与 LLVM/Node 校验使用公开 pin，Rust 补充官方发布 SHA256。0209 只修正 macOS 152 测试文件尾部上下文；补丁仍以 `fuzz=0` 应用，216 个补丁的反向/正向源码回放已通过。
 
 ```bash
-cd $HOME/Tools/AI-tools/notrace-browser && bash packaging/native-engine/prepare-macos-arm64.sh
-cd $HOME/Tools/AI-tools/notrace-browser && bash packaging/native-engine/build-baseline-macos-arm64.sh
+cd "$(git rev-parse --show-toplevel)" && bash packaging/native-engine/prepare-macos-arm64.sh
+cd "$(git rev-parse --show-toplevel)" && bash packaging/native-engine/build-baseline-macos-arm64.sh
 ```
 
 第二条默认取 `sysctl hw.ncpu`，本机为 10；只有实际失败后才用已有 `CHROMIX_JOBS` 重跑相同目录。这个产物是**公开源码比较基线**，不是“全部原生隐私缺口已修复”的交付版本。新增隐私修复必须独立形成源码补丁与测试，不能把补丁应用、构建成功或架构正确写成抗识别无损。
