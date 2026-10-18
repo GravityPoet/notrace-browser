@@ -9,10 +9,10 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
-const local = { account: "demo@example.test", state: "connected", email: "demo@example.test", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, auto_refresh: true, next_retry_at: null, authority: "no_trace", message: null } as const;
+const local = { account: "demo@example.com", state: "connected", email: "demo@example.com", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, auto_refresh: true, next_retry_at: null, authority: "no_trace", message: null } as const;
 
 function overview(remote: BrokerOverview["accounts"][number]["remote"] = null): BrokerOverview {
-  return { configured: true, endpoint: "http://127.0.0.1:18555", connected: true, message: null, unmatched: [], accounts: [{ name: "demo@example.test", profile_id: "profile-1", trashed: false, local, remote }] };
+  return { configured: true, endpoint: "http://127.0.0.1:18555", connected: true, message: null, unmatched: [], accounts: [{ name: "demo@example.com", profile_id: "profile-1", trashed: false, local, remote }] };
 }
 async function settle() { await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 0)); }); }
 afterEach(() => { act(() => root?.unmount()); root = null; container?.remove(); container = null; });
@@ -31,10 +31,11 @@ describe("统一授权续期窗口", () => {
   });
 
   it("shows recorded renewal counts independently of generation and consumer sync", async () => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, refresh_count: 3, automatic_refresh_count: 2, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 9, cpa_sync_error: null, cockpit_synced_generation: null };
+    const subscriptionExpiry = new Date(Date.now() + 30 * 86_400_000).toISOString();
+    const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", subscription_active_until: subscriptionExpiry, expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, refresh_count: 3, automatic_refresh_count: 2, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 9, cpa_sync_error: null, cockpit_synced_generation: null };
     const call: AuthCall = async function call<T>(command: string): Promise<T> { if (command === "broker_overview") return overview(remote) as T; return overview(remote) as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
-    await act(async () => root?.render(createElement(BrokerPanel, { call })));
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
     await settle();
     expect(document.body.textContent).toContain("已授权 · NoTrace Broker 自动续期");
     expect(document.body.textContent).toContain("已同步");
@@ -43,16 +44,21 @@ describe("统一授权续期窗口", () => {
     expect(document.body.textContent).toContain("启用统计后累计");
     expect(document.body.textContent).not.toContain("9 次");
     expect(document.body.textContent).toContain("按需导入 · 不自动续期");
+    expect(document.body.textContent).toContain("订阅到期");
+    expect(document.body.textContent).toMatch(/\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}/);
+    expect(document.body.textContent).toMatch(/剩余 \d+ 天/);
+    expect(document.querySelector(".brokerSubscriptionExpiry")).not.toBeNull();
+    expect(document.querySelector(".brokerSubscriptionExpiry")?.getAttribute("title")).toContain("access token");
     expect(document.body.textContent).not.toContain("refresh_token");
   });
 
   it("reads five-hour and weekly quota without exposing refresh credentials", async () => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, refresh_count: 3, automatic_refresh_count: 2, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, refresh_count: 3, automatic_refresh_count: 2, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
     const calls: string[] = [];
     const call: AuthCall = async function call<T>(command: string): Promise<T> {
       calls.push(command);
       if (command === "broker_quota_snapshot") return {
-        account_id: "acct-1", email: "demo@example.test", fetched_at: 1_899_000_000, generation: 9,
+        account_id: "acct-1", email: "demo@example.com", fetched_at: 1_899_000_000, generation: 9,
         windows: [
           { name: "5 小时", used_percent: 25, remaining_percent: 75, reset_at: 1_899_100_000, window_minutes: 300 },
           { name: "周", used_percent: 60, remaining_percent: 40, reset_at: 1_899_200_000, window_minutes: 10080 },
@@ -86,10 +92,10 @@ describe("统一授权续期窗口", () => {
   it.each([
     ["pro", "Pro"], ["max_pro", "Max Pro"], ["plus", "Plus"], ["future-plan", "future-plan"], [null, "套餐未知"],
   ])("renders the returned weekly window without guessing five-hour limits for %s", async (plan, label) => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: plan, expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: plan, expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
     const call: AuthCall = async function call<T>(command: string): Promise<T> {
       if (command === "broker_quota_snapshot") return {
-        account_id: "acct-1", email: "demo@example.test", fetched_at: 1_899_000_000, generation: 9,
+        account_id: "acct-1", email: "demo@example.com", fetched_at: 1_899_000_000, generation: 9,
         // Older Brokers label primary_window "5 小时" even when its real duration is a week.
         windows: [{ name: "5 小时", used_percent: 16, remaining_percent: 84, reset_at: 1_899_200_000, window_minutes: 10080 }],
         reset_count: 1, reset_count_available: true,
@@ -204,9 +210,9 @@ describe("统一授权续期窗口", () => {
   });
 
   it("finishes asynchronous workbench quota once and keeps late results on their account", async () => {
-    const remote: BrokerMetadata = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote: BrokerMetadata = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
     const data = overview(remote);
-    data.accounts.push({ ...data.accounts[0], name: "other@example.test", profile_id: "profile-2", remote: { ...remote, key: "profile-2", email: "other@example.test", account_id: "acct-2" } });
+    data.accounts.push({ ...data.accounts[0], name: "other@example.com", profile_id: "profile-2", remote: { ...remote, key: "profile-2", email: "other@example.com", account_id: "acct-2" } });
     const pending = new Map<string, (value: CodexQuotaSnapshot) => void>();
     const requests: string[] = [];
     const call: AuthCall = async function call<T>(command: string, args: Record<string, unknown>): Promise<T> {
@@ -232,7 +238,7 @@ describe("统一授权续期窗口", () => {
     await settle();
     expect(document.body.textContent).not.toContain("75%");
     expect(requests).toEqual(["profile-1", "profile-2"]);
-    await act(async () => pending.get("profile-2")?.(snapshot("acct-2", "other@example.test", 42)));
+    await act(async () => pending.get("profile-2")?.(snapshot("acct-2", "other@example.com", 42)));
     await settle();
     expect(document.querySelector('[aria-label="账号额度"]')?.textContent).toContain("42%");
     expect([...document.querySelectorAll("button")].find(button => button.textContent === "读取额度")?.disabled).toBe(false);
@@ -243,7 +249,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("offers reauthorization when the Broker grant needs a new OAuth chain", async () => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: "reauth_required", cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: "reauth_required", cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
     const calls: string[] = [];
     const call: AuthCall = async function call<T>(command: string): Promise<T> { calls.push(command); return overview(remote) as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -258,7 +264,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("returns a reauthorized account to explicit CPA synchronization", async () => {
-    let remote: BrokerMetadata = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 1, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 1, cpa_sync_error: null, cockpit_synced_generation: null };
+    let remote: BrokerMetadata = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 1, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 1, cpa_sync_error: null, cockpit_synced_generation: null };
     const cpaCalls: Array<Record<string, unknown> | undefined> = [];
     const call: AuthCall = async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
       if (command === "broker_push_account") remote = { ...remote, generation: 2, cpa_enabled: false };
@@ -288,7 +294,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("retries failed synchronization and only offers pause after success", async () => {
-    let remote: BrokerMetadata = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 2, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 1, cpa_sync_error: null, cockpit_synced_generation: null };
+    let remote: BrokerMetadata = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 2, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 1, cpa_sync_error: null, cockpit_synced_generation: null };
     const cpaCalls: Array<Record<string, unknown> | undefined> = [];
     let completeRetry: ((result: BrokerMetadata) => void) | undefined;
     const call: AuthCall = async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -326,7 +332,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("reports a CPA storage error separately from the reauthorization action", async () => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, automatic_refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: null, cpa_sync_error: "storage", cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, automatic_refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: null, cpa_sync_error: "storage", cockpit_synced_generation: null };
     const calls: string[] = [];
     const call: AuthCall = async function call<T>(command: string): Promise<T> { calls.push(command); return overview(remote) as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -347,7 +353,7 @@ describe("统一授权续期窗口", () => {
     let failLogin: ((reason: Error) => void) | undefined;
     const data = overview(null);
     data.accounts[0].local = { ...data.accounts[0].local, state: "missing" };
-    const other = { ...data.accounts[0], name: "other@example.test", profile_id: "profile-2" };
+    const other = { ...data.accounts[0], name: "other@example.com", profile_id: "profile-2" };
     data.accounts.push(other);
     const call: AuthCall = async function call<T>(command: string): Promise<T> {
       if (command === "broker_overview") return data as T;
@@ -360,19 +366,19 @@ describe("统一授权续期窗口", () => {
     const authorize = [...document.querySelectorAll("button")].find(button => button.textContent === "授权并纳管");
     await act(async () => authorize?.click());
     await settle();
-    expect(document.querySelector('.brokerRowFeedback[role="status"]')?.textContent).toContain("demo@example.test");
+    expect(document.querySelector('.brokerRowFeedback[role="status"]')?.textContent).toContain("demo@example.com");
     await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-2", accountVisible: false, children: createElement("p", null, "账号资料") })));
-    expect(document.querySelector('.brokerRowFeedback[role="status"]')?.textContent).toContain("demo@example.test");
+    expect(document.querySelector('.brokerRowFeedback[role="status"]')?.textContent).toContain("demo@example.com");
     expect(document.body.textContent).toContain("账号资料");
     await act(async () => failLogin?.(new Error("上游席位已占满")));
     await settle();
-    expect(document.querySelector('[role="alert"]')?.textContent).toContain("demo@example.test");
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("demo@example.com");
     expect(document.querySelector('[role="alert"]')?.textContent).toContain("上游席位已占满");
     expect(document.querySelector('.brokerRowFeedback[role="status"]')).toBeNull();
   });
 
   it("retains last known Broker metadata during a temporary service outage", async () => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
     let data = overview(remote);
     const changes: BrokerOverview[] = [];
     const call: AuthCall = async function call<T>(command: string): Promise<T> { return command === "broker_overview" ? data as T : null as T; };
@@ -389,7 +395,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("offers access-only JSON export for a Broker-owned grant", async () => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
     const call: AuthCall = async function call<T>(command: string): Promise<T> { if (command === "broker_overview") return overview(remote) as T; return overview(remote) as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root?.render(createElement(BrokerPanel, { call })));
@@ -406,7 +412,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it.each([true, false])("reports delivery without claiming final Cockpit save (background requested: %s)", async (backgroundRequested) => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
     const calls: Array<{ command: string; args?: unknown }> = [];
     const call: AuthCall = async function call<T>(command: string, args?: unknown): Promise<T> {
       calls.push({ command, args });
@@ -440,7 +446,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("orders refresh, quota, CPA, Cockpit import, and export actions", async () => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
     const call: AuthCall = async function call<T>(command: string): Promise<T> { return (command === "broker_overview" ? overview(remote) : null) as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1", workbenchHeader: () => null })));
@@ -491,7 +497,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("keeps refresh token clearing enabled by default and only preserves it when unchecked", async () => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
     const calls: Array<{ command: string; args?: unknown }> = [];
     const call: AuthCall = async function call<T>(command: string, args?: unknown): Promise<T> {
       calls.push({ command, args });
@@ -508,7 +514,7 @@ describe("统一授权续期窗口", () => {
     const save = [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("保存 JSON"));
     await act(async () => save?.click());
     await settle();
-    expect(calls.find(item => item.command === "broker_export_json")?.args).toEqual({ profileId: "profile-1", accountName: "demo@example.test", format: "auth_json", includeRefreshToken: false });
+    expect(calls.find(item => item.command === "broker_export_json")?.args).toEqual({ profileId: "profile-1", accountName: "demo@example.com", format: "auth_json", includeRefreshToken: false });
     await act(async () => open?.click());
     await settle();
     const secondCheckbox = document.querySelector('input[type="checkbox"]') as HTMLInputElement;
@@ -516,13 +522,13 @@ describe("统一授权续期窗口", () => {
     const secondSave = [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("保存 JSON"));
     await act(async () => secondSave?.click());
     await settle();
-    expect(calls.filter(item => item.command === "broker_export_json").at(-1)?.args).toEqual({ profileId: "profile-1", accountName: "demo@example.test", format: "auth_json", includeRefreshToken: true });
+    expect(calls.filter(item => item.command === "broker_export_json").at(-1)?.args).toEqual({ profileId: "profile-1", accountName: "demo@example.com", format: "auth_json", includeRefreshToken: true });
   });
 
   it("filters the account list into all, authorized, and unauthorized views", async () => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
     const base = overview(remote);
-    const unauthorized = { ...base.accounts[0], name: "unmanaged@example.test", profile_id: "profile-2", local: { ...local, account: "unmanaged@example.test", email: "unmanaged@example.test", state: "missing" as const }, remote: null };
+    const unauthorized = { ...base.accounts[0], name: "unmanaged@example.com", profile_id: "profile-2", local: { ...local, account: "unmanaged@example.com", email: "unmanaged@example.com", state: "missing" as const }, remote: null };
     const data = { ...base, accounts: [base.accounts[0], unauthorized] };
     const call: AuthCall = async function call<T>(command: string): Promise<T> { if (command === "broker_overview") return data as T; return data as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -535,13 +541,13 @@ describe("统一授权续期窗口", () => {
     await act(async () => (unauthorizedTab as HTMLElement | undefined)?.click());
     await settle();
     expect(document.body.textContent).toContain("显示 1 / 2 个账号");
-    expect(document.body.textContent).toContain("unmanaged@example.test");
-    expect(document.body.textContent).not.toContain("demo@example.test");
+    expect(document.body.textContent).toContain("unmanaged@example.com");
+    expect(document.body.textContent).not.toContain("demo@example.com");
   });
 
   it("moves an invalidated Broker grant to unauthorized with a historical red state", async () => {
-    const valid = { key: "profile-1", email: "valid@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 1, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
-    const invalid = { ...valid, key: "profile-2", email: "invalid@example.test", account_id: "acct-2", error: "reauth_required" as const };
+    const valid = { key: "profile-1", email: "valid@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 1, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const invalid = { ...valid, key: "profile-2", email: "invalid@example.com", account_id: "acct-2", error: "reauth_required" as const };
     const base = overview(valid);
     const data = { ...base, accounts: [{ ...base.accounts[0], name: valid.email, profile_id: valid.key, local: { ...local, account: valid.email, email: valid.email }, remote: valid }, { ...base.accounts[0], name: invalid.email, profile_id: invalid.key, local: { ...local, account: invalid.email, email: invalid.email }, remote: invalid }] };
     const call: AuthCall = async function call<T>(command: string): Promise<T> { return command === "broker_overview" ? data as T : data as T; };
@@ -552,7 +558,7 @@ describe("统一授权续期窗口", () => {
     expect(document.body.textContent).toContain("已授权 1");
     expect(document.body.textContent).toContain("未授权 1");
     expect(document.body.textContent).toContain("曾授权失效 1");
-    const invalidRow = [...document.querySelectorAll<HTMLElement>(".brokerRow")].find(row => row.textContent?.includes("invalid@example.test"));
+    const invalidRow = [...document.querySelectorAll<HTMLElement>(".brokerRow")].find(row => row.textContent?.includes("invalid@example.com"));
     expect(invalidRow?.textContent).toContain("未授权 · 授权已失效");
     expect(invalidRow?.querySelector(".brokerAuthStatus-reauth_required")).toBeTruthy();
     expect(invalidRow?.textContent).toContain("续期凭据失效，已停止自动续期。");
@@ -561,26 +567,26 @@ describe("统一授权续期窗口", () => {
     const authorizedTab = [...document.querySelectorAll('[role="tab"]')].find(candidate => candidate.textContent?.includes("已授权"));
     await act(async () => (authorizedTab as HTMLButtonElement | undefined)?.click());
     await settle();
-    expect(document.body.textContent).not.toContain("invalid@example.test");
-    expect(document.body.textContent).toContain("valid@example.test");
+    expect(document.body.textContent).not.toContain("invalid@example.com");
+    expect(document.body.textContent).toContain("valid@example.com");
   });
 
   it("provides a clickable historical-invalidated shortcut with the exact accounts", async () => {
-    const valid = { key: "profile-1", email: "valid@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 1, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
-    const invalid = { ...valid, key: "profile-2", email: "invalid@example.test", account_id: "acct-2", error: "reauth_required" as const };
-    const otherInvalid = { ...valid, key: "profile-3", email: "other-invalid@example.test", account_id: "acct-3", error: "recovery_required" as const };
+    const valid = { key: "profile-1", email: "valid@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 1, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const invalid = { ...valid, key: "profile-2", email: "invalid@example.com", account_id: "acct-2", error: "reauth_required" as const };
+    const otherInvalid = { ...valid, key: "profile-3", email: "other-invalid@example.com", account_id: "acct-3", error: "recovery_required" as const };
     const base = overview(valid);
     const rows = [valid, invalid, otherInvalid].map((remote) => ({ ...base.accounts[0], name: remote.email, profile_id: remote.key, local: { ...local, account: remote.email, email: remote.email }, remote }));
     const call: AuthCall = async function call<T>(): Promise<T> { return { ...base, accounts: rows } as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
-    await act(async () => root?.render(createElement(BrokerPanel, { call, focusedAccount: "valid@example.test" })));
+    await act(async () => root?.render(createElement(BrokerPanel, { call, focusedAccount: "valid@example.com" })));
     await settle();
     const shortcut = document.querySelector<HTMLButtonElement>(".brokerIssueFilter");
     expect(shortcut?.textContent).toContain("曾授权失效 2");
     await act(async () => shortcut?.click());
     await settle();
     expect(document.body.textContent).toContain("显示 2 / 3 个账号 · 仅显示曾授权失效账号");
-    expect(Array.from(document.querySelectorAll(".brokerRowMain strong"), (element) => element.textContent)).toEqual(["invalid@example.test", "other-invalid@example.test"]);
+    expect(Array.from(document.querySelectorAll(".brokerRowMain strong"), (element) => element.textContent)).toEqual(["invalid@example.com", "other-invalid@example.com"]);
     expect(document.querySelector<HTMLInputElement>('input[aria-label="搜索授权账号"]')?.value).toBe("");
     expect(shortcut?.getAttribute("aria-pressed")).toBe("true");
     await act(async () => shortcut?.click());
@@ -589,7 +595,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("keeps temporary Broker failures authorized and explains the warning", async () => {
-    const remote = { key: "profile-1", email: "temporary@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: 1_899_900_000, error: "service_unavailable" as const, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "temporary@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: 1_899_900_000, error: "service_unavailable" as const, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
     const data = { ...overview(remote), accounts: [{ ...overview(remote).accounts[0], name: remote.email, profile_id: remote.key, local: { ...local, account: remote.email, email: remote.email }, remote }] };
     const call: AuthCall = async function call<T>(): Promise<T> { return data as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -605,9 +611,9 @@ describe("统一授权续期窗口", () => {
     const base = overview();
     const unauthorized = {
       ...base.accounts[0],
-      name: "target@example.test",
+      name: "target@example.com",
       profile_id: "profile-target",
-      local: { ...local, account: "target@example.test", state: "missing" as const },
+      local: { ...local, account: "target@example.com", state: "missing" as const },
       remote: null,
     };
     const data = { ...base, accounts: [base.accounts[0], unauthorized] };
@@ -623,12 +629,12 @@ describe("统一授权续期窗口", () => {
     expect(search).toBeTruthy();
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
     await act(async () => {
-      setter?.call(search, "target@example.test");
+      setter?.call(search, "target@example.com");
       search.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await settle();
-    expect(document.body.textContent).toContain("target@example.test");
-    expect(document.body.textContent).not.toContain("demo@example.test");
+    expect(document.body.textContent).toContain("target@example.com");
+    expect(document.body.textContent).not.toContain("demo@example.com");
     const authorize = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.includes("授权并纳管"));
     expect(authorize).toBeTruthy();
     expect((authorize as HTMLButtonElement).disabled).toBe(false);
@@ -688,7 +694,7 @@ describe("统一授权续期窗口", () => {
 
   it("preserves an imported refresh token by default and clears it only when selected", async () => {
     const calls: Array<{ command: string; args?: unknown }> = [];
-    const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.test", account_id: "acct-1", has_access_token: true, has_id_token: true, has_refresh_token: true }], contains_refresh_token: true, message: "检测到 refresh_token" };
+    const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.com", account_id: "acct-1", has_access_token: true, has_id_token: true, has_refresh_token: true }], contains_refresh_token: true, message: "检测到 refresh_token" };
     const call: AuthCall = async function call<T>(command: string, args?: unknown): Promise<T> {
       calls.push({ command, args });
       if (command === "choose_broker_json_import_path") return "/tmp/input.json" as T;
@@ -724,7 +730,7 @@ describe("统一授权续期窗口", () => {
   it("imports a complete file into Broker and immediately reveals the managed account without a browser login or CPA sync", async () => {
     const selectedProfiles: string[] = [];
     const calls: Array<{ command: string; args?: unknown }> = [];
-    const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.test", account_id: "acct-1", has_access_token: true, has_id_token: true, has_refresh_token: true }], contains_refresh_token: true, message: "检测到 refresh_token" };
+    const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.com", account_id: "acct-1", has_access_token: true, has_id_token: true, has_refresh_token: true }], contains_refresh_token: true, message: "检测到 refresh_token" };
     let remote: BrokerMetadata | null = null;
     const call: AuthCall = async function call<T>(command: string, args?: unknown): Promise<T> {
       calls.push({ command, args });
@@ -732,13 +738,13 @@ describe("统一授权续期窗口", () => {
       if (command === "choose_broker_json_import_path") return preview.path as T;
       if (command === "broker_preview_json") return preview as T;
       if (command === "broker_import_json") {
-        remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 1, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+        remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 1, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
         return { email: remote.email, account_id: remote.account_id, profile_id: remote.key, generation: remote.generation } as T;
       }
       return { ...overview(remote), accounts: [{ ...overview(remote).accounts[0], local: { ...local, state: "missing" } }] } as T;
     };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
-    await act(async () => root?.render(createElement(BrokerPanel, { call, focusedAccount: "other@example.test", onImportedAccount: profile => selectedProfiles.push(profile) })));
+    await act(async () => root?.render(createElement(BrokerPanel, { call, focusedAccount: "other@example.com", onImportedAccount: profile => selectedProfiles.push(profile) })));
     await settle();
     await act(async () => [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("导入/转换 JSON"))?.click());
     await settle();
@@ -748,18 +754,18 @@ describe("统一授权续期窗口", () => {
     expect(importButton.disabled).toBe(false);
     await act(async () => importButton.click());
     await settle();
-    expect(calls.find(item => item.command === "broker_import_json")?.args).toEqual({ path: preview.path, email: "demo@example.test", accountId: "acct-1" });
+    expect(calls.find(item => item.command === "broker_import_json")?.args).toEqual({ path: preview.path, email: "demo@example.com", accountId: "acct-1" });
     expect(calls.some(item => ["broker_convert_json", "login_account_auth", "broker_set_cpa"].includes(item.command))).toBe(false);
     expect(selectedProfiles).toEqual(["profile-1"]);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
-    expect(document.querySelector<HTMLInputElement>('[aria-label="搜索授权账号"]')?.value).toBe("demo@example.test");
+    expect(document.querySelector<HTMLInputElement>('[aria-label="搜索授权账号"]')?.value).toBe("demo@example.com");
     expect(document.body.textContent).toContain("已导入并纳管");
     expect(document.body.textContent).toContain("已授权 · NoTrace Broker 自动续期");
     expect(document.body.textContent).toContain("同步到 CPA");
   });
 
   it("keeps import errors visible inside the dialog and allows retrying the same file", async () => {
-    const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.test", account_id: "acct-1", has_access_token: true, has_id_token: true, has_refresh_token: true }], contains_refresh_token: true, message: "检测到 refresh_token" };
+    const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.com", account_id: "acct-1", has_access_token: true, has_id_token: true, has_refresh_token: true }], contains_refresh_token: true, message: "检测到 refresh_token" };
     let attempts = 0;
     const call: AuthCall = async function call<T>(command: string): Promise<T> {
       if (command === "choose_broker_json_import_path") return preview.path as T;
@@ -784,7 +790,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("explains why an access-only file cannot be managed and still offers file conversion", async () => {
-    const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.test", account_id: "acct-1", has_access_token: true, has_id_token: true, has_refresh_token: false }], contains_refresh_token: false, message: "access-only" };
+    const preview = { path: "/tmp/input.json", detected_format: "官方 auth.json", account_count: 1, accounts: [{ email: "demo@example.com", account_id: "acct-1", has_access_token: true, has_id_token: true, has_refresh_token: false }], contains_refresh_token: false, message: "access-only" };
     const call: AuthCall = async function call<T>(command: string): Promise<T> {
       if (command === "choose_broker_json_import_path") return preview.path as T;
       if (command === "broker_preview_json") return preview as T;
@@ -831,7 +837,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("shows and cancels an authorization started before this panel was opened", async () => {
-    let active: unknown = { account: "previous@example.test", phase: "waiting_browser", started_at: 1, cancelling: false };
+    let active: unknown = { account: "previous@example.com", phase: "waiting_browser", started_at: 1, cancelling: false };
     const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
     const call: AuthCall = async function<T>(command: string, args: Record<string, unknown>): Promise<T> {
       calls.push({ command, args });
@@ -842,11 +848,11 @@ describe("统一授权续期窗口", () => {
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root?.render(createElement(BrokerPanel, { call })));
     await settle();
-    expect(document.body.textContent).toContain("previous@example.test");
+    expect(document.body.textContent).toContain("previous@example.com");
     expect(document.body.textContent).toContain("授权页已打开");
     const cancel = [...document.querySelectorAll("button")].find(button => button.textContent === "取消授权")!;
     await act(async () => cancel.click());
-    expect(calls.find(call => call.command === "cancel_account_auth")?.args).toEqual({ name: "previous@example.test" });
+    expect(calls.find(call => call.command === "cancel_account_auth")?.args).toEqual({ name: "previous@example.com" });
   });
 
   it("hands off a successful login when a late cancellation was not accepted by the native worker", async () => {
@@ -888,7 +894,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("closes JSON dialogs with Escape and returns focus to the invoking control", async () => {
-    const remote = { key: "profile-1", email: "demo@example.test", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
     const call: AuthCall = async function call<T>(command: string): Promise<T> {
       if (command === "broker_overview") return overview(remote) as T;
       return null as T;

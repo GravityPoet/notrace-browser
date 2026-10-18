@@ -7,6 +7,7 @@ export type AuthStatus = {
   state: "missing" | "connected" | "expiring" | "expired" | "reauth_required" | "refresh_failed";
   email: string | null;
   plan_type: string | null;
+  subscription_active_until?: string | null;
   expires_at: number | null;
   last_refresh_at: number | null;
   auto_refresh: boolean;
@@ -29,6 +30,7 @@ export type AuthCall = <T>(command: string, args: Record<string, unknown>) => Pr
 const demoAuth = new Map<string, AuthStatus>();
 function missing(name: string): AuthStatus {
   return { account: name, state: "missing", email: null, plan_type: null, expires_at: null,
+    subscription_active_until: null,
     last_refresh_at: null, auto_refresh: false, next_retry_at: null, authority: "no_trace", message: null };
 }
 async function nativeCall<T>(command: string, args: Record<string, unknown>): Promise<T> {

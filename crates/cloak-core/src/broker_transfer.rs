@@ -3,7 +3,9 @@
 //! This module defaults to access-only output. An explicit caller choice can
 //! preserve a refresh token in a local export. An explicit Broker import path
 //! can promote a selected complete credential to Broker ownership.
-use crate::broker::{claim_account, claim_email, claim_plan, claims, iso_time};
+use crate::broker::{
+    claim_account, claim_email, claim_plan, claim_subscription_active_until, claims, iso_time,
+};
 use crate::{AccessCredential, CloakError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -71,6 +73,7 @@ pub(crate) struct JsonCredentialRecord {
     pub expires_at: Option<u64>,
     pub last_refresh: String,
     pub plan_type: Option<String>,
+    pub subscription_active_until: Option<String>,
     pub refresh_token: String,
     pub has_refresh_token: bool,
 }
@@ -100,7 +103,8 @@ pub(crate) fn broker_grant_body(record: &JsonCredentialRecord) -> Result<Zeroizi
             "id_token": record.id_token,
             "refresh_token": record.refresh_token,
             "account_id": record.account_id,
-        }
+        },
+        "chatgpt_subscription_active_until": record.subscription_active_until,
     }))
     .map(Zeroizing::new)
     .map_err(|_| CloakError::Auth("授权 JSON 生成失败".into()))
@@ -171,6 +175,7 @@ pub fn format_access_credentials(
             expires_at: Some(credential.expires_at),
             last_refresh: credential.last_refresh.clone(),
             plan_type: credential.plan_type.clone(),
+            subscription_active_until: credential.subscription_active_until.clone(),
             refresh_token: if include_refresh_token {
                 credential.refresh_token.clone()
             } else {
@@ -244,6 +249,7 @@ fn portable_record(record: &JsonCredentialRecord, include_refresh_token: bool) -
         "type": "codex",
         "expired": record.expired,
         "refresh_owner": "notrace_broker",
+        "chatgpt_subscription_active_until": record.subscription_active_until,
     })
 }
 
@@ -257,6 +263,7 @@ fn auth_record(record: &JsonCredentialRecord, include_refresh_token: bool) -> Va
             "account_id": record.account_id,
         },
         "last_refresh": record.last_refresh,
+        "chatgpt_subscription_active_until": record.subscription_active_until,
         "type": "codex",
     })
 }
@@ -289,6 +296,12 @@ fn sub2api_record(record: &JsonCredentialRecord, include_refresh_token: bool) ->
     );
     if let Some(plan_type) = &record.plan_type {
         credentials.insert("plan_type".into(), Value::String(plan_type.clone()));
+    }
+    if let Some(subscription_active_until) = &record.subscription_active_until {
+        credentials.insert(
+            "chatgpt_subscription_active_until".into(),
+            Value::String(subscription_active_until.clone()),
+        );
     }
     let mut item = json!({
         "name": record.email,
@@ -394,6 +407,14 @@ fn parse_record(value: &Value) -> Option<JsonCredentialRecord> {
     let plan_type = string_field(tokens, "plan_type")
         .or_else(|| access_claims.as_ref().and_then(claim_plan))
         .or_else(|| id_claims.as_ref().and_then(claim_plan));
+    let subscription_active_until = string_field(tokens, "chatgpt_subscription_active_until")
+        .or_else(|| string_field(value, "chatgpt_subscription_active_until"))
+        .or_else(|| {
+            access_claims
+                .as_ref()
+                .and_then(claim_subscription_active_until)
+        })
+        .or_else(|| id_claims.as_ref().and_then(claim_subscription_active_until));
     let refresh_token = string_field(tokens, "refresh_token").unwrap_or_default();
     let has_refresh_token = !refresh_token.is_empty();
     Some(JsonCredentialRecord {
@@ -405,6 +426,7 @@ fn parse_record(value: &Value) -> Option<JsonCredentialRecord> {
         expires_at,
         last_refresh,
         plan_type,
+        subscription_active_until,
         refresh_token,
         has_refresh_token,
     })
@@ -451,11 +473,12 @@ mod tests {
             access_token: "access-only".into(),
             id_token: "id-only".into(),
             account_id: "acct-1".into(),
-            email: "alpha@example.test".into(),
+            email: "alpha@example.com".into(),
             expired: "2026-10-08T00:00:00Z".into(),
             expires_at: 1_800_000_000,
             last_refresh: "2026-10-02T00:00:00Z".into(),
             plan_type: Some("plus".into()),
+            subscription_active_until: Some("2026-11-02T00:00:00Z".into()),
             refresh_token: String::new(),
             refresh_owner: "notrace_broker".into(),
             notrace_key: "profile-1".into(),
@@ -475,7 +498,7 @@ mod tests {
             Some("access-only")
         );
         let text = String::from_utf8(bytes).unwrap();
-        assert!(text.contains("\"name\": \"alpha@example.test\""));
+        assert!(text.contains("\"name\": \"alpha@example.com\""));
         assert!(text.contains("access-only"));
         assert!(text.contains("\"refresh_token\": \"\""));
         assert!(text.contains("notrace_broker"));
@@ -495,7 +518,7 @@ mod tests {
         let path = dir.path().join("input.json");
         std::fs::write(
             &path,
-            r#"{"type":"sub2api-data","accounts":[{"credentials":{"access_token":"access","refresh_token":"secret","email":"alpha@example.test","chatgpt_account_id":"acct-1"}}]}"#,
+            r#"{"type":"sub2api-data","accounts":[{"credentials":{"access_token":"access","refresh_token":"secret","email":"alpha@example.com","chatgpt_account_id":"acct-1"}}]}"#,
         )
         .unwrap();
         let preview = preview_file(&path).unwrap();
@@ -516,16 +539,16 @@ mod tests {
             )
         };
         let access = jwt(
-            json!({"exp": 1_900_000_000, "https://api.openai.com/profile": {"email": "alpha@example.test"}, "https://api.openai.com/auth": {"chatgpt_account_id": "acct-1", "chatgpt_plan_type": "plus"}}),
+            json!({"exp": 1_900_000_000, "https://api.openai.com/profile": {"email": "alpha@example.com"}, "https://api.openai.com/auth": {"chatgpt_account_id": "acct-1", "chatgpt_plan_type": "plus"}}),
         );
         let id = jwt(
-            json!({"email": "alpha@example.test", "https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}}),
+            json!({"email": "alpha@example.com", "https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}}),
         );
         std::fs::write(&path, json!({"tokens": {"access_token": access, "id_token": id, "refresh_token": "synthetic-refresh"}}).to_string()).unwrap();
         let preview = preview_file(&path).unwrap();
         assert_eq!(
             preview.accounts[0].email.as_deref(),
-            Some("alpha@example.test")
+            Some("alpha@example.com")
         );
         assert_eq!(preview.accounts[0].account_id.as_deref(), Some("acct-1"));
         assert!(preview.accounts[0].has_id_token);
@@ -543,7 +566,7 @@ mod tests {
         let path = dir.path().join("input.json");
         std::fs::write(
             &path,
-            r#"{"access_token":"synthetic-access","email":"alpha@example.test"}"#,
+            r#"{"access_token":"synthetic-access","email":"alpha@example.com"}"#,
         )
         .unwrap();
         assert!(convert_file(&path, BrokerJsonFormat::Cpa, false).is_ok());
@@ -557,7 +580,7 @@ mod tests {
         let path = dir.path().join("input.json");
         std::fs::write(
             &path,
-            r#"[{"type":"codex","access_token":"access","refresh_token":"secret","email":"alpha@example.test","account_id":"acct-1"}]"#,
+            r#"[{"type":"codex","access_token":"access","refresh_token":"secret","email":"alpha@example.com","account_id":"acct-1"}]"#,
         )
         .unwrap();
         let bytes = convert_file(&path, BrokerJsonFormat::AuthJson, false).unwrap();
@@ -573,7 +596,7 @@ mod tests {
         let path = dir.path().join("input.json");
         std::fs::write(
             &path,
-            r#"[{"type":"codex","access_token":"access","refresh_token":"secret","email":"alpha@example.test","account_id":"acct-1"}]"#,
+            r#"[{"type":"codex","access_token":"access","refresh_token":"secret","email":"alpha@example.com","account_id":"acct-1"}]"#,
         )
         .unwrap();
         let bytes = convert_file(&path, BrokerJsonFormat::Cpa, true).unwrap();

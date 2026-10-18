@@ -102,6 +102,10 @@ pub struct BrokerMetadata {
     pub email: String,
     pub account_id: String,
     pub plan_type: Option<String>,
+    /// ChatGPT subscription end, distinct from the short-lived access-token
+    /// `expires_at`. Older encrypted grants do not have this field.
+    #[serde(default)]
+    pub subscription_active_until: Option<String>,
     pub expires_at: u64,
     pub last_refresh_at: u64,
     #[serde(default)]
@@ -134,6 +138,8 @@ pub struct AccessCredential {
     pub expires_at: u64,
     pub last_refresh: String,
     pub plan_type: Option<String>,
+    #[serde(default)]
+    pub subscription_active_until: Option<String>,
     pub refresh_token: String,
     pub refresh_owner: String,
     pub notrace_key: String,
@@ -166,6 +172,8 @@ struct Grant {
     email: String,
     account_id: String,
     plan_type: Option<String>,
+    #[serde(default)]
+    subscription_active_until: Option<String>,
     access_token: String,
     id_token: String,
     refresh_token: String,
@@ -204,11 +212,15 @@ impl Grant {
             .saturating_sub((lifetime / 5).clamp(10, MAX_LEAD))
     }
     fn metadata(&self) -> BrokerMetadata {
+        let subscription_active_until = self.subscription_active_until.clone().or_else(|| {
+            claims(&self.id_token).and_then(|value| claim_subscription_active_until(&value))
+        });
         BrokerMetadata {
             key: self.key.clone(),
             email: self.email.clone(),
             account_id: self.account_id.clone(),
             plan_type: self.plan_type.clone(),
+            subscription_active_until,
             expires_at: self.expires_at,
             last_refresh_at: self.last_refresh_at,
             refresh_count: self.refresh_count,
@@ -233,6 +245,9 @@ impl Grant {
         }
     }
     fn projection(&self) -> AccessCredential {
+        let subscription_active_until = self.subscription_active_until.clone().or_else(|| {
+            claims(&self.id_token).and_then(|value| claim_subscription_active_until(&value))
+        });
         AccessCredential {
             auth_type: "codex".into(),
             access_token: self.access_token.clone(),
@@ -243,6 +258,7 @@ impl Grant {
             expires_at: self.expires_at,
             last_refresh: iso_time(self.last_refresh_at),
             plan_type: self.plan_type.clone(),
+            subscription_active_until,
             refresh_token: String::new(),
             refresh_owner: "notrace_broker".into(),
             notrace_key: self.key.clone(),
@@ -972,6 +988,10 @@ fn parse_grant(key: &str, body: &str) -> BrokerResult<Grant> {
         email,
         account_id,
         plan_type: claim_plan(&at).or_else(|| claim_plan(&id)),
+        subscription_active_until: claim_subscription_active_until(&at)
+            .or_else(|| claim_subscription_active_until(&id))
+            .or_else(|| claim_subscription_active_until(tokens))
+            .or_else(|| claim_subscription_active_until(&root)),
         access_token,
         id_token,
         refresh_token,
@@ -1071,6 +1091,9 @@ fn request_refresh(config: &BrokerConfig, previous: &Grant) -> BrokerResult<Gran
         .or_else(|| claim_account(&id))
         .ok_or(BrokerError::RecoveryRequired)?;
     candidate.plan_type = claim_plan(&at).or_else(|| claim_plan(&id));
+    candidate.subscription_active_until = claim_subscription_active_until(&at)
+        .or_else(|| claim_subscription_active_until(&id))
+        .or_else(|| candidate.subscription_active_until.clone());
     let now = crate::current_epoch_secs();
     candidate.expires_at = at
         .get("exp")
@@ -1394,6 +1417,43 @@ pub(crate) fn claim_plan(v: &Value) -> Option<String> {
     v.pointer("/https:~1~1api.openai.com~1auth/chatgpt_plan_type")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
+}
+pub(crate) fn claim_subscription_active_until(v: &Value) -> Option<String> {
+    let value = v
+        .pointer("/https:~1~1api.openai.com~1auth/chatgpt_subscription_active_until")
+        .or_else(|| v.pointer("/https:~1~1api.openai.com~1auth/subscription_active_until"))
+        .or_else(|| v.get("chatgpt_subscription_active_until"))
+        .or_else(|| v.get("chatgptSubscriptionActiveUntil"))
+        .or_else(|| v.get("subscription_active_until"))
+        .or_else(|| v.get("subscriptionActiveUntil"))
+        .or_else(|| v.get("active_until"))
+        .or_else(|| v.pointer("/subscription/active_until"))
+        .or_else(|| v.pointer("/subscription/activeUntil"))?;
+    match value {
+        Value::String(value) => {
+            let value = value.trim();
+            if value.is_empty() {
+                None
+            } else if let Ok(seconds) = value.parse::<u64>() {
+                (seconds > 0).then(|| iso_time(normalize_timestamp(seconds)))
+            } else {
+                Some(value.to_owned())
+            }
+        }
+        Value::Number(value) => value
+            .as_u64()
+            .filter(|seconds| *seconds > 0)
+            .map(normalize_timestamp)
+            .map(iso_time),
+        _ => None,
+    }
+}
+fn normalize_timestamp(value: u64) -> u64 {
+    if value > 1_000_000_000_000 {
+        value / 1000
+    } else {
+        value
+    }
 }
 pub(crate) fn iso_time(t: u64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp(t as i64, 0)

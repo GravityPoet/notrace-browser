@@ -19,11 +19,11 @@ fn grant_body(email: &str, account_id: &str, refresh: &str, expiry: u64) -> Stri
     let access = jwt(json!({
         "exp": expiry,
         "https://api.openai.com/profile": {"email": email},
-        "https://api.openai.com/auth": {"chatgpt_account_id": account_id, "chatgpt_plan_type": "plus"}
+        "https://api.openai.com/auth": {"chatgpt_account_id": account_id, "chatgpt_plan_type": "plus", "chatgpt_subscription_active_until": "2026-11-02T00:00:00Z"}
     }));
     let id = jwt(json!({
         "email": email,
-        "https://api.openai.com/auth": {"chatgpt_account_id": account_id, "chatgpt_plan_type": "plus"}
+        "https://api.openai.com/auth": {"chatgpt_account_id": account_id, "chatgpt_plan_type": "plus", "chatgpt_subscription_active_until": "2026-11-02T00:00:00Z"}
     }));
     json!({"auth_mode":"chatgpt","tokens":{
         "access_token": access, "refresh_token": refresh, "id_token": id,
@@ -61,16 +61,24 @@ fn broker_key_parser_preserves_hex_values_and_rejects_invalid_inputs() {
 fn encrypted_store_and_access_projection_never_expose_refresh_token() {
     let (_dir, store) = store();
     let body = grant_body(
-        "alpha@example.test",
+        "alpha@example.com",
         "acct-1",
         "secret-refresh",
         now() + 3600,
     );
-    let metadata = store.import_grant("alpha@example.test", &body).unwrap();
-    assert_eq!(metadata.email, "alpha@example.test");
+    let metadata = store.import_grant("alpha@example.com", &body).unwrap();
+    assert_eq!(metadata.email, "alpha@example.com");
+    assert_eq!(
+        metadata.subscription_active_until.as_deref(),
+        Some("2026-11-02T00:00:00Z")
+    );
     assert_eq!(metadata.refresh_count, 0);
     assert_eq!(metadata.automatic_refresh_count, 0);
-    let projection = store.access_credential("alpha@example.test").unwrap();
+    let projection = store.access_credential("alpha@example.com").unwrap();
+    assert_eq!(
+        projection.subscription_active_until.as_deref(),
+        Some("2026-11-02T00:00:00Z")
+    );
     let serialized = serde_json::to_string(&projection).unwrap();
     assert!(serialized.contains("access_token"));
     assert!(serialized.contains("refresh_token\":\"\""));
@@ -162,7 +170,7 @@ fn desktop_json_import_binds_a_trashed_account_and_preserves_cpa_until_explicit_
         extension_source: local.path().join("extension"),
         cloakbrowser_root: local.path().join("browser"),
     };
-    let account = crate::create_account(&config, "alpha@example.test").unwrap();
+    let account = crate::create_account(&config, "alpha@example.com").unwrap();
     crate::set_account_trashed(&config, &account.name, true).unwrap();
     let path = local.path().join("import.json");
     let original = grant_body(
@@ -224,7 +232,7 @@ fn desktop_file_import_rejects_identity_mismatch_before_any_state_change() {
         extension_source: local.path().join("extension"),
         cloakbrowser_root: local.path().join("browser"),
     };
-    let account = crate::create_account(&config, "alpha@example.test").unwrap();
+    let account = crate::create_account(&config, "alpha@example.com").unwrap();
     let mut value: Value = serde_json::from_str(&grant_body(
         &account.name,
         "acct-1",
@@ -233,11 +241,11 @@ fn desktop_file_import_rejects_identity_mismatch_before_any_state_change() {
     ))
     .unwrap();
     value["tokens"]["id_token"] = Value::String(jwt(
-        json!({"email": "wrong@example.test", "https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}}),
+        json!({"email": "wrong@example.com", "https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}}),
     ));
     let path = local.path().join("import.json");
     fs::write(&path, value.to_string()).unwrap();
-    assert!(crate::broker_import_json(&config, &path, "wrong@example.test", "acct-1").is_err());
+    assert!(crate::broker_import_json(&config, &path, "wrong@example.com", "acct-1").is_err());
     assert!(!local.path().join(".notrace-oauth").exists());
     let expiry = grant_body(&account.name, "acct-1", "synthetic-refresh", now() - 1);
     fs::write(&path, expiry).unwrap();
@@ -250,9 +258,9 @@ fn export_projection_preserves_refresh_token_only_when_requested() {
     let (_dir, store) = store();
     store
         .import_grant(
-            "alpha@example.test",
+            "alpha@example.com",
             &grant_body(
-                "alpha@example.test",
+                "alpha@example.com",
                 "acct-1",
                 "secret-refresh",
                 now() + 3600,
@@ -260,13 +268,13 @@ fn export_projection_preserves_refresh_token_only_when_requested() {
         )
         .unwrap();
     assert!(store
-        .export_credential("alpha@example.test", false)
+        .export_credential("alpha@example.com", false)
         .unwrap()
         .refresh_token
         .is_empty());
     assert_eq!(
         store
-            .export_credential("alpha@example.test", true)
+            .export_credential("alpha@example.com", true)
             .unwrap()
             .refresh_token,
         "secret-refresh"
@@ -309,7 +317,7 @@ fn quota_snapshot_reads_usage_without_refreshing_or_writing_cpa() {
     store
         .import_grant(
             "alpha",
-            &grant_body("alpha@example.test", "acct-1", "refresh-a", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "refresh-a", now() + 3600),
         )
         .unwrap();
     let snapshot = store.quota_snapshot("alpha").unwrap();
@@ -358,7 +366,7 @@ fn quota_snapshot_counts_available_reset_credit_details_when_count_is_omitted() 
     store
         .import_grant(
             "alpha",
-            &grant_body("alpha@example.test", "acct-1", "refresh-a", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "refresh-a", now() + 3600),
         )
         .unwrap();
     let snapshot = store.quota_snapshot("alpha").unwrap();
@@ -384,7 +392,7 @@ fn terminal_grant_cannot_be_reenabled_for_cpa_until_reauthorization() {
     store
         .import_grant(
             "alpha",
-            &grant_body("alpha@example.test", "acct-1", "refresh-a", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "refresh-a", now() + 3600),
         )
         .unwrap();
     let path = store.path("alpha").unwrap();
@@ -402,18 +410,18 @@ fn terminal_grant_cannot_be_reenabled_for_cpa_until_reauthorization() {
 #[test]
 fn repeated_handoff_is_idempotent_and_identity_change_is_rejected() {
     let (_dir, store) = store();
-    let first = grant_body("alpha@example.test", "acct-1", "refresh-a", now() + 3600);
-    let first_status = store.import_grant("alpha@example.test", &first).unwrap();
-    let retry = store.import_grant("alpha@example.test", &first).unwrap();
+    let first = grant_body("alpha@example.com", "acct-1", "refresh-a", now() + 3600);
+    let first_status = store.import_grant("alpha@example.com", &first).unwrap();
+    let retry = store.import_grant("alpha@example.com", &first).unwrap();
     assert_eq!(first_status.generation, retry.generation);
     assert_eq!(first_status.refresh_count, retry.refresh_count);
     assert_eq!(
         first_status.automatic_refresh_count,
         retry.automatic_refresh_count
     );
-    let wrong = grant_body("other@example.test", "acct-2", "refresh-b", now() + 3600);
+    let wrong = grant_body("other@example.com", "acct-2", "refresh-b", now() + 3600);
     assert!(matches!(
-        store.import_grant("alpha@example.test", &wrong),
+        store.import_grant("alpha@example.com", &wrong),
         Err(BrokerError::IdentityMismatch)
     ));
 }
@@ -428,11 +436,11 @@ fn refresh_rotates_and_preserves_omitted_refresh_token() {
         let _ = stream.read(&mut request);
         let access = jwt(json!({
             "exp": now() + 7200,
-            "https://api.openai.com/profile": {"email":"alpha@example.test"},
+            "https://api.openai.com/profile": {"email":"alpha@example.com"},
             "https://api.openai.com/auth": {"chatgpt_account_id":"acct-1"}
         }));
         let id = jwt(
-            json!({"email":"alpha@example.test","https://api.openai.com/auth":{"chatgpt_account_id":"acct-1"}}),
+            json!({"email":"alpha@example.com","https://api.openai.com/auth":{"chatgpt_account_id":"acct-1"}}),
         );
         let body = json!({"access_token":access,"id_token":id}).to_string();
         let response = format!(
@@ -452,17 +460,17 @@ fn refresh_rotates_and_preserves_omitted_refresh_token() {
     let store = BrokerStore::new(config, [8; 32]).unwrap();
     store
         .import_grant(
-            "alpha@example.test",
-            &grant_body("alpha@example.test", "acct-1", "refresh-a", now() + 60),
+            "alpha@example.com",
+            &grant_body("alpha@example.com", "acct-1", "refresh-a", now() + 60),
         )
         .unwrap();
-    let metadata = store.refresh("alpha@example.test", true).unwrap();
+    let metadata = store.refresh("alpha@example.com", true).unwrap();
     assert_eq!(metadata.generation, 2);
     assert_eq!(metadata.refresh_count, 1);
     assert_eq!(metadata.automatic_refresh_count, 0);
     assert_eq!(
         store
-            .access_credential("alpha@example.test")
+            .access_credential("alpha@example.com")
             .unwrap()
             .refresh_token,
         ""
@@ -472,14 +480,14 @@ fn refresh_rotates_and_preserves_omitted_refresh_token() {
 #[test]
 fn ambiguous_refresh_is_journaled_and_does_not_retry_old_token() {
     let (_dir, store) = store();
-    let body = grant_body("alpha@example.test", "acct-1", "refresh-a", now() + 60);
-    store.import_grant("alpha@example.test", &body).unwrap();
-    let path = store.path("alpha@example.test").unwrap();
+    let body = grant_body("alpha@example.com", "acct-1", "refresh-a", now() + 60);
+    store.import_grant("alpha@example.com", &body).unwrap();
+    let path = store.path("alpha@example.com").unwrap();
     let mut grant = store.load(&path).unwrap();
     grant.in_flight = true;
     store.save(&path, &grant).unwrap();
     assert!(matches!(
-        store.refresh("alpha@example.test", true),
+        store.refresh("alpha@example.com", true),
         Err(BrokerError::RecoveryRequired)
     ));
     assert_eq!(store.load(&path).unwrap().refresh_count, 0);
@@ -496,7 +504,7 @@ fn cpa_sync_refuses_unmanaged_existing_file() {
         token_url: "https://127.0.0.1/unused".into(),
     };
     let store = BrokerStore::new(config, [9; 32]).unwrap();
-    let key = "alpha@example.test";
+    let key = "alpha@example.com";
     store
         .import_grant(key, &grant_body(key, "acct-1", "refresh-a", now() + 3600))
         .unwrap();
@@ -527,18 +535,18 @@ fn cpa_sync_skips_unreadable_unrelated_files() {
     store
         .import_grant(
             "alpha",
-            &grant_body("alpha@example.test", "acct-1", "refresh-a", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "refresh-a", now() + 3600),
         )
         .unwrap();
     store.set_cpa_enabled("alpha", true).unwrap();
-    let unrelated = cpa.path().join("manual-other@example.test.json");
+    let unrelated = cpa.path().join("manual-other@example.com.json");
     fs::write(&unrelated, "{\"type\":\"codex\"}").unwrap();
     fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o000)).unwrap();
 
     let metadata = store.sync_cpa("alpha").unwrap();
 
     assert_eq!(metadata.cpa_sync_error, None);
-    assert!(cpa.path().join("alpha@example.test.json").exists());
+    assert!(cpa.path().join("alpha@example.com.json").exists());
 }
 
 #[cfg(unix)]
@@ -569,7 +577,7 @@ fn now() -> u64 {
 #[test]
 fn old_handoff_retry_cannot_replace_a_rotated_grant() {
     let (_dir, store) = store();
-    let body = grant_body("alpha@example.test", "acct-1", "initial", now() + 3600);
+    let body = grant_body("alpha@example.com", "acct-1", "initial", now() + 3600);
     store.import_grant("alpha", &body).unwrap();
     let path = store.path("alpha").unwrap();
     let mut rotated = store.load(&path).unwrap();
@@ -584,14 +592,14 @@ fn old_handoff_retry_cannot_replace_a_rotated_grant() {
 #[test]
 fn reauthorization_preserves_refresh_count_without_incrementing_it() {
     let (_dir, store) = store();
-    let first = grant_body("alpha@example.test", "acct-1", "initial", now() + 3600);
+    let first = grant_body("alpha@example.com", "acct-1", "initial", now() + 3600);
     store.import_grant("alpha", &first).unwrap();
     let path = store.path("alpha").unwrap();
     let mut current = store.load(&path).unwrap();
     current.refresh_count = 4;
     current.automatic_refresh_count = 3;
     store.save(&path, &current).unwrap();
-    let replacement = grant_body("alpha@example.test", "acct-1", "replacement", now() + 3600);
+    let replacement = grant_body("alpha@example.com", "acct-1", "replacement", now() + 3600);
     let metadata = store.import_grant("alpha", &replacement).unwrap();
     assert_eq!(metadata.generation, 2);
     assert_eq!(metadata.refresh_count, 4);
@@ -612,14 +620,14 @@ fn reauthorization_waits_for_explicit_cpa_sync() {
         [19; 32],
     )
     .unwrap();
-    let initial = grant_body("alpha@example.test", "acct-1", "initial", now() + 3600);
+    let initial = grant_body("alpha@example.com", "acct-1", "initial", now() + 3600);
     store.import_grant("alpha", &initial).unwrap();
     store.set_cpa_enabled("alpha", true).unwrap();
     store.sync_cpa("alpha").unwrap();
-    let destination = cpa.path().join("alpha@example.test.json");
+    let destination = cpa.path().join("alpha@example.com.json");
     let original = fs::read(&destination).unwrap();
 
-    let replacement = grant_body("alpha@example.test", "acct-1", "replacement", now() + 7200);
+    let replacement = grant_body("alpha@example.com", "acct-1", "replacement", now() + 7200);
     let metadata = store.import_grant("alpha", &replacement).unwrap();
     assert!(!metadata.cpa_enabled);
     assert_eq!(metadata.cpa_synced_generation, Some(1));
@@ -647,7 +655,7 @@ fn durable_pending_rotation_is_recovered_without_an_oauth_request() {
     store
         .import_grant(
             "alpha",
-            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "initial", now() + 3600),
         )
         .unwrap();
     let path = store.path("alpha").unwrap();
@@ -687,7 +695,7 @@ fn automatic_renewal_is_counted_once_and_failed_or_skipped_requests_are_not() {
             let body = if status == 200 {
                 json!({"access_token":jwt(json!({
                     "exp":now() + 7200,
-                    "https://api.openai.com/profile":{"email":"alpha@example.test"},
+                    "https://api.openai.com/profile":{"email":"alpha@example.com"},
                     "https://api.openai.com/auth":{"chatgpt_account_id":"acct-1"}
                 })),"refresh_token":"rotated"})
                 .to_string()
@@ -711,7 +719,7 @@ fn automatic_renewal_is_counted_once_and_failed_or_skipped_requests_are_not() {
     store
         .import_grant(
             key,
-            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "initial", now() + 3600),
         )
         .unwrap();
     let path = store.path(key).unwrap();
@@ -739,7 +747,7 @@ fn legacy_grants_do_not_infer_renewal_counts_from_generation() {
     let mut legacy = serde_json::to_value(
         parse_grant(
             "alpha",
-            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "initial", now() + 3600),
         )
         .unwrap(),
     )
@@ -759,7 +767,7 @@ fn short_lived_grants_use_a_proportional_refresh_margin() {
     store
         .import_grant(
             "alpha",
-            &grant_body("alpha@example.test", "acct-1", "short", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "short", now() + 3600),
         )
         .unwrap();
     let meta = store.list().unwrap().pop().unwrap();
@@ -781,13 +789,13 @@ fn cpa_updates_preserve_operator_disabled_state_and_never_write_rt() {
     store
         .import_grant(
             "alpha",
-            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "initial", now() + 3600),
         )
         .unwrap();
     store.set_cpa_enabled("alpha", true).unwrap();
     let metadata = store.sync_cpa("alpha").unwrap();
     assert_eq!(metadata.cpa_synced_generation, Some(1));
-    let destination = cpa.path().join("alpha@example.test.json");
+    let destination = cpa.path().join("alpha@example.com.json");
     let mut projection: Value =
         serde_json::from_str(&fs::read_to_string(&destination).unwrap()).unwrap();
     projection["disabled"] = json!(true);
@@ -819,12 +827,12 @@ fn cpa_sync_renames_existing_managed_hash_file_to_email_name() {
     store
         .import_grant(
             key,
-            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "initial", now() + 3600),
         )
         .unwrap();
     store.set_cpa_enabled(key, true).unwrap();
     store.sync_cpa(key).unwrap();
-    let email_path = cpa.path().join("alpha@example.test.json");
+    let email_path = cpa.path().join("alpha@example.com.json");
     let legacy_path = cpa.path().join(format!("notrace_{}.json", hash_key(key)));
     fs::rename(&email_path, &legacy_path).unwrap();
 
@@ -849,13 +857,13 @@ fn cpa_sync_refuses_duplicate_same_identity_with_unmanaged_filename() {
     store
         .import_grant(
             "alpha",
-            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "initial", now() + 3600),
         )
         .unwrap();
     store.set_cpa_enabled("alpha", true).unwrap();
     fs::write(
         cpa.path().join("old-cpa-name.json"),
-        json!({"email":"alpha@example.test","account_id":"acct-1","refresh_token":"old"})
+        json!({"email":"alpha@example.com","account_id":"acct-1","refresh_token":"old"})
             .to_string(),
     )
     .unwrap();
@@ -873,7 +881,7 @@ fn scheduled_cycle_recovers_a_durable_rotation_without_reusing_the_token() {
     store
         .import_grant(
             "alpha",
-            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "initial", now() + 3600),
         )
         .unwrap();
     let path = store.path("alpha").unwrap();
@@ -906,7 +914,7 @@ fn scheduled_cycle_projects_a_recovered_rotation_to_cpa() {
     store
         .import_grant(
             "alpha",
-            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "initial", now() + 3600),
         )
         .unwrap();
     store.set_cpa_enabled("alpha", true).unwrap();
@@ -918,7 +926,7 @@ fn scheduled_cycle_projects_a_recovered_rotation_to_cpa() {
     let mut candidate = current.clone();
     candidate.access_token = jwt(json!({
         "exp": now() + 7200,
-        "https://api.openai.com/profile": {"email": "alpha@example.test"},
+        "https://api.openai.com/profile": {"email": "alpha@example.com"},
         "https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}
     }));
     candidate.refresh_token = "rotated".into();
@@ -932,7 +940,7 @@ fn scheduled_cycle_projects_a_recovered_rotation_to_cpa() {
     store.run_cycle().unwrap();
 
     let projection: Value = serde_json::from_str(
-        &fs::read_to_string(cpa.path().join("alpha@example.test.json")).unwrap(),
+        &fs::read_to_string(cpa.path().join("alpha@example.com.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(projection["notrace_generation"], 2);
@@ -946,7 +954,7 @@ fn scheduled_cycle_keeps_healthy_accounts_running_after_storage_damage() {
     store
         .import_grant(
             "alpha",
-            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "initial", now() + 3600),
         )
         .unwrap();
     let path = store.path("alpha").unwrap();
@@ -972,13 +980,13 @@ fn scheduled_cycle_does_not_rewrite_unchanged_cpa_credentials() {
     store
         .import_grant(
             "alpha",
-            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "initial", now() + 3600),
         )
         .unwrap();
     store.set_cpa_enabled("alpha", true).unwrap();
     store.sync_cpa("alpha").unwrap();
     let grant_path = store.path("alpha").unwrap();
-    let destination = cpa.path().join("alpha@example.test.json");
+    let destination = cpa.path().join("alpha@example.com.json");
     let original_grant = fs::read(&grant_path).unwrap();
     let before = fs::metadata(&destination).unwrap().modified().unwrap();
     thread::sleep(Duration::from_millis(20));
@@ -1009,11 +1017,11 @@ fn cpa_sync_preserves_malformed_reserved_files() {
     store
         .import_grant(
             "alpha",
-            &grant_body("alpha@example.test", "acct-1", "initial", now() + 3600),
+            &grant_body("alpha@example.com", "acct-1", "initial", now() + 3600),
         )
         .unwrap();
     store.set_cpa_enabled("alpha", true).unwrap();
-    let destination = cpa.path().join("alpha@example.test.json");
+    let destination = cpa.path().join("alpha@example.com.json");
     fs::write(&destination, "incomplete CPA file").unwrap();
 
     let metadata = store.sync_cpa("alpha").unwrap();

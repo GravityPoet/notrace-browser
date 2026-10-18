@@ -2,6 +2,7 @@
 //! Tokens stay in a private NoTrace directory. Only expiry/status metadata crosses
 //! the UI boundary; browser cookies and other applications' credentials are never imported.
 
+use crate::broker::claim_subscription_active_until;
 use crate::{read_account, CloakConfig, CloakError, LaunchOptions, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
@@ -80,6 +81,8 @@ pub struct AuthStatus {
     pub state: AuthState,
     pub email: Option<String>,
     pub plan_type: Option<String>,
+    #[serde(default)]
+    pub subscription_active_until: Option<String>,
     pub expires_at: Option<u64>,
     pub last_refresh_at: Option<u64>,
     pub auto_refresh: bool,
@@ -180,6 +183,7 @@ struct Credentials {
     expires_at: u64,
     email: Option<String>,
     plan_type: Option<String>,
+    subscription_active_until: Option<String>,
     account_id: Option<String>,
 }
 impl Credentials {
@@ -235,6 +239,9 @@ impl Credentials {
             .pointer("/https:~1~1api.openai.com~1auth/chatgpt_plan_type")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned);
+        let subscription_active_until = claim_subscription_active_until(&claims)
+            .or_else(|| claim_subscription_active_until(&identity))
+            .or_else(|| claim_subscription_active_until(&root));
         let account_id = root
             .pointer("/tokens/account_id")
             .and_then(Value::as_str)
@@ -250,6 +257,7 @@ impl Credentials {
             expires_at,
             email,
             plan_type,
+            subscription_active_until,
             account_id,
         }))
     }
@@ -428,6 +436,9 @@ fn status_at(home: &Path, name: &str) -> Result<AuthStatus> {
         state,
         email: data.as_ref().and_then(|c| c.email.clone()),
         plan_type: data.as_ref().and_then(|c| c.plan_type.clone()),
+        subscription_active_until: data
+            .as_ref()
+            .and_then(|c| c.subscription_active_until.clone()),
         expires_at: data.as_ref().map(|c| c.expires_at),
         last_refresh_at: p.last_refresh_at,
         auto_refresh: p.enabled,

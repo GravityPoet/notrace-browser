@@ -3770,6 +3770,10 @@ button:disabled {
 .brokerRowTop { display: flex; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
 .brokerRowMain { display: grid; gap: 6px; min-width: 0; }
 .brokerRowMain strong { overflow-wrap: anywhere; font-size: 13px; }
+.brokerPlanLine { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; color: var(--muted); }
+.brokerSubscriptionExpiry { display: inline-flex; align-items: center; gap: 5px; width: fit-content; border: 1px solid var(--accent-ring); border-radius: 7px; background: var(--accent-soft); color: #0066cc; padding: 4px 8px; font-size: 11px; font-weight: 650; line-height: 1.35; white-space: nowrap; }
+.brokerSubscriptionExpiry svg { flex: 0 0 auto; }
+.brokerSubscriptionExpiry b { font-weight: 750; }
 .brokerAuthStatus { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
 .brokerAuthStatus-reauth_required { color: var(--danger); font-weight: 650; }
 .brokerAuthDot { display: inline-block; width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--soft); }

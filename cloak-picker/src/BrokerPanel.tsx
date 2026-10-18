@@ -6,6 +6,7 @@ import { authProgressLabels, type ActiveAuth, type AuthCall, type AuthLoginPhase
 
 export type BrokerMetadata = {
   key: string; email: string; account_id: string; plan_type: string | null;
+  subscription_active_until?: string | null;
   expires_at: number; last_refresh_at: number; generation: number;
   refresh_count?: number; automatic_refresh_count?: number;
   next_refresh_at: number; next_retry_at: number | null; error: string | null;
@@ -51,6 +52,25 @@ const errors: Record<string, string> = {
 const authorityNames = { no_trace: "NoTrace 本机", codex: "Codex", cockpit: "Cockpit Tools", cpa: "CPA", broker: "NoTrace Broker" };
 function time(value: number | null) {
   return value ? new Date(value * 1000).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+}
+function timeText(value: string | null | undefined) {
+  const raw = value?.trim();
+  if (!raw) return "";
+  const parsed = Date.parse(raw);
+  return Number.isNaN(parsed)
+    ? raw
+    : new Date(parsed).toLocaleString("zh-CN", {
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    });
+}
+function subscriptionRemainingText(value: string | null | undefined) {
+  const raw = value?.trim();
+  if (!raw) return "";
+  const parsed = Date.parse(raw);
+  if (Number.isNaN(parsed)) return "";
+  const remainingMs = parsed - Date.now();
+  if (remainingMs <= 0) return "已到期";
+  return `剩余 ${Math.max(1, Math.ceil(remainingMs / 86_400_000))} 天`;
 }
 function syncLabel(enabled: boolean, synced: number | null, generation: number, error: string | null) {
   if (error === "consumer_missing") return errors.consumer_missing;
@@ -557,7 +577,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
               ? `未授权 · ${localStatus}`
               : `已授权 · ${localStatus}`;
       return <article className={`brokerRow ${historicalAuthorization ? "brokerRowHistorical" : ""}`} key={row.profile_id}>
-        <div className="brokerRowTop"><div className="brokerRowMain">{!workbench && <strong>{row.name}</strong>}<span className={`brokerAuthStatus brokerAuthStatus-${accountState}`}><span className={`brokerAuthDot brokerAuthDot-${accountState}`} aria-hidden="true" />{row.trashed ? "回收站账号" : "浏览器账号"} · {accountState === "unknown" ? "托管状态待确认" : accountStatusLabel}</span>{workbench && <span>{remote?.plan_type || row.local.plan_type ? `套餐：${planLabel(remote ? remote.plan_type : row.local.plan_type)}` : "套餐未知"}{grantEmail && grantEmail !== row.name ? ` · 授权账号：${grantEmail}` : ""}</span>}</div>
+        <div className="brokerRowTop"><div className="brokerRowMain">{!workbench && <strong>{row.name}</strong>}<span className={`brokerAuthStatus brokerAuthStatus-${accountState}`}><span className={`brokerAuthDot brokerAuthDot-${accountState}`} aria-hidden="true" />{row.trashed ? "回收站账号" : "浏览器账号"} · {accountState === "unknown" ? "托管状态待确认" : accountStatusLabel}</span>{workbench && <div className="brokerPlanLine"><span>{remote?.plan_type || row.local.plan_type ? `套餐：${planLabel(remote ? remote.plan_type : row.local.plan_type)}` : "套餐未知"}</span>{(remote?.subscription_active_until ?? row.local.subscription_active_until) && <span className="brokerSubscriptionExpiry" title="ChatGPT 订阅有效期，不是 access token 到期时间"><Clock3 size={13} aria-hidden="true" />订阅到期 {timeText(remote?.subscription_active_until ?? row.local.subscription_active_until)}<b>{subscriptionRemainingText(remote?.subscription_active_until ?? row.local.subscription_active_until)}</b></span>}{grantEmail && grantEmail !== row.name ? <span>· 授权账号：{grantEmail}</span> : null}</div>}</div>
           <div className="brokerRowActions">{remote ? <>
             {!headerOwnsAuthorization && authorizationAction(row)}
             {!historicalAuthorization && <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { try { await call("broker_refresh_account", { profileId: row.profile_id }); } catch (caught) { await read(); throw caught; } await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>}
