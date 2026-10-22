@@ -263,7 +263,7 @@ describe("Cloak Picker dialog regressions", () => {
     const search = panel.querySelector<HTMLInputElement>('input[aria-label="搜索账号"]')!;
     expect(search.value).toBe("");
     expect(panel.querySelectorAll('.brokerRow')).toHaveLength(1);
-    await inputText(search, "demo-alpha@example.test");
+    await inputText(search, "demo-alpha@example.com");
     await click(buttonWithText("授权", panel.querySelector('.workbenchAccountActions')!));
     await settle(400);
     expect(mockCommandCountForTest("login_account_auth")).toBe(1);
@@ -357,7 +357,7 @@ describe("Cloak Picker dialog regressions", () => {
       next_retry_at: null, error, cpa_enabled: false, cpa_synced_generation: null,
       cpa_sync_error: null, cockpit_synced_generation: null,
     });
-    setMockBrokerAccountsForTest([remote("demo-alpha@example.test", null), remote("demo-beta", "reauth_required"), remote("demo-gamma", "recovery_required")]);
+    setMockBrokerAccountsForTest([remote("demo-alpha@example.com", null), remote("demo-beta", "reauth_required"), remote("demo-gamma", "recovery_required")]);
     await click(document.querySelector<HTMLButtonElement>('[aria-label="读取授权状态"]')!);
     await settle(240);
     const filters = document.querySelector('[aria-label="全环境授权筛选"]')!;
@@ -587,7 +587,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(dialog?.textContent).toContain("备份已完成");
     expect(dialog?.textContent).toContain("2 个账号");
     expect(dialog?.querySelector('button[aria-label="复制备份路径"]')).not.toBeNull();
-    expect(dialog?.querySelector(".workspacePathValue code")?.textContent).toContain("/Users/example/Desktop/");
+    expect(dialog?.querySelector(".workspacePathValue code")?.textContent).toContain("/tmp/notrace-example/Desktop/");
 
     await click(buttonWithText("导入恢复", dialog ?? document));
     dialog = document.querySelector<HTMLElement>('[role="dialog"]');
@@ -685,7 +685,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(bulkBar?.textContent).toContain("已选 0");
     expect(buttonWithText("操作", bulkBar ?? document).disabled).toBe(true);
 
-    const alpha = accountRow("demo-alpha@example.test");
+    const alpha = accountRow("demo-alpha@example.com");
     const beta = accountRow("demo-beta");
     await click(alpha);
     await click(beta);
@@ -694,7 +694,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(beta.getAttribute("aria-pressed")).toBe("true");
     expect(document.querySelector(".bulkSelectionCount")?.textContent).toBe("已选 2");
     expect(document.querySelectorAll('.bulkActionButton')).toHaveLength(5);
-    expect(Array.from(document.querySelectorAll('.bulkSelectedPreview li > span'), element => element.textContent)).toEqual(["demo-alpha@example.test", "demo-beta"]);
+    expect(Array.from(document.querySelectorAll('.bulkSelectedPreview li > span'), element => element.textContent)).toEqual(["demo-alpha@example.com", "demo-beta"]);
 
     expect(alpha.querySelector(".accountSelectionCheckbox.checked")).not.toBeNull();
 
@@ -704,7 +704,7 @@ describe("Cloak Picker dialog regressions", () => {
     await openContextMenu(alpha);
     await settle(100);
     expect(mockCommandCountForTest("launch_account")).toBe(0);
-    expect(document.querySelector('[role="menu"][aria-label="demo-alpha@example.test 账号菜单"]')).toBeNull();
+    expect(document.querySelector('[role="menu"][aria-label="demo-alpha@example.com 账号菜单"]')).toBeNull();
 
     await click(buttonWithText("操作"));
     const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="批量操作选项"]');
@@ -851,7 +851,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(mockCommandCountForTest("permanently_delete_account")).toBe(1);
     expect(mockCommandCountForTest("delete_account")).toBe(0);
     expect(document.querySelector('.accountRow[data-account-name="demo-beta"]')).toBeNull();
-    expect(accountRow("demo-alpha@example.test")).toBeTruthy();
+    expect(accountRow("demo-alpha@example.com")).toBeTruthy();
     expect(document.querySelector('#cloak-account-active-tab')?.getAttribute('aria-selected')).toBe('true');
   });
 
@@ -913,7 +913,7 @@ describe("Cloak Picker dialog regressions", () => {
     await settle(480);
     expect(mockCommandCountForTest("permanently_delete_account")).toBe(2);
     expect(mockCommandCountForTest("delete_account")).toBe(0);
-    expect(accountRow("demo-alpha@example.test")).toBeTruthy();
+    expect(accountRow("demo-alpha@example.com")).toBeTruthy();
     expect(document.querySelector('#cloak-account-active-tab')?.getAttribute('aria-selected')).toBe('true');
   });
 
@@ -930,10 +930,10 @@ describe("Cloak Picker dialog regressions", () => {
     await click(copyButton as HTMLButtonElement);
     await settle(0);
 
-    expect(writeText).toHaveBeenCalledWith("demo-alpha@example.test");
+    expect(writeText).toHaveBeenCalledWith("demo-alpha@example.com");
     expect(copyButton?.title).toBe("已复制");
     expect(document.querySelector(".accountCopyStatus")?.textContent).toBe(
-      "已复制账号 demo-alpha@example.test",
+      "已复制账号 demo-alpha@example.com",
     );
   });
 
@@ -945,16 +945,16 @@ describe("Cloak Picker dialog regressions", () => {
     });
 
     const pathValue = Array.from(document.querySelectorAll<HTMLElement>(".infoValue")).find(
-      (value) => value.textContent?.includes("/NoTrace Browser/Accounts/demo-alpha@example.test"),
+      (value) => value.textContent?.includes("/NoTrace Browser/Accounts/demo-alpha@example.com"),
     );
     const copyButton = document.querySelector<HTMLButtonElement>('button[aria-label="复制账号目录"]');
     expect(pathValue?.classList.contains("mono")).toBe(true);
-    expect(pathValue?.title).toContain("/Users/example/Library/Application Support/NoTrace Browser/Accounts/");
+    expect(pathValue?.title).toContain("/tmp/notrace-example/Library/Application Support/NoTrace Browser/Accounts/");
     expect(copyButton).not.toBeNull();
 
     await click(copyButton as HTMLButtonElement);
     expect(writeText).toHaveBeenCalledWith(
-      "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-alpha@example.test",
+      "/tmp/notrace-example/Library/Application Support/NoTrace Browser/Accounts/demo-alpha@example.com",
     );
     expect(copyButton?.title).toBe("已复制");
   });
@@ -976,7 +976,7 @@ describe("Cloak Picker dialog regressions", () => {
     expect(mockCommandCountForTest("set_group")).toBe(1);
     expect(document.querySelector('.accountContextMenu')).toBeNull();
     expect(accountRow("demo-beta").closest('.accountGroup')?.getAttribute('data-account-group')).toBe("antigravity");
-    expect(accountRow("demo-alpha@example.test").closest('.accountGroup')?.getAttribute('data-account-group')).toBe("codex");
+    expect(accountRow("demo-alpha@example.com").closest('.accountGroup')?.getAttribute('data-account-group')).toBe("codex");
   });
 
   it("flips the group flyout at the window edge and supports keyboard return", async () => {
@@ -1373,14 +1373,14 @@ describe("Cloak Picker dialog regressions", () => {
   });
 
   it("shows the full email and leaves empty color-only marks out of named tag membership", async () => {
-    const markDialog = await openMarkDialog("demo-alpha@example.test");
+    const markDialog = await openMarkDialog("demo-alpha@example.com");
     await inputText(markDialog.querySelector<HTMLInputElement>(".field input")!, "自用");
     await click(buttonWithText("保存标记", markDialog));
     await settle(180);
     const dialog = await openManageDialog("管理标签");
     await click(dialog.querySelector<HTMLButtonElement>('[aria-label="查看标签 自用 的账号"]')!);
     const list = dialog.querySelector<HTMLElement>('ul[aria-label="标签 自用 的账号"]')!;
-    expect(list.querySelector(".manageTagAccount > span")?.textContent).toBe("demo-alpha@example.test");
+    expect(list.querySelector(".manageTagAccount > span")?.textContent).toBe("demo-alpha@example.com");
     expect(dialog.querySelector('[data-tag-label="自用"]')?.textContent).toContain("1 个账号 · 活跃 1 · 回收站 0");
     expect(dialog.querySelector('[data-tag-label=""]')).toBeNull();
   });
@@ -1553,7 +1553,7 @@ describe("Cloak Picker dialog regressions", () => {
 
     const initialGroupOrder = groupFilterLabels();
     expect(initialGroupOrder).toEqual(["claude", "codex", "antigravity"]);
-    await openContextMenu(accountRow("demo-alpha@example.test"));
+    await openContextMenu(accountRow("demo-alpha@example.com"));
 
     const menu = document.querySelector<HTMLElement>('[role="menu"]');
     expect(menu).not.toBeNull();
@@ -1634,7 +1634,7 @@ describe("Cloak Picker dialog regressions", () => {
   });
 
   it("reorders accounts without the native drag ghost and keeps a keyboard alternative", async () => {
-    const alpha = accountRow("demo-alpha@example.test");
+    const alpha = accountRow("demo-alpha@example.com");
     expect(alpha.getAttribute("draggable")).toBeNull();
     expect(alpha.getAttribute("aria-keyshortcuts")).toBe("Alt+ArrowUp Alt+ArrowDown");
     expect(alpha.querySelector(".dragHandle")?.getAttribute("title")).toBe("拖动调整顺序或移动分组");
@@ -1645,15 +1645,15 @@ describe("Cloak Picker dialog regressions", () => {
     const codexNames = Array.from(
       document.querySelectorAll<HTMLButtonElement>('[data-account-group="codex"] > .accountRow'),
     ).map((row) => row.querySelector(".accountTitle strong")?.textContent);
-    expect(codexNames).toEqual(["demo-beta", "demo-alpha@example.test"]);
+    expect(codexNames).toEqual(["demo-beta", "demo-alpha@example.com"]);
     expect(window.localStorage.getItem("cloak-picker.accountOrder.v1")).toContain(
-      '"demo-beta","demo-alpha@example.test"',
+      '"demo-beta","demo-alpha@example.com"',
     );
     expect(document.querySelector('.visuallyHidden[role="status"]')?.textContent).toContain("已移至第 2 位");
   });
 
   it("moves the placeholder with the pointer, accepts a row gap, and commits the drop", async () => {
-    const alpha = accountRow("demo-alpha@example.test");
+    const alpha = accountRow("demo-alpha@example.com");
     const beta = accountRow("demo-beta");
     const group = beta.closest<HTMLElement>("[data-account-group]");
     const handle = alpha.querySelector<HTMLElement>(".dragHandle");
@@ -1686,7 +1686,7 @@ describe("Cloak Picker dialog regressions", () => {
     const codexNames = Array.from(
       document.querySelectorAll<HTMLButtonElement>('[data-account-group="codex"] > .accountRow'),
     ).map((row) => row.querySelector(".accountTitle strong")?.textContent);
-    expect(codexNames).toEqual(["demo-beta", "demo-alpha@example.test"]);
+    expect(codexNames).toEqual(["demo-beta", "demo-alpha@example.com"]);
   });
 
   it("explains that the account name is required instead of ignoring create", async () => {
@@ -1914,7 +1914,7 @@ describe("Cloak Picker dialog regressions", () => {
     await inputText(search, "客户偏好");
     await settle(30);
     expect(document.querySelectorAll(".accountRow")).toHaveLength(1);
-    expect(document.querySelector(".detail h1")?.textContent).toBe("demo-alpha@example.test");
+    expect(document.querySelector(".detail h1")?.textContent).toBe("demo-alpha@example.com");
 
     await selectValue(scope, "account");
     await inputText(search, "demo-beta");
@@ -2104,7 +2104,7 @@ describe("Cloak Picker dialog regressions", () => {
 
   it("turns a delayed official startup denial into a retryable failure", async () => {
     await settle(180);
-    const accountName = document.querySelector(".detail h1")?.textContent ?? "demo-alpha@example.test";
+    const accountName = document.querySelector(".detail h1")?.textContent ?? "demo-alpha@example.com";
     await click(buttonWithText("启动"));
     await settle(260);
     expect(document.querySelector(".launchStatus")?.textContent).toContain("已启动");
@@ -2201,15 +2201,15 @@ describe("Cloak Picker cross-account and failure-state regressions", () => {
   }
 
   it("never shows one account's launch plan under another account's name", async () => {
-    await click(accountRow("demo-alpha@example.test"));
+    await click(accountRow("demo-alpha@example.com"));
     await settle(200);
-    expect(argvPreview()).toContain("demo-alpha@example.test");
+    expect(argvPreview()).toContain("demo-alpha@example.com");
 
     // Switch, then look before the new dry run can answer. The panel is already
     // titled demo-beta, so any demo-alpha identity still on screen is a lie the
     // user could act on.
     await click(accountRow("demo-beta"));
-    expect(argvPreview()).not.toContain("demo-alpha@example.test");
+    expect(argvPreview()).not.toContain("demo-alpha@example.com");
 
     await settle(200);
     expect(argvPreview()).toContain("demo-beta");

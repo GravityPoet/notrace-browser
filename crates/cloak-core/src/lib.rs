@@ -597,12 +597,19 @@ pub struct LaunchOptions {
     pub skip_geo: bool,
     pub locale_override: Option<bool>,
     pub allow_privacy_fail: bool,
+    /// Interactive callers can ask whether to continue this launch after a
+    /// privacy warning. This never overrides an invalid browser runtime.
+    pub privacy_confirmation: Option<Arc<dyn PrivacyConfirmation>>,
     pub preflight: PreflightMode,
     pub cancellation: Option<Arc<AtomicBool>>,
     /// Optional UI bridge for denials that the official binary reports just
     /// after its native application-ready signal. CLI callers leave this unset
     /// and retain the conservative synchronous observation window.
     pub startup_error_sender: Option<mpsc::Sender<String>>,
+}
+
+pub trait PrivacyConfirmation: std::fmt::Debug + Send + Sync {
+    fn confirm(&self, failures: &[String]) -> bool;
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -633,6 +640,7 @@ impl LaunchOptions {
             skip_geo,
             locale_override,
             allow_privacy_fail,
+            privacy_confirmation: None,
             preflight,
             cancellation: None,
             startup_error_sender: None,
@@ -1418,6 +1426,22 @@ pub(crate) fn launch_plan_reusing_profile_tab(
     launch_plan_with_mode(config, plan, options, preflight_started, true)
 }
 
+fn confirm_launch_privacy(plan: &LaunchPlan, options: &LaunchOptions) -> Result<()> {
+    ensure_launch_not_cancelled(options.cancellation.as_deref())?;
+    if plan.runtime.blocks_launch {
+        return Err(CloakError::PrivacyGate(plan.runtime.message.clone()));
+    }
+    if !plan.privacy_failures.is_empty() && !options.allow_privacy_fail {
+        match options.privacy_confirmation.as_deref() {
+            Some(confirmation) if confirmation.confirm(&plan.privacy_failures) => {}
+            Some(_) => return Err(CloakError::LaunchCancelled),
+            None => return Err(CloakError::PrivacyGate(plan.privacy_failures.join("\n"))),
+        }
+    }
+    // A close/cancel request can arrive while the confirmation is on screen.
+    ensure_launch_not_cancelled(options.cancellation.as_deref())
+}
+
 fn launch_plan_with_mode(
     config: &CloakConfig,
     plan: LaunchPlan,
@@ -1425,13 +1449,7 @@ fn launch_plan_with_mode(
     preflight_started: Instant,
     prefer_existing_tab: bool,
 ) -> Result<LaunchResult> {
-    ensure_launch_not_cancelled(options.cancellation.as_deref())?;
-    if plan.runtime.blocks_launch {
-        return Err(CloakError::PrivacyGate(plan.runtime.message.clone()));
-    }
-    if !plan.privacy_failures.is_empty() && !options.allow_privacy_fail {
-        return Err(CloakError::PrivacyGate(plan.privacy_failures.join("\n")));
-    }
+    confirm_launch_privacy(&plan, options)?;
 
     secure_account_dir(&plan.profile_path)?;
     ensure_legacy_rename_compat(config)?;
@@ -4710,7 +4728,7 @@ fn default_account_base(home: &Path) -> PathBuf {
 #[cfg(target_os = "windows")]
 fn default_account_base(_home: &Path) -> PathBuf {
     dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from(r"C:\Users\Default\AppData\Roaming"))
+        .unwrap_or_else(|| PathBuf::from(r"C:\Users").join(r"Default\AppData\Roaming"))
         .join("NoTrace Browser/Accounts")
 }
 
@@ -4751,6 +4769,120 @@ fn companion_page_spoof_enabled_from(primary: Option<&str>, legacy: Option<&str>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn privacy_warning_confirmation_is_per_launch_and_preserves_runtime_gates() {
+        #[derive(Debug)]
+        struct Confirmation {
+            accepted: bool,
+            called: AtomicBool,
+            cancel: Option<Arc<AtomicBool>>,
+        }
+        impl PrivacyConfirmation for Confirmation {
+            fn confirm(&self, failures: &[String]) -> bool {
+                assert_eq!(failures, ["GeoIP 未达到 2/3 共识"]);
+                self.called.store(true, Ordering::Release);
+                if let Some(cancel) = &self.cancel {
+                    cancel.store(true, Ordering::Release);
+                }
+                self.accepted
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let config = CloakConfig {
+            repo_root: dir.path().into(),
+            account_base: dir.path().join("accounts"),
+            extension_source: dir.path().join("extension"),
+            cloakbrowser_root: dir.path().join("browser"),
+        };
+        fs::create_dir_all(&config.extension_source).unwrap();
+        fs::create_dir_all(config.profile_dir("work")).unwrap();
+        let browser = config
+            .cloakbrowser_root
+            .join(current_browser_relative_path());
+        fs::create_dir_all(browser.parent().unwrap()).unwrap();
+        fs::write(&browser, "").unwrap();
+        fs::write(
+            config.cloakbrowser_root.join("current.sha256"),
+            format!("{}  current browser\n", sha256_file(&browser).unwrap()),
+        )
+        .unwrap();
+        let mut plan = build_launch_plan(
+            &config,
+            "work",
+            &LaunchOptions {
+                dry_run: true,
+                skip_geo: true,
+                ..LaunchOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(!plan.runtime.blocks_launch);
+        plan.privacy_failures = vec!["GeoIP 未达到 2/3 共识".into()];
+
+        assert!(matches!(
+            confirm_launch_privacy(&plan, &LaunchOptions::default()),
+            Err(CloakError::PrivacyGate(_))
+        ));
+        for accepted in [false, true] {
+            let confirmation = Arc::new(Confirmation {
+                accepted,
+                called: AtomicBool::new(false),
+                cancel: None,
+            });
+            let options = LaunchOptions {
+                privacy_confirmation: Some(confirmation.clone()),
+                ..LaunchOptions::default()
+            };
+            let result = confirm_launch_privacy(&plan, &options);
+            if accepted {
+                result.unwrap();
+            } else {
+                assert!(matches!(result, Err(CloakError::LaunchCancelled)));
+            }
+            assert!(confirmation.called.load(Ordering::Acquire));
+            assert!(
+                !options.allow_privacy_fail,
+                "confirmation must not persist an override"
+            );
+        }
+        assert!(matches!(
+            confirm_launch_privacy(&plan, &LaunchOptions::default()),
+            Err(CloakError::PrivacyGate(_))
+        ));
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let confirmation = Arc::new(Confirmation {
+            accepted: true,
+            called: AtomicBool::new(false),
+            cancel: Some(cancel.clone()),
+        });
+        let options = LaunchOptions {
+            privacy_confirmation: Some(confirmation.clone()),
+            cancellation: Some(cancel),
+            ..LaunchOptions::default()
+        };
+        assert!(matches!(
+            confirm_launch_privacy(&plan, &options),
+            Err(CloakError::LaunchCancelled)
+        ));
+
+        plan.runtime.blocks_launch = true;
+        let confirmation = Arc::new(Confirmation {
+            accepted: true,
+            called: AtomicBool::new(false),
+            cancel: None,
+        });
+        let options = LaunchOptions {
+            privacy_confirmation: Some(confirmation.clone()),
+            ..LaunchOptions::default()
+        };
+        assert!(matches!(
+            confirm_launch_privacy(&plan, &options),
+            Err(CloakError::PrivacyGate(_))
+        ));
+        assert!(!confirmation.called.load(Ordering::Acquire));
+    }
 
     /// The readiness probe used to resolve "localhost", which returns ::1 first
     /// on macOS while the relay binds 127.0.0.1 only. Every relay then looked
@@ -5093,8 +5225,8 @@ mod tests {
     #[test]
     fn account_name_validation_matches_picker_rules() {
         assert!(validate_account_name("work_01").is_ok());
-        assert!(validate_account_name("poet-quench-9i@example.test").is_ok());
-        assert!(validate_account_name("poet+quench@example.test").is_ok());
+        assert!(validate_account_name("poet-quench-9i@example.com").is_ok());
+        assert!(validate_account_name("poet+quench@example.com").is_ok());
         assert!(validate_account_name("main").is_err());
         assert!(validate_account_name("../x").is_err());
         assert!(validate_account_name("x\\y").is_err());
@@ -6323,12 +6455,12 @@ mod tests {
     #[test]
     fn browser_binary_resolves_to_its_macos_app_bundle() {
         let binary = Path::new(
-            "/Users/example/.cloakbrowser/chromium-145/Chromium.app/Contents/MacOS/Chromium",
+            "/tmp/notrace-example/.cloakbrowser/chromium-145/Chromium.app/Contents/MacOS/Chromium",
         );
         assert_eq!(
             macos_app_bundle_for_binary(binary),
             Some(Path::new(
-                "/Users/example/.cloakbrowser/chromium-145/Chromium.app"
+                "/tmp/notrace-example/.cloakbrowser/chromium-145/Chromium.app"
             ))
         );
         assert_eq!(
@@ -6512,17 +6644,18 @@ mod tests {
 
     #[test]
     fn extract_version_from_path_finds_chromium_dir() {
-        let path =
-            Path::new("/home/user/.cloakbrowser/chromium-145/Chromium.app/Contents/MacOS/Chromium");
+        let path = Path::new(
+            "/tmp/notrace-example/.cloakbrowser/chromium-145/Chromium.app/Contents/MacOS/Chromium",
+        );
         let v = extract_version_from_path(path).unwrap();
         assert_eq!(v.major, "145");
 
-        let path2 = Path::new("/home/user/.cloakbrowser/chromium-149/chrome");
+        let path2 = Path::new("/tmp/notrace-example/.cloakbrowser/chromium-149/chrome");
         let v2 = extract_version_from_path(path2).unwrap();
         assert_eq!(v2.major, "149");
 
         let path3 = Path::new(
-            "/home/user/.cloakbrowser/chromium-148.0.7778.215.3-pro-notrace/Chromium.app/Contents/MacOS/Chromium",
+            "/tmp/notrace-example/.cloakbrowser/chromium-148.0.7778.215.3-pro-notrace/Chromium.app/Contents/MacOS/Chromium",
         );
         let v3 = extract_version_from_path(path3).unwrap();
         assert_eq!(v3.distribution, "148.0.7778.215.3");

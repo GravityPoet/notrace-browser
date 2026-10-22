@@ -145,7 +145,7 @@ impl Failure {
             Self::Identity => "授权账号与所选账号不匹配，原有凭证保持不变",
             Self::Unchanged => "尚未确认新凭证已写回，未报告刷新成功",
             Self::Recovery => "上次刷新尚未完成保存，已保留恢复副本；请点立即刷新恢复或重新连接",
-            Self::Browser => "未能在所选 NoTrace 账号中打开授权页，请先确认该账号可以正常启动",
+            Self::Browser => "授权页尚未打开：所选账号的浏览器启动未成功，请查看启动提示后重试",
             Self::BrowserClosed => {
                 "授权浏览器已关闭，等待凭证写回超时；原有凭证保持不变，可重新授权"
             }
@@ -749,11 +749,18 @@ pub fn login_account_auth_with_cancellation(
     name: &str,
     cancel: &Arc<AtomicBool>,
 ) -> Result<AuthStatus> {
-    login_account_auth_with_progress(config, name, cancel, |_| {})
+    login_account_auth_with_progress(
+        config,
+        name,
+        &LaunchOptions::from_env(false),
+        cancel,
+        |_| {},
+    )
 }
 pub fn login_account_auth_with_progress(
     config: &CloakConfig,
     name: &str,
+    browser_options: &LaunchOptions,
     cancel: &Arc<AtomicBool>,
     progress: impl Fn(AuthLoginProgress),
 ) -> Result<AuthStatus> {
@@ -766,7 +773,7 @@ pub fn login_account_auth_with_progress(
         |raw| {
             validate_auth_url(raw)?;
             progress(AuthLoginProgress::OpeningBrowser);
-            let mut options = LaunchOptions::from_env(false);
+            let mut options = browser_options.clone();
             options.preflight = crate::PreflightMode::Off;
             options.cancellation = Some(Arc::clone(cancel));
             let start = Instant::now();

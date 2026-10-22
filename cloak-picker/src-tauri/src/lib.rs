@@ -27,7 +27,7 @@ use cloak_core::{
     AuthLoginProgress, AuthRefreshSummary, AuthStatus, BrokerCockpitImportSummary,
     BrokerJsonImportPreview, BrokerJsonImportSummary, BrokerJsonTransferSummary, BrokerMetadata,
     BrokerOverview, CloakConfig, CodexQuotaSnapshot, ForceCloseResult, LaunchOptions, LaunchPlan,
-    LaunchResult, SeatUsage, WorkspaceExportSummary, WorkspaceImportMapping,
+    LaunchResult, PrivacyConfirmation, SeatUsage, WorkspaceExportSummary, WorkspaceImportMapping,
     WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
 };
 use std::collections::HashMap;
@@ -39,7 +39,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use zeroize::Zeroizing;
 
 mod cockpit_import_window;
@@ -54,6 +54,46 @@ const AUTH_REFRESH_START_DELAY: Duration = Duration::from_secs(30);
 // access token is inside the lead window, so a long-lived token is not rotated
 // every day.
 const AUTH_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+#[derive(Debug)]
+struct NativePrivacyConfirmation {
+    app: tauri::AppHandle,
+    account: String,
+}
+
+impl PrivacyConfirmation for NativePrivacyConfirmation {
+    fn confirm(&self, failures: &[String]) -> bool {
+        let message = format!(
+            "账号：{}\n\n当前节点的出口信息未能通过一致性检查，切换节点或检测服务不可用时会出现此提示。继续打开后，出口 IP 与时区可能不一致。\n\n{}\n\n仅本次继续打开，下次启动仍会检查。",
+            self.account,
+            failures.join("\n")
+        );
+        let mut dialog = self
+            .app
+            .dialog()
+            .message(message)
+            .title("出口与隐私检查未通过")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "仍要打开".into(),
+                "取消".into(),
+            ));
+        if let Some(window) = self.app.get_webview_window("main") {
+            dialog = dialog.parent(&window);
+        }
+        // Every caller runs in run_blocking; the main UI thread stays free.
+        dialog.blocking_show()
+    }
+}
+
+fn interactive_launch_options(app: tauri::AppHandle, account: &str) -> LaunchOptions {
+    let mut options = LaunchOptions::from_env(false);
+    options.privacy_confirmation = Some(Arc::new(NativePrivacyConfirmation {
+        app,
+        account: account.to_string(),
+    }));
+    options
+}
 
 /// Keep each account's managed ChatGPT OAuth session warm without sharing the
 /// browser Cookie store or another client's refresh token.  The official
@@ -916,6 +956,7 @@ async fn refresh_account_auth(name: String) -> Result<AuthStatus, String> {
 
 #[tauri::command]
 async fn login_account_auth(
+    app: tauri::AppHandle,
     name: String,
     registry: State<'_, AuthCancellationRegistry>,
 ) -> Result<AuthStatus, String> {
@@ -923,7 +964,8 @@ async fn login_account_auth(
     let worker_name = name.clone();
     let worker_registry = registry.inner().clone();
     let result = run_blocking(move || {
-        core_login_account_auth(&config()?, &worker_name, &flag, |phase| {
+        let options = interactive_launch_options(app, &worker_name);
+        core_login_account_auth(&config()?, &worker_name, &options, &flag, |phase| {
             worker_registry.progress(&worker_name, phase);
         })
         .map_err(|err| err.to_string())
@@ -1013,6 +1055,7 @@ async fn launch_preflight(name: String) -> Result<LaunchPlan, String> {
 
 #[tauri::command]
 async fn launch_account(
+    app: tauri::AppHandle,
     name: String,
     startup_error: Option<tauri::ipc::JavaScriptChannelId>,
     webview: tauri::Webview,
@@ -1025,7 +1068,7 @@ async fn launch_account(
     let worker_name = name.clone();
     let worker_cancellation = Arc::clone(&cancellation_flag);
     let result = run_blocking(move || {
-        let mut options = LaunchOptions::from_env(false);
+        let mut options = interactive_launch_options(app, &worker_name);
         options.cancellation = Some(worker_cancellation);
         options.startup_error_sender = startup_errors;
         core_launch_account(&config()?, &worker_name, &options).map_err(|err| err.to_string())
@@ -1037,6 +1080,7 @@ async fn launch_account(
 
 #[tauri::command]
 async fn launch_web_store(
+    app: tauri::AppHandle,
     name: String,
     startup_error: Option<tauri::ipc::JavaScriptChannelId>,
     webview: tauri::Webview,
@@ -1049,7 +1093,7 @@ async fn launch_web_store(
     let worker_name = name.clone();
     let worker_cancellation = Arc::clone(&cancellation_flag);
     let result = run_blocking(move || {
-        let mut options = LaunchOptions::from_env(false);
+        let mut options = interactive_launch_options(app, &worker_name);
         options.cancellation = Some(worker_cancellation);
         options.startup_error_sender = startup_errors;
         core_launch_chrome_web_store(&config()?, &worker_name, &options)
@@ -1444,44 +1488,44 @@ mod tests {
     #[test]
     fn auth_registry_reports_the_actual_account_and_cancellation_until_worker_finishes() {
         let registry = super::AuthCancellationRegistry::default();
-        let flag = registry.begin("first@example.test").unwrap();
+        let flag = registry.begin("first@example.com").unwrap();
         assert!(registry
-            .begin("other@example.test")
+            .begin("other@example.com")
             .unwrap_err()
-            .contains("first@example.test"));
+            .contains("first@example.com"));
         registry.progress(
-            "first@example.test",
+            "first@example.com",
             super::AuthLoginProgress::WaitingBrowser,
         );
         assert!(matches!(
             registry.status().unwrap().unwrap().phase,
             super::AuthLoginProgress::WaitingBrowser
         ));
-        assert!(!registry.cancel("other@example.test").unwrap());
-        assert!(registry.cancel("first@example.test").unwrap());
+        assert!(!registry.cancel("other@example.com").unwrap());
+        assert!(registry.cancel("first@example.com").unwrap());
         assert!(flag.load(std::sync::atomic::Ordering::Acquire));
         assert!(registry.status().unwrap().unwrap().cancelling);
-        registry.finish("other@example.test");
-        assert!(registry.begin("other@example.test").is_err());
-        registry.finish("first@example.test");
+        registry.finish("other@example.com");
+        assert!(registry.begin("other@example.com").is_err());
+        registry.finish("first@example.com");
         assert!(registry.status().unwrap().is_none());
-        assert!(registry.begin("other@example.test").is_ok());
+        assert!(registry.begin("other@example.com").is_ok());
     }
 
     #[test]
     fn auth_registry_does_not_cancel_credential_confirmation_or_saving() {
         let registry = super::AuthCancellationRegistry::default();
-        let flag = registry.begin("first@example.test").unwrap();
+        let flag = registry.begin("first@example.com").unwrap();
         for phase in [
             super::AuthLoginProgress::Confirming,
             super::AuthLoginProgress::SavingCredentials,
         ] {
-            registry.progress("first@example.test", phase);
-            assert!(!registry.cancel("first@example.test").unwrap());
+            registry.progress("first@example.com", phase);
+            assert!(!registry.cancel("first@example.com").unwrap());
             assert!(!flag.load(std::sync::atomic::Ordering::Acquire));
             assert!(!registry.status().unwrap().unwrap().cancelling);
         }
-        registry.finish("first@example.test");
+        registry.finish("first@example.com");
         assert!(registry.status().unwrap().is_none());
     }
 

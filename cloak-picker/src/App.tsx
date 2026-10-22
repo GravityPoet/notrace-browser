@@ -2374,7 +2374,7 @@ export default function App() {
       if (selectedNameRef.current !== account.name) return;
       setPlan(checked);
       if (checked.privacy_failures.length > 0) {
-        setError("出口/隐私契约检查未通过；启动仍会被核心安全闸门拦截。");
+        setError(checked.runtime.blocks_launch ? checked.runtime.message : "出口与隐私检查未通过；启动时可选择“仍要打开”或“取消”。");
       }
     } catch (caught) {
       if (selectedNameRef.current !== account.name) return;
@@ -2433,7 +2433,7 @@ export default function App() {
     setLaunchStatus({ accountName: account.name, target: "chatgpt", phase: "checking", startedAt: Date.now() });
     // The backend now performs the privacy/GeoIP preflight and launch in one
     // blocking worker. This avoids the old check-then-launch double network
-    // round-trip while keeping the strict privacy gate in the core.
+    // round-trip and lets the native confirmation continue this launch only.
     setLaunchStatus((current) => current?.accountName === account.name ? { ...current, phase: "starting" } : current);
     try {
       const args: Record<string, unknown> = { name: account.name };
@@ -6879,11 +6879,11 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
     } as T;
   }
   if (command === "choose_workspace_export_path") {
-    return "/Users/example/Desktop/NoTrace-Workspace.ntrace" as T;
+    return "/tmp/notrace-example/Desktop/NoTrace-Workspace.ntrace" as T;
   }
   if (command === "export_workspace") {
     return {
-      path: String(args?.path ?? "/Users/example/Desktop/NoTrace-Workspace.ntrace"),
+      path: String(args?.path ?? "/tmp/notrace-example/Desktop/NoTrace-Workspace.ntrace"),
       account_count: 2,
       file_count: 128,
       total_bytes: 24_000_000,
@@ -6892,7 +6892,7 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
     } as T;
   }
   if (command === "choose_workspace_import_path") {
-    return "/Users/example/Desktop/NoTrace-Workspace.ntrace" as T;
+    return "/tmp/notrace-example/Desktop/NoTrace-Workspace.ntrace" as T;
   }
   if (command === "preview_workspace_import") {
     return {
@@ -7029,7 +7029,7 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
       ...accounts[0],
       name: createdName,
       profile_id: createdId,
-      profile_path: `/Users/example/Library/Application Support/NoTrace Browser/Accounts/${createdName}`,
+      profile_path: `/tmp/notrace-example/Library/Application Support/NoTrace Browser/Accounts/${createdName}`,
       serial: Math.max(...accounts.map(account => account.serial), 0) + 1,
       created_at: Date.now() * 1000,
       archived: false,
@@ -7091,8 +7091,8 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
 function mockAccounts(): Account[] {
   const accounts: Account[] = [
     {
-      name: "demo-alpha@example.test",
-      profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-alpha@example.test",
+      name: "demo-alpha@example.com",
+      profile_path: "/tmp/notrace-example/Library/Application Support/NoTrace Browser/Accounts/demo-alpha@example.com",
       profile_id: "ntp_demo_alpha",
       serial: 1,
       created_at: 1_700_000_001_000_000,
@@ -7112,7 +7112,7 @@ function mockAccounts(): Account[] {
     },
     {
       name: "demo-beta",
-      profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-beta",
+      profile_path: "/tmp/notrace-example/Library/Application Support/NoTrace Browser/Accounts/demo-beta",
       profile_id: "ntp_demo_beta",
       serial: 2,
       created_at: 1_700_000_002_000_000,
@@ -7132,7 +7132,7 @@ function mockAccounts(): Account[] {
     },
     {
       name: "demo-gamma",
-      profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-gamma",
+      profile_path: "/tmp/notrace-example/Library/Application Support/NoTrace Browser/Accounts/demo-gamma",
       profile_id: "ntp_demo_gamma",
       serial: 3,
       created_at: 1_700_000_003_000_000,
@@ -7152,7 +7152,7 @@ function mockAccounts(): Account[] {
     },
     {
       name: "demo-gamma-copy",
-      profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/demo-gamma-copy",
+      profile_path: "/tmp/notrace-example/Library/Application Support/NoTrace Browser/Accounts/demo-gamma-copy",
       profile_id: "ntp_demo_gamma_copy",
       serial: 4,
       created_at: 1_700_000_003_500_000,
@@ -7172,7 +7172,7 @@ function mockAccounts(): Account[] {
     },
     {
       name: "old-lab",
-      profile_path: "/Users/example/Library/Application Support/NoTrace Browser/Accounts/old-lab",
+      profile_path: "/tmp/notrace-example/Library/Application Support/NoTrace Browser/Accounts/old-lab",
       profile_id: "ntp_old_lab",
       serial: 5,
       created_at: 1_700_000_004_000_000,
@@ -7230,20 +7230,20 @@ function mockLaunchPlan(account: Account, full: boolean): LaunchPlan {
     extension_runtime_path: `${account.profile_path}/.cloak-companion`,
     load_extension_paths: [
       `${account.profile_path}/.cloak-companion`,
-      "/Users/example/Library/Application Support/NoTrace Browser/Default Extensions/Chromium Web Store 插件",
-      "/Users/example/Library/Application Support/NoTrace Browser/Default Extensions/get-cookies.txt-locally_v0.7.2_chrome",
+      "/tmp/notrace-example/Library/Application Support/NoTrace Browser/Default Extensions/Chromium Web Store 插件",
+      "/tmp/notrace-example/Library/Application Support/NoTrace Browser/Default Extensions/get-cookies.txt-locally_v0.7.2_chrome",
       `${account.profile_path}/.cloak-extra-extensions/Cookies.crx`,
     ],
     extra_extension_paths: [
-      "/Users/example/Library/Application Support/NoTrace Browser/Default Extensions/Chromium Web Store 插件",
-      "/Users/example/Library/Application Support/NoTrace Browser/Default Extensions/get-cookies.txt-locally_v0.7.2_chrome",
+      "/tmp/notrace-example/Library/Application Support/NoTrace Browser/Default Extensions/Chromium Web Store 插件",
+      "/tmp/notrace-example/Library/Application Support/NoTrace Browser/Default Extensions/get-cookies.txt-locally_v0.7.2_chrome",
       `${account.profile_path}/.cloak-extra-extensions/Cookies.crx`,
     ],
     selftest_extension_paths: [
-      "/Users/example/Library/Application Support/NoTrace Browser/Default Extensions/get-cookies.txt-locally_v0.7.2_chrome",
+      "/tmp/notrace-example/Library/Application Support/NoTrace Browser/Default Extensions/get-cookies.txt-locally_v0.7.2_chrome",
       `${account.profile_path}/.cloak-extra-extensions/Cookies.crx`,
     ],
-    browser_binary: "/Users/example/.cloakbrowser/current/Chromium.app/Contents/MacOS/Chromium",
+    browser_binary: "/tmp/notrace-example/.cloakbrowser/current/Chromium.app/Contents/MacOS/Chromium",
     runtime: {
       kind: "source-cache",
       selection: "current",

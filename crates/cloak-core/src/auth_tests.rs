@@ -16,7 +16,7 @@ impl Fixture {
             extension_source: dir.path().join("extension"),
             cloakbrowser_root: dir.path().join("browser"),
         };
-        let name = "alpha@example.test".to_string();
+        let name = "alpha@example.com".to_string();
         crate::create_account(&config, &name).unwrap();
         let home = auth_home(&config, &name, true).unwrap();
         Self {
@@ -52,7 +52,7 @@ assert home.name in ('.pending-login','.pending-refresh')
 def emit(v): print(json.dumps(v),flush=True)
 def jwt(v): return 'synthetic.'+base64.urlsafe_b64encode(json.dumps(v).encode()).decode().rstrip('=')+'.signature'
 def save():
- email='wrong@example.test' if mode=='wrong' else 'alpha@example.test'
+ email='wrong@example.com' if mode=='wrong' else 'alpha@example.com'
  access=jwt({'exp':int(time.time())+864000,'https://api.openai.com/profile':{'email':email},'https://api.openai.com/auth':{'chatgpt_plan_type':'plus'}})
  tokens={"_".join(("access", "token")):access,"_".join(("id", "token")):jwt({'email':email,'exp':1}),"_".join(("refresh", "token")):'synthetic-new-refresh','account_id':'synthetic-account'}
  data={'auth_mode':'chatgpt','tokens':tokens}
@@ -76,7 +76,7 @@ for line in sys.stdin:
    if mode in ('revoked','network'):
     emit({'id':i,'error':{'code':-32000,'message':('refresh_token_invalidated' if mode=='revoked' else 'connection failed')+' Bearer SHOULD_NOT_LEAK'}}); continue
    if mode!='unchanged': save()
-  emit({'id':i,'result':{'account':{'type':'chatgpt','email':'alpha@example.test','planType':'plus'},'requiresOpenaiAuth':True}})
+  emit({'id':i,'result':{'account':{'type':'chatgpt','email':'alpha@example.com','planType':'plus'},'requiresOpenaiAuth':True}})
 "#.replace("MODE", &serde_json::to_string(mode).unwrap());
         fs::write(&path, script).unwrap();
         #[cfg(unix)]
@@ -611,7 +611,7 @@ fn rejects_links_malformed_credentials_and_non_official_urls() {
     for url in [
         "http://auth.openai.com/",
         "https://auth.openai.com.evil.test/",
-        "https://user@auth.openai.com/",
+        "https://!@auth.openai.com/",
         "https://auth.openai.com:444/",
     ] {
         assert!(validate_auth_url(url).is_err());
@@ -693,4 +693,26 @@ fn oauth_browser_failures_preserve_seat_reason_without_raw_messages() {
     assert!(error.to_string().contains("席位尚未释放"));
     assert!(!f.home.join("auth.json").exists());
     assert!(!f.home.join(".pending-login").exists());
+}
+
+#[test]
+fn cancelling_browser_privacy_confirmation_preserves_existing_credentials() {
+    let f = Fixture::new();
+    f.seed(now() + 10 * 86400);
+    let original = fs::read(f.home.join("auth.json")).unwrap();
+    let error = login_with(
+        &f.config,
+        &f.name,
+        &f.provider("success"),
+        &AtomicBool::new(false),
+        |_| Err(browser_failure(CloakError::LaunchCancelled)),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("授权已取消"));
+    assert_eq!(fs::read(f.home.join("auth.json")).unwrap(), original);
+    assert!(!f.home.join(".pending-login").exists());
+    assert_eq!(
+        auth_status(&f.config, &f.name).unwrap().state,
+        AuthState::Connected
+    );
 }
