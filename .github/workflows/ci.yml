@@ -83,6 +83,7 @@ jobs:
           trap 'rm -rf packaging/__pycache__' EXIT
           bash -n packaging/*.sh
           python3 -m py_compile packaging/*.py
+          python3 packaging/test_broker_tunnel.py -v
           for file in extension/cloak-companion/*.js selftest/*.mjs; do
             node --check "$file"
           done

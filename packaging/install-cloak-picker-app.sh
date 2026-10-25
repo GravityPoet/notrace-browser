@@ -112,6 +112,7 @@ if ! cloak_signature_matches_identity "$INSTALL_APP" "$CODESIGN_IDENTITY"; then
 fi
 [[ ! -e "$displaced_app" ]] || bash "$ROOT/packaging/recycle-paths.sh" "$displaced_app"
 /usr/bin/touch "$INSTALL_APP"
+/usr/bin/mdimport "$INSTALL_APP"
 if [[ -x "$LSREG" ]]; then
   "$LSREG" -f "$INSTALL_APP" >/dev/null 2>&1 || true
   if [[ "$BUILT_APP" != "$INSTALL_APP" ]]; then
@@ -150,6 +151,12 @@ fi
 # enabled it previously.
 if [[ "$AUTH_REFRESH_WAS_INSTALLED" == 1 ]]; then
   CLOAK_PICKER_INSTALL_APP="$INSTALL_APP" bash "$ROOT/packaging/install-auth-refresh.sh"
+fi
+
+# Upgrade an already configured tunnel with the same private SSH alias. New
+# installs still opt in explicitly through install-broker-tunnel.py --host.
+if [[ "$INSTALL_APP" == "/Applications/$APP_NAME.app" && -f "$HOME/Library/LaunchAgents/com.notrace-browser.broker-tunnel.plist" ]]; then
+  python3 "$ROOT/packaging/install-broker-tunnel.py"
 fi
 
 printf 'signing : %s\n' "$CODESIGN_IDENTITY"

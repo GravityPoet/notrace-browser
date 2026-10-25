@@ -31,6 +31,41 @@ The server defaults to `127.0.0.1:18455`. A remote NoTrace management client
 must use an HTTPS reverse proxy or a private WireGuard/Tailscale path. Do not
 expose the plain HTTP listener to the public internet.
 
+### macOS tunnel recovery
+
+Install or upgrade the existing local tunnel with
+`python3 packaging/install-broker-tunnel.py --host <existing-ssh-alias>` from
+the repository root. The SSH alias remains in the private LaunchAgent plist;
+the public checkout contains no host or credentials. Later canonical Picker
+installs upgrade an already configured tunnel using that saved alias.
+
+The Chinese-named `后台统一授权续期隧道.sh` supervises its own SSH child. Each
+connection/handshake is limited to 15 seconds with one attempt. SSH heartbeats
+remain 30 seconds / 3 misses. The supervisor checks the complete forwarding
+path at `http://127.0.0.1:18555/healthz` every 15 seconds, with a 3-second HTTP
+deadline, bypassing proxy environment variables and requiring JSON `ok: true`
+and `api_version: 1`. After 3 consecutive failures it terminates only its own
+child, waits for it, and reconnects with 5/10/20/40/60-second backoff. Successful
+health checks reset the backoff. It does not refresh OAuth or write CPA files.
+The listener is restricted to IPv4 loopback. No additional scheduled job or
+third-party tunnel package is installed.
+
+The Picker deduplicates metadata reads, limits each HTTP read to 5 seconds,
+polls every 5 seconds while disconnected (30 seconds while connected), and
+immediately rechecks on window focus, visibility restoration or network-online
+events. It retains the last snapshot, displays automatic reconnection and an
+immediate retry action, and reenables authorization after connection recovery.
+It never queues or automatically retries an authorization or token rotation.
+
+The installer verifies backups, writes atomically, checks the actual launchctl
+program/arguments and Broker health, and restores the previous files/job on
+failure. It retains the newest two valid backups under the local
+`Recovery/BrokerTunnel` directory. Restore one with
+`python3 packaging/install-broker-tunnel.py --rollback <verified-backup-dir>`.
+`python3 packaging/test_broker_tunnel.py -v` exercises a live but unusable child,
+bounded retries, shutdown isolation, the real HTTP deadline and backup retention
+using isolated fixtures with verified Trash recovery receipts.
+
 Build the Cargo package `cloak-broker` to produce the `notrace-broker` binary.
 The current Ubuntu VPS uses glibc 2.35; use a compatible build base such as the
 cached `rust:1.94.0-bullseye`, not the moving `rust:latest` base. Before replacing

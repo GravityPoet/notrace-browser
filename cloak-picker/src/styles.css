@@ -1558,6 +1558,9 @@ summary:focus-visible {
 .brokerServiceButton.connected .brokerAuthDot { background: #16834c; }
 .brokerServiceButton.disconnected { color: #8a4b08; }
 .brokerServiceButton.disconnected .brokerAuthDot { background: #bc7300; }
+.brokerConnectionNotice { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; }
+.brokerConnectionNotice > span { flex: 1 1 240px; }
+.brokerConnectionNotice .textButton { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .workbenchAuthorizationFilters { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 0 18px 12px; border-bottom: 1px solid var(--border); }
 .workbenchFilterScope { font-size: 10px; color: var(--muted); }
 .workbenchAuthorizationFilters .brokerFilterTab { font-size: 11px; padding-inline: 9px; }

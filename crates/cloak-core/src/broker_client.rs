@@ -676,9 +676,26 @@ fn request<T: serde::de::DeserializeOwned>(
     body: Option<Value>,
 ) -> Result<T> {
     validate_endpoint(&c.endpoint)?;
-    let client = Client::builder()
-        .timeout(Duration::from_secs(40))
-        .redirect(reqwest::redirect::Policy::none())
+    // Metadata polling must finish before the next reconnect attempt. Keep
+    // longer deadlines for explicit OAuth/quota operations.
+    let timeout = if method == "GET" && path == "/v1/admin/accounts" {
+        5
+    } else {
+        40
+    };
+    let mut builder = Client::builder()
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(timeout))
+        .redirect(reqwest::redirect::Policy::none());
+    if url::Url::parse(&c.endpoint).ok().is_some_and(|url| {
+        matches!(
+            url.host_str(),
+            Some("127.0.0.1" | "localhost" | "[::1]" | "::1")
+        )
+    }) {
+        builder = builder.no_proxy();
+    }
+    let client = builder
         .build()
         .map_err(|_| CloakError::Auth("Broker 客户端不可用".into()))?;
     let url = format!("{}{}", c.endpoint.trim_end_matches('/'), path);
@@ -734,3 +751,37 @@ fn request<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 #[path = "broker_client_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn metadata_read_has_a_deadline_without_retrying_or_writing_credentials() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let provider = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut input = [0_u8; 4096];
+            let bytes = stream.read(&mut input).unwrap();
+            assert!(String::from_utf8_lossy(&input[..bytes])
+                .starts_with("GET /v1/admin/accounts HTTP/1.1"));
+            thread::sleep(Duration::from_secs(6));
+        });
+        let start = Instant::now();
+        let result: Result<Vec<BrokerMetadata>> = request(
+            &Connection {
+                endpoint,
+                admin_key: "synthetic-fixture-key".into(),
+            },
+            "GET",
+            "/v1/admin/accounts",
+            None,
+        );
+        assert!(result.is_err());
+        assert!(start.elapsed() >= Duration::from_secs(4));
+        assert!(start.elapsed() < Duration::from_secs(6));
+        provider.join().unwrap();
+    }
+}

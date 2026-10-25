@@ -170,6 +170,8 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   const [quotaErrors, setQuotaErrors] = useState<Record<string, string>>({});
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [connectionError, setConnectionError] = useState("");
+  const [readingConnection, setReadingConnection] = useState(false);
   const [errorTarget, setErrorTarget] = useState("");
   const [activeAuth, setActiveAuth] = useState<ActiveAuth | null>(null);
   const [login, setLogin] = useState<{ name: string; phase: AuthLoginPhase | "handoff"; cancelling: boolean } | null>(null);
@@ -186,6 +188,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   const mounted = useRef(true);
   const inFlight = useRef(false);
   const overviewRef = useRef<BrokerOverview | null>(null);
+  const pendingRead = useRef<Promise<void> | null>(null);
   const overviewCallback = useRef(onOverviewChange);
   overviewCallback.current = onOverviewChange;
   const jsonDialogRef = useRef<HTMLDivElement | null>(null);
@@ -221,6 +224,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   }, [jsonDialogOpen]);
   function acceptOverview(next: BrokerOverview) {
     const previous = overviewRef.current;
+    if (next.connected && previous && !previous.connected) quotaAttempted.current.clear();
     // A temporary tunnel outage does not erase the last known managed grant.
     if (next.configured && !next.connected && previous?.endpoint === next.endpoint) {
       const previousRows = new Map(previous.accounts.map(row => [row.profile_id, row]));
@@ -235,16 +239,51 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     setOverview(next);
     overviewCallback.current?.(next);
   }
-  const read = useCallback(async () => {
-    const next = await call<BrokerOverview>("broker_overview", {});
-    if (mounted.current) { acceptOverview(next); if (next.endpoint) setEndpoint(next.endpoint); }
+  const read = useCallback((): Promise<void> => {
+    if (pendingRead.current) return pendingRead.current;
+    setReadingConnection(true);
+    const request = Promise.resolve().then(async () => {
+      try {
+        const next = await call<BrokerOverview>("broker_overview", {});
+        if (mounted.current) {
+          acceptOverview(next);
+          setConnectionError("");
+          if (next.endpoint) setEndpoint(next.endpoint);
+        }
+      } catch (caught) {
+        if (mounted.current) {
+          setConnectionError("无法读取统一授权状态，正在重试连接");
+          const previous = overviewRef.current;
+          if (previous) acceptOverview({ ...previous, connected: false });
+        }
+        throw caught;
+      } finally {
+        pendingRead.current = null;
+        if (mounted.current) setReadingConnection(false);
+      }
+    });
+    pendingRead.current = request;
+    return request;
   }, [call]);
   useEffect(() => {
     mounted.current = true;
-    void read().catch(() => { if (mounted.current) setError("无法读取统一授权状态"); });
-    const timer = window.setInterval(() => { if (!inFlight.current) void read().catch(() => { if (mounted.current) setError("读取状态失败，当前列表可能已过时"); }); }, 30_000);
-    return () => { mounted.current = false; window.clearInterval(timer); };
+    void read().catch(() => {});
+    return () => { mounted.current = false; };
   }, [read]);
+  useEffect(() => {
+    const refresh = () => { if (!inFlight.current) void read().catch(() => {}); };
+    const visible = () => { if (!document.hidden) refresh(); };
+    const timer = window.setInterval(refresh, overview?.connected ? 30_000 : 5_000);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("online", refresh);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("online", refresh);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [read, overview?.connected]);
   useEffect(() => {
     setAccountSearch(focusedAccount);
     setAccountFilter("all");
@@ -508,8 +547,8 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       {workbench ? searchControls : <div>{embedded ? null : <><span className="eyebrow">授权管理中心</span><h2 id="cloak-editor-dialog-title">统一授权续期</h2><p>查看谁负责刷新，以及各端是否收到最新凭据。</p></>}</div>}
       <div className="brokerPanelHeaderActions">
         <button className="secondaryButton" type="button" disabled={disabled} onClick={event => { jsonTriggerRef.current = event.currentTarget; void run("import-json", importJson); }}><UploadCloud size={14} />{workbench ? "导入 JSON" : "导入/转换 JSON"}</button>
-        <button className={workbench ? "iconButton" : "secondaryButton"} aria-label="读取授权状态" title="读取授权状态" type="button" disabled={disabled} onClick={() => void run("status", read)}><RefreshCw size={14} />{!workbench && "读取状态"}</button>
-        {workbench && <button className={`brokerServiceButton ${brokerConnected ? "connected" : "disconnected"}`} type="button" aria-expanded={editing} disabled={disabled} onClick={() => setEditing(!editing)}><span className="brokerAuthDot" aria-hidden="true" />{!overview ? "连接中" : brokerConnected ? "续期服务" : "服务未连接"}</button>}
+        <button className={workbench ? "iconButton" : "secondaryButton"} aria-label="读取授权状态" title="读取授权状态" type="button" disabled={disabled || readingConnection} onClick={() => void read().catch(() => {})}><RefreshCw size={14} />{!workbench && "读取状态"}</button>
+        {workbench && <button className={`brokerServiceButton ${brokerConnected ? "connected" : "disconnected"}`} type="button" aria-expanded={editing} disabled={disabled} onClick={() => setEditing(!editing)}><span className="brokerAuthDot" aria-hidden="true" />{!overview ? "连接中" : brokerConnected ? "续期服务" : overview.configured ? "正在重连" : "未配置续期服务"}</button>}
       </div>
     </div>
     {workbench && (typeof workbenchHeader === "function" ? workbenchHeader(headerAuthorization) : workbenchHeader)}
@@ -519,11 +558,12 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       <input aria-label="Broker 管理密钥" type="password" autoComplete="off" placeholder="管理密钥" value={adminKey} onChange={event => setAdminKey(event.target.value)} disabled={disabled} />
       <button className="primaryButton" type="button" disabled={!endpoint || !adminKey || disabled} onClick={() => void run("connect", connect)}>{busy === "connect" ? <Loader2 className="spin" size={14} /> : <Link2 size={14} />}连接</button>
     </div>}
-    {workbench && overview?.configured && !overview.connected && <p className="brokerJsonNotice warning" role="status">续期服务暂未连接，显示上次读取的授权状态。授权、刷新和同步恢复连接后可用。</p>}
+    {workbench && overview?.configured && !overview.connected && <div className="brokerJsonNotice warning brokerConnectionNotice" role="status"><span>正在自动重连续期服务，显示上次读取的授权状态。连接恢复后，授权、刷新和同步按钮会自动可用。</span><button className="textButton" type="button" disabled={disabled || readingConnection} onClick={() => void read().catch(() => {})}>{readingConnection ? <><Loader2 size={13} className="spin" />连接中…</> : "重新连接"}</button></div>}
+    {connectionError && <p className="inspectorHint" role={overview ? "status" : "alert"}>{connectionError}</p>}
     {overview?.message && <p className="inspectorHint">{overview.message}</p>}
     {error && !importPreview && !visibleAccounts.some(row => row.profile_id === errorTarget) && <div className="brokerRowFeedback error" role="alert"><strong>{overview?.accounts.find(row => row.profile_id === errorTarget)?.name ?? "操作未完成"}</strong><p>{error}</p></div>}
     {message && <p className="inspectorHint" role="status">{message}</p>}
-    {!overview && !error && <p className="inspectorHint">正在读取授权状态…</p>}
+    {!overview && !error && !connectionError && <p className="inspectorHint">正在读取授权状态…</p>}
     {!workbench && <div className="brokerListToolbar" aria-label="授权账号筛选与排序" aria-busy={!overview}>
       <div className="brokerFilterTabs" role="tablist" aria-label="授权状态筛选">
         {filterLabels.map((filter) => {
