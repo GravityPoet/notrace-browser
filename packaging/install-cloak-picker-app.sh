@@ -153,8 +153,8 @@ if [[ "$AUTH_REFRESH_WAS_INSTALLED" == 1 ]]; then
   CLOAK_PICKER_INSTALL_APP="$INSTALL_APP" bash "$ROOT/packaging/install-auth-refresh.sh"
 fi
 
-# Upgrade an already configured tunnel with the same private SSH alias. New
-# installs still opt in explicitly through install-broker-tunnel.py --host.
+# Upgrade an already configured tunnel with its saved private SSH alias list.
+# New installs still opt in explicitly through install-broker-tunnel.py --host.
 if [[ "$INSTALL_APP" == "/Applications/$APP_NAME.app" && -f "$HOME/Library/LaunchAgents/com.notrace-browser.broker-tunnel.plist" ]]; then
   python3 "$ROOT/packaging/install-broker-tunnel.py"
 fi

@@ -34,10 +34,12 @@ expose the plain HTTP listener to the public internet.
 ### macOS tunnel recovery
 
 Install or upgrade the existing local tunnel with
-`python3 packaging/install-broker-tunnel.py --host <existing-ssh-alias>` from
-the repository root. The SSH alias remains in the private LaunchAgent plist;
-the public checkout contains no host or credentials. Later canonical Picker
-installs upgrade an already configured tunnel using that saved alias.
+`python3 packaging/install-broker-tunnel.py --host <primary-ssh-alias> --host
+<fallback-ssh-alias>` from the repository root. Repeat `--host` for each
+private SSH alias in preference order. The aliases remain in the private
+LaunchAgent plist; the public checkout contains no host or credentials. Later
+canonical Picker installs upgrade an already configured tunnel using that saved
+list.
 
 The Chinese-named `后台统一授权续期隧道.sh` supervises its own SSH child. Each
 connection/handshake is limited to 15 seconds with one attempt. SSH heartbeats
@@ -45,7 +47,8 @@ remain 30 seconds / 3 misses. The supervisor checks the complete forwarding
 path at `http://127.0.0.1:18555/healthz` every 15 seconds, with a 3-second HTTP
 deadline, bypassing proxy environment variables and requiring JSON `ok: true`
 and `api_version: 1`. After 3 consecutive failures it terminates only its own
-child, waits for it, and reconnects with 5/10/20/40/60-second backoff. Successful
+child, waits for it, and immediately tries the next configured SSH alias. Only
+after every alias fails does it use 5/10/20/40/60-second backoff. Successful
 health checks reset the backoff. It does not refresh OAuth or write CPA files.
 The listener is restricted to IPv4 loopback. No additional scheduled job or
 third-party tunnel package is installed.

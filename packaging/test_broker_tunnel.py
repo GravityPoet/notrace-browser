@@ -72,13 +72,13 @@ tunnel_main
         self.processes.append(process)
         return process
 
-    def wait_for(self, path: Path, count: int) -> None:
+    def wait_for(self, path: Path, count: int, log_path: Path | None = None) -> None:
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
             if path.exists() and len(path.read_text().splitlines()) >= count:
                 return
             time.sleep(0.03)
-        self.fail((self.root / "supervisor.log").read_text())
+        self.fail((log_path or (self.root / "supervisor.log")).read_text())
 
     def test_alive_child_without_listener_is_replaced_and_unrelated_child_survives(self) -> None:
         unrelated = subprocess.Popen(["/bin/sleep", "120"], text=True)
@@ -102,6 +102,40 @@ tunnel_main
         retries = [int(value) for value in pauses if value != "15"]
         self.assertEqual(retries[:5], [5, 10, 20, 40, 60])
         self.assertTrue(all(value <= 60 for value in retries))
+
+    def test_switches_to_the_next_ssh_host_before_backing_off(self) -> None:
+        driver = self.root / "fallback-driver.sh"
+        driver.write_text('''#!/bin/bash
+set -euo pipefail
+source "$1"
+tunnel_healthy() { [[ -f "$FIXTURE/healthy" ]]; }
+tunnel_ssh() {
+  printf '%s\\n' "$1" >> "$FIXTURE/hosts"
+  if [[ "$1" == primary.example.com ]]; then exit 255; fi
+  printf 'healthy\\n' > "$FIXTURE/healthy"
+  exec /bin/sleep 120
+}
+tunnel_pause() { printf '%s\\n' "$1" >> "$FIXTURE/pauses"; /bin/sleep 0.05; }
+tunnel_main
+''')
+        log = (self.root / "fallback.log").open("w")
+        process = subprocess.Popen(
+            ["/bin/bash", str(driver), str(SCRIPT)],
+            text=True,
+            stdout=log,
+            stderr=log,
+            env={
+                **os.environ,
+                "NOTRACE_VPS_HOSTS": "primary.example.com,backup.example.com",
+                "FIXTURE": str(self.root),
+            },
+        )
+        log.close()
+        self.processes.append(process)
+        self.wait_for(self.root / "healthy", 1, self.root / "fallback.log")
+        self.assertEqual((self.root / "hosts").read_text().splitlines()[:2], ["primary.example.com", "backup.example.com"])
+        self.assertIn("切换备用入口", (self.root / "fallback.log").read_text())
+        process.terminate(); process.wait(timeout=8)
 
     def test_healthy_existing_endpoint_does_not_spawn_another_ssh(self) -> None:
         supervisor = self.start_supervisor(health="return 0")
@@ -162,14 +196,22 @@ tunnel_main
         script.write_bytes(old_script); plist.write_bytes(old_plist)
         calls: list[tuple[str, ...]] = []
         bootstraps = 0
+        job_loaded = True
 
         def fake_run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-            nonlocal bootstraps
+            nonlocal bootstraps, job_loaded
             calls.append(args)
+            if "print" in args:
+                if job_loaded:
+                    return subprocess.CompletedProcess(args, 0, stdout=f"program = {script}\n", stderr="")
+                return subprocess.CompletedProcess(args, 1, stdout="", stderr="not found")
+            if "bootout" in args:
+                job_loaded = False
             if "bootstrap" in args:
                 bootstraps += 1
                 if bootstraps == 1:
                     raise subprocess.CalledProcessError(1, args)
+                job_loaded = True
             return subprocess.CompletedProcess(args, 0, stdout=f"program = {script}\n", stderr="")
 
         with mock.patch.object(installer.Path, "home", return_value=self.root), \

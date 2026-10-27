@@ -23,6 +23,22 @@ def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, check=check, capture_output=True, text=True, timeout=15)
 
 
+def wait_for_job_absent(target: str, timeout: float = 15.0) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        state = run("/bin/launchctl", "print", target, check=False)
+        if state.returncode != 0:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError("旧隧道任务未在 15 秒内退出")
+        time.sleep(0.25)
+
+
+def bootout_and_wait(target: str) -> None:
+    run("/bin/launchctl", "bootout", target, check=False)
+    wait_for_job_absent(target)
+
+
 def recycle(path: Path) -> None:
     run("/bin/bash", str(ROOT / "packaging/recycle-paths.sh"), str(path))
 
@@ -112,7 +128,11 @@ def healthy() -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", help="已有 SSH 别名；后续升级从原 plist 读取")
+    parser.add_argument(
+        "--host",
+        action="append",
+        help="SSH 别名；可重复传入，按顺序自动故障切换；不传则从原 plist 读取",
+    )
     parser.add_argument("--rollback", type=Path, help="恢复经过校验的隧道备份目录")
     args = parser.parse_args()
     support = Path.home() / "Library/Application Support/NoTrace Browser"
@@ -124,7 +144,13 @@ def main() -> None:
             raise RuntimeError("隧道安装路径不能是符号链接")
     original = {path: path.read_bytes() for path in [script, plist] if path.is_file()}
     previous_plist = plistlib.loads(original[plist]) if plist in original else {}
-    host = args.host or previous_plist.get("EnvironmentVariables", {}).get("NOTRACE_VPS_HOST")
+    previous_environment = previous_plist.get("EnvironmentVariables", {})
+    previous_hosts = [
+        item.strip()
+        for item in str(previous_environment.get("NOTRACE_VPS_HOSTS", "")).split(",")
+        if item.strip()
+    ]
+    hosts = args.host or previous_hosts or [previous_environment.get("NOTRACE_VPS_HOST", "")]
     target = f"gui/{os.getuid()}/{LABEL}"
     current_state = run("/bin/launchctl", "print", target, check=False)
     loaded = current_state.returncode == 0
@@ -136,14 +162,18 @@ def main() -> None:
         payload = (rollback / "tunnel.plist").read_bytes()
         config = plistlib.loads(payload)
     else:
-        if not host or not re.fullmatch(r"[a-zA-Z0-9_][a-zA-Z0-9_.@:-]*", host):
-            raise RuntimeError("请通过 --host 提供已有 SSH 别名")
+        if not hosts or any(not re.fullmatch(r"[a-zA-Z0-9_][a-zA-Z0-9_.@:-]*", host) for host in hosts):
+            raise RuntimeError("请通过 --host 提供一个或多个已有 SSH 别名")
         source = (ROOT / "packaging" / LAUNCHER).read_bytes()
         config = {
             **previous_plist,
             "Label": LABEL,
             "ProgramArguments": [str(script)],
-            "EnvironmentVariables": {**previous_plist.get("EnvironmentVariables", {}), "NOTRACE_VPS_HOST": host},
+            "EnvironmentVariables": {
+                **previous_environment,
+                "NOTRACE_VPS_HOST": hosts[0],
+                "NOTRACE_VPS_HOSTS": ",".join(hosts),
+            },
             "RunAtLoad": True,
             "KeepAlive": True,
             "ThrottleInterval": 10,
@@ -164,7 +194,7 @@ def main() -> None:
     plist.parent.mkdir(parents=True, exist_ok=True)
     try:
         if loaded:
-            run("/bin/launchctl", "bootout", target)
+            bootout_and_wait(target)
         atomic_write(script, source, 0o700)
         atomic_write(plist, payload, 0o600)
         run("/bin/bash", "-n", str(script))
@@ -179,13 +209,14 @@ def main() -> None:
         if f"program = {script}" not in state or str(script) not in state.split("arguments = {", 1)[-1]:
             raise RuntimeError("launchctl 实际启动入口不匹配")
     except Exception:
-        run("/bin/launchctl", "bootout", target, check=False)
+        bootout_and_wait(target)
         for path in [script, plist]:
             if path in original:
                 atomic_write(path, original[path], 0o700 if path == script else 0o600)
             elif path.exists():
                 recycle(path)
         if loaded:
+            wait_for_job_absent(target)
             run("/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist))
         raise
     prune_backups(backup_root, backup)
