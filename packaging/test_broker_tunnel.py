@@ -55,19 +55,24 @@ class TunnelTests(unittest.TestCase):
         self.assertEqual(self.parent_identity, (self.root.parent.stat().st_dev, self.root.parent.stat().st_ino))
         print(f"fixture-recovery={receipt}")
 
-    def start_supervisor(self, health: str = "return 1", ssh: str = 'exec /bin/sleep 120') -> subprocess.Popen[str]:
+    def start_supervisor(self, health: str = "return 1", ssh: str = 'exec /bin/sleep 120',
+                         hosts: str | None = None) -> subprocess.Popen[str]:
         driver = self.root / "driver.sh"
         driver.write_text('''#!/bin/bash
 set -euo pipefail
 source "$1"
 tunnel_healthy() { ''' + health + '''; }
-tunnel_ssh() { printf 'started\\n' >> "$FIXTURE/starts"; ''' + ssh + '''; }
+tunnel_ssh() { printf 'started\\n' >> "$FIXTURE/starts"; printf '%s\\n' "$1" >> "$FIXTURE/hosts"; ''' + ssh + '''; }
 tunnel_pause() { printf '%s\\n' "$1" >> "$FIXTURE/pauses"; /bin/sleep 0.05; }
 tunnel_main
 ''')
         log = (self.root / "supervisor.log").open("w")
+        environment = {key: value for key, value in os.environ.items() if key != "NOTRACE_VPS_HOSTS"}
+        environment.update(NOTRACE_VPS_HOST="fixture.example.com", FIXTURE=str(self.root))
+        if hosts is not None:
+            environment["NOTRACE_VPS_HOSTS"] = hosts
         process = subprocess.Popen(["/bin/bash", str(driver), str(SCRIPT)], text=True, stdout=log, stderr=log,
-                                   env={**os.environ, "NOTRACE_VPS_HOST": "fixture.example.com", "FIXTURE": str(self.root)})
+                                   env=environment)
         log.close()
         self.processes.append(process)
         return process
@@ -79,6 +84,15 @@ tunnel_main
                 return
             time.sleep(0.03)
         self.fail((log_path or (self.root / "supervisor.log")).read_text())
+
+    def wait_for_log(self, message: str, count: int = 1) -> None:
+        log = self.root / "supervisor.log"
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if log.read_text().count(message) >= count:
+                return
+            time.sleep(0.03)
+        self.fail(log.read_text())
 
     def test_alive_child_without_listener_is_replaced_and_unrelated_child_survives(self) -> None:
         unrelated = subprocess.Popen(["/bin/sleep", "120"], text=True)
@@ -142,6 +156,50 @@ tunnel_main
         self.wait_for(self.root / "pauses", 3)
         self.assertFalse((self.root / "starts").exists())
         supervisor.terminate(); supervisor.wait(timeout=8)
+
+    def test_a_healthy_fallback_switches_back_without_waiting_for_retry_backoff(self) -> None:
+        failed = self.root / "failed-host"
+        healthy = self.root / "healthy-host"
+        failed.write_text("primary.example.com")
+        healthy.write_text("backup.example.com")
+        supervisor = self.start_supervisor(
+            health='[[ "$active_host" == "$(cat "$FIXTURE/healthy-host")" ]]',
+            ssh='if [[ "$1" == "$(cat "$FIXTURE/failed-host")" ]]; then exit 255; fi; exec /bin/sleep 120',
+            hosts="primary.example.com,backup.example.com",
+        )
+        self.wait_for_log("已连接，健康检查通过")
+        self.wait_for(self.root / "pauses", 8)
+        self.assertEqual((self.root / "hosts").read_text().splitlines(),
+                         ["primary.example.com", "backup.example.com"])
+        failed.write_text("backup.example.com")
+        healthy.write_text("primary.example.com")
+        self.wait_for_log("已连接，健康检查通过", 2)
+        supervisor.terminate(); supervisor.wait(timeout=8)
+        self.assertEqual((self.root / "hosts").read_text().splitlines(),
+                         ["primary.example.com", "backup.example.com", "primary.example.com"])
+        self.assertNotIn("所有 SSH 入口均不可用", (self.root / "supervisor.log").read_text())
+        self.assertTrue(all(pause == "15" for pause in (self.root / "pauses").read_text().splitlines()))
+
+    def test_all_hosts_retry_with_a_cap_and_recover_when_the_backup_returns(self) -> None:
+        failed = self.root / "failed-host"
+        healthy = self.root / "healthy-host"
+        failed.write_text("all")
+        healthy.write_text("backup.example.com")
+        supervisor = self.start_supervisor(
+            health='[[ "$active_host" == "$(cat "$FIXTURE/healthy-host")" && "$(cat "$FIXTURE/failed-host")" != all ]]',
+            ssh='blocked="$(cat "$FIXTURE/failed-host")"; if [[ "$blocked" == all || "$blocked" == "$1" ]]; then exit 255; fi; exec /bin/sleep 120',
+            hosts="primary.example.com,backup.example.com",
+        )
+        self.wait_for(self.root / "starts", 12)
+        hosts = (self.root / "hosts").read_text().splitlines()
+        self.assertEqual(hosts[:12], ["primary.example.com", "backup.example.com"] * 6)
+        retries = [int(pause) for pause in (self.root / "pauses").read_text().splitlines() if pause != "15"]
+        self.assertEqual(retries[:5], [5, 10, 20, 40, 60])
+        self.assertTrue(all(pause <= 60 for pause in retries))
+        failed.write_text("primary.example.com")
+        self.wait_for_log("已连接，健康检查通过")
+        supervisor.terminate(); supervisor.wait(timeout=8)
+        self.assertEqual((self.root / "hosts").read_text().splitlines()[-1], "backup.example.com")
 
     def test_health_check_requires_real_json_and_has_a_request_deadline(self) -> None:
         class Handler(BaseHTTPRequestHandler):
@@ -223,6 +281,55 @@ tunnel_main
         self.assertEqual(plist.read_bytes(), old_plist)
         self.assertEqual(bootstraps, 2)
         self.assertEqual(sum("bootout" in args for args in calls), 2)
+
+    def test_installer_waits_for_delayed_unload_and_health_on_the_second_host(self) -> None:
+        support = self.root / "Library/Application Support/NoTrace Browser"
+        support.mkdir(parents=True)
+        script = support / installer.LAUNCHER
+        plist = self.root / "Library/LaunchAgents" / f"{installer.LABEL}.plist"
+        plist.parent.mkdir(parents=True)
+        hosts = "primary.example.com,backup.example.com"
+        original = {"Label": installer.LABEL, "ProgramArguments": [str(script)],
+                    "EnvironmentVariables": {"NOTRACE_VPS_HOSTS": hosts}}
+        script.write_bytes(b"#!/bin/bash\nexit 0\n")
+        plist.write_bytes(plistlib.dumps(original))
+        now = 0.0
+        loaded = True
+        pending_unload = 0
+        bootstrapped_at: float | None = None
+
+        def sleep(seconds: float) -> None:
+            nonlocal now
+            now += seconds
+
+        def fake_run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+            nonlocal loaded, pending_unload, bootstrapped_at
+            if "bootout" in args:
+                pending_unload = 3
+            elif "print" in args:
+                if pending_unload:
+                    pending_unload -= 1
+                    if not pending_unload:
+                        loaded = False
+                return subprocess.CompletedProcess(args, 0 if loaded else 113,
+                    stdout=f"program = {script}\narguments = {{\n{script}\n}}\n", stderr="")
+            elif "bootstrap" in args:
+                self.assertFalse(loaded, "bootstrap ran while the old job still existed")
+                loaded = True
+                bootstrapped_at = now
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with mock.patch.object(installer.Path, "home", return_value=self.root), \
+             mock.patch.object(sys, "argv", ["install-broker-tunnel.py"]), \
+             mock.patch.object(installer, "run", side_effect=fake_run), \
+             mock.patch.object(installer, "healthy", side_effect=lambda: bootstrapped_at is not None and now - bootstrapped_at >= 31), \
+             mock.patch.object(installer.time, "monotonic", side_effect=lambda: now), \
+             mock.patch.object(installer.time, "sleep", side_effect=sleep):
+            installer.main()
+        self.assertEqual(plistlib.loads(plist.read_bytes())["EnvironmentVariables"]["NOTRACE_VPS_HOSTS"], hosts)
+        self.assertEqual(script.read_bytes(), SCRIPT.read_bytes())
+        self.assertIsNotNone(bootstrapped_at)
+        self.assertGreaterEqual(now - bootstrapped_at, 31)
 
 
 if __name__ == "__main__":

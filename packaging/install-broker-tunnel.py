@@ -200,10 +200,13 @@ def main() -> None:
         run("/bin/bash", "-n", str(script))
         run("/usr/bin/plutil", "-lint", str(plist))
         run("/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist))
-        deadline = time.monotonic() + 30
+        # Allow one complete failover round, including three health probes for
+        # each SSH child. A fixed 30 seconds can expire before host two is tried.
+        health_timeout = 60 * len(config.get("EnvironmentVariables", {}).get("NOTRACE_VPS_HOSTS", "").split(","))
+        deadline = time.monotonic() + health_timeout
         while not healthy():
             if time.monotonic() >= deadline:
-                raise RuntimeError("新隧道未在 30 秒内通过健康检查")
+                raise RuntimeError(f"新隧道未在 {health_timeout} 秒内通过健康检查")
             time.sleep(1)
         state = run("/bin/launchctl", "print", target).stdout
         if f"program = {script}" not in state or str(script) not in state.split("arguments = {", 1)[-1]:

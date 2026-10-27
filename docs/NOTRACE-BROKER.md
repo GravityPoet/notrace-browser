@@ -49,7 +49,9 @@ deadline, bypassing proxy environment variables and requiring JSON `ok: true`
 and `api_version: 1`. After 3 consecutive failures it terminates only its own
 child, waits for it, and immediately tries the next configured SSH alias. Only
 after every alias fails does it use 5/10/20/40/60-second backoff. Successful
-health checks reset the backoff. It does not refresh OAuth or write CPA files.
+health checks reset both the failover round and the backoff. A healthy fallback
+stays connected; if it fails later, the next alias is tried before any backoff.
+It does not refresh OAuth or write CPA files.
 The listener is restricted to IPv4 loopback. No additional scheduled job or
 third-party tunnel package is installed.
 
@@ -62,11 +64,14 @@ It never queues or automatically retries an authorization or token rotation.
 
 The installer verifies backups, writes atomically, checks the actual launchctl
 program/arguments and Broker health, and restores the previous files/job on
-failure. It retains the newest two valid backups under the local
+failure. It waits for the old launchd job to disappear before reloading, and
+allows 60 seconds per configured alias for startup health verification. It
+retains the newest two valid backups under the local
 `Recovery/BrokerTunnel` directory. Restore one with
 `python3 packaging/install-broker-tunnel.py --rollback <verified-backup-dir>`.
 `python3 packaging/test_broker_tunnel.py -v` exercises a live but unusable child,
-bounded retries, shutdown isolation, the real HTTP deadline and backup retention
+bidirectional failover, recovery after all aliases fail, bounded retries,
+shutdown isolation, the real HTTP deadline and backup retention
 using isolated fixtures with verified Trash recovery receipts.
 
 Build the Cargo package `cloak-broker` to produce the `notrace-broker` binary.

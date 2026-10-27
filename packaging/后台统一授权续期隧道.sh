@@ -99,6 +99,7 @@ tunnel_main() {
         if tunnel_healthy http://127.0.0.1:18555/healthz; then
           failures=0
           backoff=5
+          start_index="$host_index"
           if [[ "$connected" == 0 ]]; then tunnel_log '续期隧道已连接，健康检查通过'; fi
           connected=1
         else
