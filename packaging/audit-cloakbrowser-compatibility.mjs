@@ -140,7 +140,7 @@ if (checkUpstream) {
       release = await readRelease(matrix.wrapper.upstream_release_api);
       const latestVersion = release?.tag_name?.match(/[0-9]+(?:\.[0-9]+){3,4}/)?.[0];
       const retainedVersion = release?.body?.match(
-        /\bmacOS\s+Stable\s+remains?\s+on\s+`([0-9]+(?:\.[0-9]+){3,4})`/i,
+        /\b(?:macOS|Windows\s+and\s+macOS)\s+Stable\s+(?:remains?|stays?)\s+on\s+`([0-9]+(?:\.[0-9]+){3,4})`/i,
       )?.[1];
       if (retainedVersion && retainedVersion !== expected) {
         fail(`macOS Stable 引擎漂移：upstream=${retainedVersion} matrix=${expected}`);

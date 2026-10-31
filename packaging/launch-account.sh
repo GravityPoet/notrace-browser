@@ -815,6 +815,10 @@ elif source == "ipinfo":
     ip = str(data.get("ip") or "")
     country = str(data.get("country") or "")
     timezone = str(data.get("timezone") or "")
+elif source == "geojs":
+    ip = str(data.get("ip") or "")
+    country = str(data.get("country_code") or "")
+    timezone = str(data.get("timezone") or "")
 else:
     sys.exit(1)
 
@@ -832,6 +836,10 @@ lookup_geo() {
 
   body="$(proxy_curl "https://ipinfo.io/json")"
   parsed="$(printf '%s' "$body" | parse_geo_json ipinfo)"
+  [[ -n "$parsed" ]] && { printf '%s' "$parsed"; return 0; }
+
+  body="$(proxy_curl "https://get.geojs.io/v1/ip/geo.json")"
+  parsed="$(printf '%s' "$body" | parse_geo_json geojs)"
   [[ -n "$parsed" ]] && { printf '%s' "$parsed"; return 0; }
 
   return 1
@@ -962,8 +970,13 @@ args+=(
   "--test-type"
   "--disable-blink-features=AutomationControlled"
 )
-# Fixed macOS 148.0.7778.215.3+ and 150+ builds own UA, Client Hints,
-# platform and GPU coherence inside the engine. Older builds keep overrides.
+# Fixed macOS 148.0.7778.215.3+ and 150+ builds own UA, brand and GPU
+# coherence inside the engine. Modern 150+ builds still receive the tested
+# stable macOS platformVersion because macOS 27.2 can expose a host/seed-
+# dependent UA-CH value otherwise. Older builds keep the full overrides.
+if [[ "$CLOAK_NATIVE_IDENTITY" == "1" && "$NOTRACE_INDEPENDENT_ENGINE" == "0" ]]; then
+  args+=("--fingerprint-platform-version=$CLOAK_MAC_PLATFORM_VERSION")
+fi
 if [[ "$CLOAK_NATIVE_IDENTITY" == "0" ]]; then
   fingerprint_brand=Chrome
   [[ "$NOTRACE_INDEPENDENT_ENGINE" == "1" ]] && fingerprint_brand='Google Chrome'

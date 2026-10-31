@@ -12,6 +12,7 @@ INSTALL_TMP="$INSTALL_PARENT/.$APP_NAME.app.tmp.$$"
 EXPECTED_BUNDLE_ID="local.cloak.picker"
 LSREG="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
 CODESIGN_IDENTITY="$(resolve_cloak_codesign_identity)"
+cloak_ensure_codesign_access "$CODESIGN_IDENTITY"
 AUTH_REFRESH_LABEL="com.notrace-browser.auth-refresh"
 AUTH_REFRESH_PLIST="$HOME/Library/LaunchAgents/$AUTH_REFRESH_LABEL.plist"
 AUTH_REFRESH_WAS_INSTALLED=0

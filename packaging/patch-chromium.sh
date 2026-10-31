@@ -36,6 +36,7 @@ BT_DESC="Passkey sign-in uses Bluetooth to connect your phone or security key."
 
 CLOAK_DIR="${CLOAKBROWSER_DIR:-$HOME/.cloakbrowser}"
 CODESIGN_IDENTITY="$(resolve_cloak_codesign_identity)"
+cloak_ensure_codesign_access "$CODESIGN_IDENTITY"
 
 shopt -s nullglob
 if [[ -n "${CLOAK_BROWSER_APP:-}" ]]; then

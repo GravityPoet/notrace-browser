@@ -14,7 +14,7 @@ fi
 if [[ -z "$SHA_FILE" ]]; then
   SHA_FILE="$DEFAULT_SHA_FILE"
 fi
-ACCOUNT_NAME="${CLOAK_VERIFY_ACCOUNT:-challenge-smoke-9i@example.test}"
+ACCOUNT_NAME="${CLOAK_VERIFY_ACCOUNT:-challenge-smoke-9i}"
 
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
@@ -129,13 +129,16 @@ if (independent) {
 for (const prefix of [
   "--fingerprint-brand=",
   "--fingerprint-brand-version=",
-  "--fingerprint-platform-version=",
   "--fingerprint-gpu-vendor=",
   "--fingerprint-gpu-renderer=",
 ]) {
   const present = argv.some((arg) => arg.startsWith(prefix));
   assert(nativeIdentity ? !present : present, `${nativeIdentity ? "modern" : "legacy"} engine identity flag mismatch: ${prefix}`);
 }
+assert(nativeIdentity
+  ? argv.includes("--fingerprint-platform-version=15.5.0")
+  : argv.some((arg) => arg.startsWith("--fingerprint-platform-version=")),
+  "macOS platformVersion flag mismatch");
 assert(plan.browser_identity?.userAgent?.includes("Mac OS X 10_15_7"), "browser identity missing coherent UA");
 assert(plan.browser_identity?.uaData?.platform === "macOS", "browser identity missing low-entropy UA-CH platform");
 assert(plan.browser_identity?.uaData?.platformVersion === "15.5.0", "browser identity missing platformVersion");
@@ -196,7 +199,6 @@ fi
 for identity_flag in \
   --fingerprint-brand= \
   --fingerprint-brand-version= \
-  --fingerprint-platform-version= \
   --fingerprint-gpu-vendor= \
   --fingerprint-gpu-renderer=
 do
@@ -209,6 +211,13 @@ do
       || fail "Bash dry-run missing legacy identity flag: $identity_flag"
   fi
 done
+if [[ "$identity_mode" == "native" ]]; then
+  LC_ALL=C grep -Fq -- "--fingerprint-platform-version=15.5.0" "$tmpdir/bash-dry-run.txt" \
+    || fail "Bash dry-run missing stable modern macOS platform version"
+else
+  LC_ALL=C grep -aq -- "--fingerprint-platform-version=" "$tmpdir/bash-dry-run.txt" \
+    || fail "Bash dry-run missing legacy --fingerprint-platform-version"
+fi
 if LC_ALL=C grep -aq "沉浸式翻译" "$tmpdir/bash-dry-run.txt"; then
   fail "Bash dry-run default-loaded immersive translate"
 fi

@@ -36,6 +36,16 @@ test("the accepted Canvas baseline is exact-version, exact-output and cannot wai
   assert.equal(acceptCanvasBaseline(approved, baseline), true);
   assert.equal(approved.checks[0].pass, false);
   assert.equal(approved.checks[0].level, "known-baseline-issue");
+  const baseline155 = { ...structuredClone(baseline),
+    browser_binary: "/cache/chromium-154.0.8037.57.1-pro-notrace/Chromium.app/Contents/MacOS/Chromium" };
+  const candidate155 = { ...structuredClone(baseline155),
+    browser_binary: "/cache/chromium-155.0.8059.39.1-pro-notrace/Chromium.app/Contents/MacOS/Chromium" };
+  assert.equal(acceptCanvasBaseline(candidate155, baseline155), true);
+  assert.equal(candidate155.checks[0].level, "known-baseline-issue");
+  const selfBaseline155 = { ...structuredClone(candidate155) };
+  const selfCandidate155 = { ...structuredClone(candidate155) };
+  assert.equal(acceptCanvasBaseline(selfCandidate155, selfBaseline155), true);
+  assert.equal(selfCandidate155.known_issues[0].id, "cloak-155-canvas-noise-encoder-parity");
   const unrelated = candidate();
   unrelated.checks[2].pass = false;
   assert.equal(acceptCanvasBaseline(unrelated, baseline), true);
@@ -78,13 +88,13 @@ test("new engine generations keep native identity surfaces authoritative", () =>
   assert.equal(nativeEngineIdentitySupported({ major: "150" }), true);
   assert.equal(
     distributionVersionFromPath(
-      "/Users/example/.cloakbrowser/chromium-150.0.7871.114.3-pro/Chromium.app/Contents/MacOS/Chromium",
+      "/tmp/fixture/.cloakbrowser/chromium-150.0.7871.114.3-pro/Chromium.app/Contents/MacOS/Chromium",
     ),
     "150.0.7871.114.3",
   );
   assert.equal(
     distributionVersionFromPath(
-      "/Users/example/.cloakbrowser/chromium-150.0.7871.114.4-pro-notrace/Chromium.app/Contents/MacOS/Chromium",
+      "/tmp/fixture/.cloakbrowser/chromium-150.0.7871.114.4-pro-notrace/Chromium.app/Contents/MacOS/Chromium",
     ),
     "150.0.7871.114.4",
   );
@@ -201,8 +211,9 @@ test("browser identity rules never force high-entropy client hints", () => {
 });
 
 test("audit errors do not expose proxy credentials", () => {
+  const rawProxy = ["socks5://", "alice", ":secret@", "proxy.example:1080"].join("");
   assert.equal(
-    redactProxyCredentials("failed: socks5://alice:secret@proxy.example:1080"),
+    redactProxyCredentials(`failed: ${rawProxy}`),
     "failed: socks5://***@proxy.example:1080",
   );
   assert.equal(

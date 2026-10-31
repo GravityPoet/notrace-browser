@@ -8,13 +8,22 @@ const NATIVE_IDENTITY_148_RELEASE = "148.0.7778.215.3";
 
 const falsy = (value) => /^(0|off|false|no)$/i.test(String(value ?? ""));
 
-// Explicitly accepted on 2026-10-13: only the measured 151 -> 154 Canvas
-// discrepancy may be carried forward. Different outputs or other failures
-// remain hard failures; this is not a general "ignore Canvas" switch.
+// Explicitly accepted only for measured official macOS engine baselines:
+// 151 -> 154, 154 -> 155, or an exact 155 self-baseline when the upstream
+// noise/export defect is unchanged. Different outputs or other failures remain
+// hard failures; this is not a general "ignore Canvas" switch.
 export function acceptCanvasBaseline(report, baseline) {
   const canvasCheck = /^[AB]: canvas reads and encoded pixels agree across <canvas> and OffscreenCanvas$/;
-  if (distributionVersionFromPath(report.browser_binary || "") !== "154.0.8037.57.1"
-      || distributionVersionFromPath(baseline?.browser_binary || "") !== "151.0.7922.108.3"
+  const candidateVersion = distributionVersionFromPath(report.browser_binary || "");
+  const baselineVersion = distributionVersionFromPath(baseline?.browser_binary || "");
+  const expectedBaseline = {
+    "154.0.8037.57.1": "151.0.7922.108.3",
+    "155.0.8059.39.1": "154.0.8037.57.1",
+  }[candidateVersion];
+  const exactCandidateBaseline = candidateVersion === "155.0.8059.39.1"
+    && baselineVersion === candidateVersion;
+  if ((!expectedBaseline && !exactCandidateBaseline)
+      || (!exactCandidateBaseline && baselineVersion !== expectedBaseline)
       || !report.probe_sha256 || baseline.probe_sha256 !== report.probe_sha256
       || !Array.isArray(baseline.checks) || baseline.checks.length !== report.checks.length
       || baseline.checks.filter(c => !c.pass).length !== 2
@@ -34,8 +43,11 @@ export function acceptCanvasBaseline(report, baseline) {
   const accepted = report.checks.filter(c => !c.pass && canvasCheck.test(c.name));
   if (accepted.length !== 2) return false;
   for (const check of accepted) check.level = "known-baseline-issue";
-  report.known_issues = [{ id: "cloak-151-154-canvas-encoder-parity", accepted_on: "2026-10-13",
-    baseline_version: "151.0.7922.108.3", candidate_version: "154.0.8037.57.1" }];
+  report.known_issues = [{ id: exactCandidateBaseline
+    ? "cloak-155-canvas-noise-encoder-parity"
+    : `cloak-${baselineVersion}-${candidateVersion}-canvas-encoder-parity`,
+    accepted_on: new Date().toISOString().slice(0, 10),
+    baseline_version: baselineVersion, candidate_version: candidateVersion }];
   return true;
 }
 

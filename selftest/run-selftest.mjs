@@ -337,7 +337,12 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
     "--no-default-browser-check",
     "--remote-allow-origins=*",
   ];
-  if (!nativeEngineIdentitySupported(BROWSER_VERSION)) {
+  if (nativeEngineIdentitySupported(BROWSER_VERSION)) {
+    // macOS 27.2 can expose a host/seed-dependent UA-CH platformVersion from
+    // modern Cloak builds. Keep the tested macOS identity stable across seeds;
+    // this flag does not replace the native UA, brand, GPU, or hardware fields.
+    args.push(`--fingerprint-platform-version=${BROWSER_IDENTITY.uaData.platformVersion}`);
+  } else {
     if (!nativeUserAgentSupported(BROWSER_VERSION)) args.push(`--user-agent=${BROWSER_IDENTITY.userAgent}`);
     args.push(
       `--fingerprint-brand=${BROWSER_VERSION.independent ? "Google Chrome" : "Chrome"}`,

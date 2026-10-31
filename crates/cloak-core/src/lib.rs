@@ -3965,6 +3965,20 @@ fn append_native_fingerprint_args(
         argv.push("--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string());
     }
     if engine.uses_native_identity() {
+        // Modern Cloak builds otherwise expose a host/seed-dependent macOS
+        // UA-CH platformVersion on macOS 27.2. Pin only this version field so
+        // every profile keeps the tested macOS identity; native UA, brand,
+        // GPU, hardware and rendering surfaces remain engine-owned.
+        if engine
+            .major
+            .parse::<u64>()
+            .ok()
+            .is_some_and(|major| major >= 150)
+        {
+            argv.push(format!(
+                "--fingerprint-platform-version={CLOAK_MAC_PLATFORM_VERSION}"
+            ));
+        }
         return;
     }
 
@@ -6127,6 +6141,7 @@ mod tests {
                 "--fingerprint-locale=ja-JP",
                 "--accept-lang=ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
                 "--fingerprint-webrtc-ip=203.0.113.24",
+                "--fingerprint-platform-version=15.5.0",
             ]
         );
         assert_eq!(
@@ -6154,7 +6169,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn modern_launch_plan_omits_legacy_identity_overrides() {
+    fn modern_launch_plan_keeps_only_stable_platform_version_override() {
         use std::os::unix::fs::symlink;
 
         let dir = tempfile::tempdir().unwrap();
@@ -6190,7 +6205,6 @@ mod tests {
             "--user-agent=",
             "--fingerprint-brand=",
             "--fingerprint-brand-version=",
-            "--fingerprint-platform-version=",
             "--fingerprint-gpu-vendor=",
             "--fingerprint-gpu-renderer=",
         ] {
@@ -6199,6 +6213,10 @@ mod tests {
                 "modern launch plan unexpectedly contained {prefix}"
             );
         }
+        assert!(plan
+            .argv
+            .iter()
+            .any(|arg| arg == "--fingerprint-platform-version=15.5.0"));
     }
 
     #[test]
