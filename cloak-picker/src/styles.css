@@ -1588,7 +1588,10 @@ summary:focus-visible {
 .brokerOperationStatus { display: flex; align-items: center; gap: 7px; color: var(--accent); font-size: 12px; margin: 0 0 12px; }
 .workbenchBody .brokerRow { padding: 16px; gap: 16px; border-radius: 12px; }
 .workbenchBody .brokerRowTop { flex-direction: column; }
+.workbenchBody .brokerRowTop,
+.workbenchBody .brokerRowActions { min-width: 0; max-width: 100%; width: 100%; }
 .workbenchBody .brokerRowActions { gap: 6px; }
+.workbenchBody .brokerRowActions > button { min-width: 100px; max-width: 100%; }
 .workbenchBody .brokerRowActions:empty { display: none; }
 .workbenchBody .brokerRowMain > strong { font-size: 14px; }
 .workbenchBody .brokerStatus { gap: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
