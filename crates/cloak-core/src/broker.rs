@@ -1522,3 +1522,28 @@ pub(crate) fn iso_time(t: u64) -> String {
 #[cfg(test)]
 #[path = "broker_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn subscription_cycle_start_accepts_iso_and_numeric_claims() {
+        let iso = json!({"chatgpt_subscription_active_start": "2026-10-09T10:33:44Z"});
+        assert_eq!(
+            claim_subscription_active_start(&iso).as_deref(),
+            Some("2026-10-09T10:33:44Z")
+        );
+        let millis = json!({"subscriptionActiveStart": 1_791_500_000_000_u64});
+        assert_eq!(
+            claim_subscription_active_start(&millis).as_deref(),
+            Some("2026-10-08T22:53:20+00:00")
+        );
+    }
+
+    #[test]
+    fn missing_subscription_cycle_start_stays_unknown() {
+        assert_eq!(claim_subscription_active_start(&json!({})), None);
+    }
+}
