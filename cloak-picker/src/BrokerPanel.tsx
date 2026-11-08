@@ -58,7 +58,7 @@ function timeText(value: string | null | undefined) {
   const raw = value?.trim();
   if (!raw) return "未提供";
   const parsed = Date.parse(raw);
-  return Number.isFinite(parsed) && parsed > 0 && parsed <= Date.now()
+  return Number.isFinite(parsed) && parsed > 0
     ? new Date(parsed).toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" })
     : "未提供";
 }
