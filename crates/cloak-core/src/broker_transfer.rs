@@ -4,7 +4,8 @@
 //! preserve a refresh token in a local export. An explicit Broker import path
 //! can promote a selected complete credential to Broker ownership.
 use crate::broker::{
-    claim_account, claim_email, claim_plan, claim_subscription_active_until, claims, iso_time,
+    claim_account, claim_email, claim_plan, claim_subscription_active_start,
+    claim_subscription_active_until, claims, iso_time,
 };
 use crate::{AccessCredential, CloakError, Result};
 use serde::{Deserialize, Serialize};
@@ -73,6 +74,7 @@ pub(crate) struct JsonCredentialRecord {
     pub expires_at: Option<u64>,
     pub last_refresh: String,
     pub plan_type: Option<String>,
+    pub subscription_active_start: Option<String>,
     pub subscription_active_until: Option<String>,
     pub refresh_token: String,
     pub has_refresh_token: bool,
@@ -105,6 +107,7 @@ pub(crate) fn broker_grant_body(record: &JsonCredentialRecord) -> Result<Zeroizi
             "account_id": record.account_id,
         },
         "chatgpt_subscription_active_until": record.subscription_active_until,
+        "chatgpt_subscription_active_start": record.subscription_active_start,
     }))
     .map(Zeroizing::new)
     .map_err(|_| CloakError::Auth("授权 JSON 生成失败".into()))
@@ -175,6 +178,7 @@ pub fn format_access_credentials(
             expires_at: Some(credential.expires_at),
             last_refresh: credential.last_refresh.clone(),
             plan_type: credential.plan_type.clone(),
+            subscription_active_start: credential.subscription_active_start.clone(),
             subscription_active_until: credential.subscription_active_until.clone(),
             refresh_token: if include_refresh_token {
                 credential.refresh_token.clone()
@@ -250,6 +254,7 @@ fn portable_record(record: &JsonCredentialRecord, include_refresh_token: bool) -
         "expired": record.expired,
         "refresh_owner": "notrace_broker",
         "chatgpt_subscription_active_until": record.subscription_active_until,
+        "chatgpt_subscription_active_start": record.subscription_active_start,
     })
 }
 
@@ -264,6 +269,7 @@ fn auth_record(record: &JsonCredentialRecord, include_refresh_token: bool) -> Va
         },
         "last_refresh": record.last_refresh,
         "chatgpt_subscription_active_until": record.subscription_active_until,
+        "chatgpt_subscription_active_start": record.subscription_active_start,
         "type": "codex",
     })
 }
@@ -301,6 +307,12 @@ fn sub2api_record(record: &JsonCredentialRecord, include_refresh_token: bool) ->
         credentials.insert(
             "chatgpt_subscription_active_until".into(),
             Value::String(subscription_active_until.clone()),
+        );
+    }
+    if let Some(subscription_active_start) = &record.subscription_active_start {
+        credentials.insert(
+            "chatgpt_subscription_active_start".into(),
+            Value::String(subscription_active_start.clone()),
         );
     }
     let mut item = json!({
@@ -415,6 +427,14 @@ fn parse_record(value: &Value) -> Option<JsonCredentialRecord> {
                 .and_then(claim_subscription_active_until)
         })
         .or_else(|| id_claims.as_ref().and_then(claim_subscription_active_until));
+    let subscription_active_start = string_field(tokens, "chatgpt_subscription_active_start")
+        .or_else(|| string_field(value, "chatgpt_subscription_active_start"))
+        .or_else(|| {
+            access_claims
+                .as_ref()
+                .and_then(claim_subscription_active_start)
+        })
+        .or_else(|| id_claims.as_ref().and_then(claim_subscription_active_start));
     let refresh_token = string_field(tokens, "refresh_token").unwrap_or_default();
     let has_refresh_token = !refresh_token.is_empty();
     Some(JsonCredentialRecord {
@@ -426,6 +446,7 @@ fn parse_record(value: &Value) -> Option<JsonCredentialRecord> {
         expires_at,
         last_refresh,
         plan_type,
+        subscription_active_start,
         subscription_active_until,
         refresh_token,
         has_refresh_token,
@@ -479,6 +500,7 @@ mod tests {
             last_refresh: "2026-10-02T00:00:00Z".into(),
             plan_type: Some("plus".into()),
             subscription_active_until: Some("2026-11-02T00:00:00Z".into()),
+            subscription_active_start: Some("2026-10-02T00:00:00Z".into()),
             refresh_token: String::new(),
             refresh_owner: "notrace_broker".into(),
             notrace_key: "profile-1".into(),
@@ -502,6 +524,7 @@ mod tests {
         assert!(text.contains("access-only"));
         assert!(text.contains("\"refresh_token\": \"\""));
         assert!(text.contains("notrace_broker"));
+        assert!(text.contains("chatgpt_subscription_active_start"));
     }
 
     #[test]

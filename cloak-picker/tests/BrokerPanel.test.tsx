@@ -31,8 +31,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("shows recorded renewal counts independently of generation and consumer sync", async () => {
-    const subscriptionExpiry = new Date(Date.now() + 30 * 86_400_000).toISOString();
-    const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", subscription_active_until: subscriptionExpiry, expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, refresh_count: 3, automatic_refresh_count: 2, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 9, cpa_sync_error: null, cockpit_synced_generation: null };
+    const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", subscription_active_start: "2026-10-09T10:33:44Z", subscription_active_until: "2026-11-09T10:33:44Z", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, refresh_count: 3, automatic_refresh_count: 2, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 9, cpa_sync_error: null, cockpit_synced_generation: null };
     const call: AuthCall = async function call<T>(command: string): Promise<T> { if (command === "broker_overview") return overview(remote) as T; return overview(remote) as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
@@ -44,12 +43,24 @@ describe("统一授权续期窗口", () => {
     expect(document.body.textContent).toContain("启用统计后累计");
     expect(document.body.textContent).not.toContain("9 次");
     expect(document.body.textContent).toContain("按需导入 · 不自动续期");
-    expect(document.body.textContent).toContain("订阅到期");
-    expect(document.body.textContent).toMatch(/\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}/);
-    expect(document.body.textContent).toMatch(/剩余 \d+ 天/);
-    expect(document.querySelector(".brokerSubscriptionExpiry")).not.toBeNull();
-    expect(document.querySelector(".brokerSubscriptionExpiry")?.getAttribute("title")).toContain("access token");
+    expect(document.body.textContent).toContain("最近账单日");
+    expect(document.body.textContent).toContain("2026/10/09");
+    expect(document.body.textContent).not.toContain("剩余");
+    expect(document.querySelector(".brokerBillingDate")).not.toBeNull();
+    expect(document.querySelector(".brokerBillingDate")?.getAttribute("title")).toContain("实际付款日期以账单记录为准");
     expect(document.body.textContent).not.toContain("refresh_token");
+  });
+
+  it("does not infer a payment date from subscription or token expiry when the start is absent", async () => {
+    const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", subscription_active_until: "2026-11-09T10:33:44Z", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const call: AuthCall = async function call<T>(command: string): Promise<T> { if (command === "broker_overview") return overview(remote) as T; return overview(remote) as T; };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    expect(document.body.textContent).toContain("最近账单日");
+    expect(document.querySelector(".brokerBillingDate")?.textContent).toContain("未提供");
+    expect(document.querySelector(".brokerBillingDate")?.textContent).not.toContain("2026/10/09");
+    expect(document.body.textContent).not.toContain("剩余");
   });
 
   it("reads five-hour and weekly quota without exposing refresh credentials", async () => {

@@ -102,8 +102,10 @@ pub struct BrokerMetadata {
     pub email: String,
     pub account_id: String,
     pub plan_type: Option<String>,
-    /// ChatGPT subscription end, distinct from the short-lived access-token
-    /// `expires_at`. Older encrypted grants do not have this field.
+    /// ChatGPT subscription cycle start and end, distinct from the short-lived
+    /// access-token `expires_at`. Older encrypted grants do not have these fields.
+    #[serde(default)]
+    pub subscription_active_start: Option<String>,
     #[serde(default)]
     pub subscription_active_until: Option<String>,
     pub expires_at: u64,
@@ -139,6 +141,8 @@ pub struct AccessCredential {
     pub last_refresh: String,
     pub plan_type: Option<String>,
     #[serde(default)]
+    pub subscription_active_start: Option<String>,
+    #[serde(default)]
     pub subscription_active_until: Option<String>,
     pub refresh_token: String,
     pub refresh_owner: String,
@@ -172,6 +176,8 @@ struct Grant {
     email: String,
     account_id: String,
     plan_type: Option<String>,
+    #[serde(default)]
+    subscription_active_start: Option<String>,
     #[serde(default)]
     subscription_active_until: Option<String>,
     access_token: String,
@@ -215,11 +221,15 @@ impl Grant {
         let subscription_active_until = self.subscription_active_until.clone().or_else(|| {
             claims(&self.id_token).and_then(|value| claim_subscription_active_until(&value))
         });
+        let subscription_active_start = self.subscription_active_start.clone().or_else(|| {
+            claims(&self.id_token).and_then(|value| claim_subscription_active_start(&value))
+        });
         BrokerMetadata {
             key: self.key.clone(),
             email: self.email.clone(),
             account_id: self.account_id.clone(),
             plan_type: self.plan_type.clone(),
+            subscription_active_start,
             subscription_active_until,
             expires_at: self.expires_at,
             last_refresh_at: self.last_refresh_at,
@@ -248,6 +258,9 @@ impl Grant {
         let subscription_active_until = self.subscription_active_until.clone().or_else(|| {
             claims(&self.id_token).and_then(|value| claim_subscription_active_until(&value))
         });
+        let subscription_active_start = self.subscription_active_start.clone().or_else(|| {
+            claims(&self.id_token).and_then(|value| claim_subscription_active_start(&value))
+        });
         AccessCredential {
             auth_type: "codex".into(),
             access_token: self.access_token.clone(),
@@ -258,6 +271,7 @@ impl Grant {
             expires_at: self.expires_at,
             last_refresh: iso_time(self.last_refresh_at),
             plan_type: self.plan_type.clone(),
+            subscription_active_start,
             subscription_active_until,
             refresh_token: String::new(),
             refresh_owner: "notrace_broker".into(),
@@ -988,6 +1002,10 @@ fn parse_grant(key: &str, body: &str) -> BrokerResult<Grant> {
         email,
         account_id,
         plan_type: claim_plan(&at).or_else(|| claim_plan(&id)),
+        subscription_active_start: claim_subscription_active_start(&at)
+            .or_else(|| claim_subscription_active_start(&id))
+            .or_else(|| claim_subscription_active_start(tokens))
+            .or_else(|| claim_subscription_active_start(&root)),
         subscription_active_until: claim_subscription_active_until(&at)
             .or_else(|| claim_subscription_active_until(&id))
             .or_else(|| claim_subscription_active_until(tokens))
@@ -1091,6 +1109,16 @@ fn request_refresh(config: &BrokerConfig, previous: &Grant) -> BrokerResult<Gran
         .or_else(|| claim_account(&id))
         .ok_or(BrokerError::RecoveryRequired)?;
     candidate.plan_type = claim_plan(&at).or_else(|| claim_plan(&id));
+    let previous_subscription_until = candidate.subscription_active_until.clone();
+    let refreshed_subscription_start =
+        claim_subscription_active_start(&at).or_else(|| claim_subscription_active_start(&id));
+    candidate.subscription_active_start = refreshed_subscription_start.or_else(|| {
+        let refreshed_until =
+            claim_subscription_active_until(&at).or_else(|| claim_subscription_active_until(&id));
+        (refreshed_until == previous_subscription_until)
+            .then(|| candidate.subscription_active_start.clone())
+            .flatten()
+    });
     candidate.subscription_active_until = claim_subscription_active_until(&at)
         .or_else(|| claim_subscription_active_until(&id))
         .or_else(|| candidate.subscription_active_until.clone());
@@ -1429,6 +1457,36 @@ pub(crate) fn claim_subscription_active_until(v: &Value) -> Option<String> {
         .or_else(|| v.get("active_until"))
         .or_else(|| v.pointer("/subscription/active_until"))
         .or_else(|| v.pointer("/subscription/activeUntil"))?;
+    match value {
+        Value::String(value) => {
+            let value = value.trim();
+            if value.is_empty() {
+                None
+            } else if let Ok(seconds) = value.parse::<u64>() {
+                (seconds > 0).then(|| iso_time(normalize_timestamp(seconds)))
+            } else {
+                Some(value.to_owned())
+            }
+        }
+        Value::Number(value) => value
+            .as_u64()
+            .filter(|seconds| *seconds > 0)
+            .map(normalize_timestamp)
+            .map(iso_time),
+        _ => None,
+    }
+}
+pub(crate) fn claim_subscription_active_start(v: &Value) -> Option<String> {
+    let value = v
+        .pointer("/https:~1~1api.openai.com~1auth/chatgpt_subscription_active_start")
+        .or_else(|| v.pointer("/https:~1~1api.openai.com~1auth/subscription_active_start"))
+        .or_else(|| v.get("chatgpt_subscription_active_start"))
+        .or_else(|| v.get("chatgptSubscriptionActiveStart"))
+        .or_else(|| v.get("subscription_active_start"))
+        .or_else(|| v.get("subscriptionActiveStart"))
+        .or_else(|| v.get("active_start"))
+        .or_else(|| v.pointer("/subscription/active_start"))
+        .or_else(|| v.pointer("/subscription/activeStart"))?;
     match value {
         Value::String(value) => {
             let value = value.trim();

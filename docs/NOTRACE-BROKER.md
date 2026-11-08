@@ -31,6 +31,12 @@ The server defaults to `127.0.0.1:18455`. A remote NoTrace management client
 must use an HTTPS reverse proxy or a private WireGuard/Tailscale path. Do not
 expose the plain HTTP listener to the public internet.
 
+Grant metadata preserves `chatgpt_subscription_active_start` and
+`chatgpt_subscription_active_until` when the authorization claims provide them.
+The start field is the current subscription cycle's billing date; it is replaced
+when a later authorization or renewal reports a new cycle. Older grants may
+have no start field and remain compatible.
+
 ### macOS tunnel recovery
 
 Install or upgrade the existing local tunnel with
