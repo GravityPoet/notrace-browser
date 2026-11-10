@@ -69,11 +69,11 @@ function nextBillingReference(value: string | null | undefined) {
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
   const diff = parsed - Date.now();
   const date = timeText(raw);
-  if (diff > 0) return { date, countdown: `剩余 ${Math.ceil(diff / 86_400_000)} 天（参考）` };
-  if (diff === 0) return { date, countdown: "已到账单日（参考）" };
+  if (diff > 0) return { date, countdown: `剩余 ${Math.ceil(diff / 86_400_000)} 天` };
+  if (diff === 0) return { date, countdown: "已到账单日" };
   const daysPast = Math.floor(-diff / 86_400_000);
-  return { date, countdown: daysPast > 0 ? `已过账单日 ${daysPast} 天（参考）`
-    : "已过账单日（不足 1 天，参考）" };
+  return { date, countdown: daysPast > 0 ? `已过账单日 ${daysPast} 天`
+    : "已过账单日（不足 1 天）" };
 }
 function syncLabel(enabled: boolean, synced: number | null, generation: number, error: string | null) {
   if (error === "consumer_missing") return errors.consumer_missing;
@@ -634,7 +634,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
           <span className="brokerBillingDate" title={billingDay === "未提供" ? "上游未提供最近订阅周期的开始日" : "最近订阅周期开始日；实际付款日期以账单记录为准"}><Clock3 size={13} aria-hidden="true" /><span>最近账单日 {billingDay}</span></span>
           {nextBilling && <>
             <span className="brokerBillingDate brokerBillingDate-next"><CalendarDays size={13} aria-hidden="true" /><span>下个账单日 {nextBilling.date}</span></span>
-            <span className="brokerBillingDate brokerBillingDate-reference"><Hourglass size={13} aria-hidden="true" /><span>{nextBilling.countdown}</span></span>
+            <span className="brokerBillingDate brokerBillingDate-countdown"><Hourglass size={13} aria-hidden="true" /><span>{nextBilling.countdown}</span></span>
           </>}
           {grantEmail && grantEmail !== row.name ? <span>· 授权账号：{grantEmail}</span> : null}
         </div>}</div>

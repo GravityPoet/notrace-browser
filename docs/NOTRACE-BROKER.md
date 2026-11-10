@@ -37,7 +37,7 @@ The start field is the current subscription cycle's billing date; it is replaced
 when a later authorization or renewal reports a new cycle. Older grants may
 have no start field and remain compatible. Picker shows three separate badges:
 the recent billing date in blue, the next billing date in green, and the
-countdown reference in purple. The countdown does not
+countdown in purple. The countdown does not
 decide whether Plus access is active or whether a grace period exists.
 
 ### macOS tunnel recovery

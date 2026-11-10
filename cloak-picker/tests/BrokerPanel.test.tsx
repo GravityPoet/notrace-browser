@@ -47,10 +47,10 @@ describe("统一授权续期窗口", () => {
     expect(document.body.textContent).toContain("最近账单日 2026/10/09");
     const billingBadges = Array.from(document.querySelectorAll(".brokerPlanLine > .brokerBillingDate"));
     expect(billingBadges.map(badge => badge.textContent)).toEqual([
-      "最近账单日 2026/10/09", "下个账单日 2026/11/09", "剩余 1 天（参考）",
+      "最近账单日 2026/10/09", "下个账单日 2026/11/09", "剩余 1 天",
     ]);
     expect(billingBadges[1].classList.contains("brokerBillingDate-next")).toBe(true);
-    expect(billingBadges[2].classList.contains("brokerBillingDate-reference")).toBe(true);
+    expect(billingBadges[2].classList.contains("brokerBillingDate-countdown")).toBe(true);
     expect(document.querySelector(".brokerBillingDate")?.getAttribute("title")).toContain("实际付款日期以账单记录为准");
     expect(document.body.textContent).not.toContain("refresh_token");
   });
@@ -65,16 +65,16 @@ describe("统一授权续期窗口", () => {
     expect(document.querySelector(".brokerBillingDate")?.textContent).toContain("最近账单日 未提供");
     expect(document.querySelector(".brokerBillingDate")?.textContent).not.toContain("2026/10/09");
     expect(document.body.textContent).toContain("下个账单日");
-    expect(document.body.textContent).toContain("剩余 1 天（参考）");
+    expect(document.body.textContent).toContain("剩余 1 天");
   });
 
   it.each([
-    ["2026-12-10T00:30:00+08:00", "剩余 30 天（参考）"],
-    ["2026-11-10T12:30:00+08:00", "剩余 1 天（参考）"],
-    ["2026-11-10T00:30:00.001+08:00", "剩余 1 天（参考）"],
-    ["2026-11-10T00:30:00+08:00", "已到账单日（参考）"],
-    ["2026-11-09T23:30:00+08:00", "已过账单日（不足 1 天，参考）"],
-    ["2026-11-07T14:30:00+08:00", "已过账单日 2 天（参考）"],
+    ["2026-12-10T00:30:00+08:00", "剩余 30 天"],
+    ["2026-11-10T12:30:00+08:00", "剩余 1 天"],
+    ["2026-11-10T00:30:00.001+08:00", "剩余 1 天"],
+    ["2026-11-10T00:30:00+08:00", "已到账单日"],
+    ["2026-11-09T23:30:00+08:00", "已过账单日（不足 1 天）"],
+    ["2026-11-07T14:30:00+08:00", "已过账单日 2 天"],
     [null, null], [undefined, null], ["", null], ["not-a-date", null],
     ["1970-01-01T00:00:00Z", null],
   ])("shows an independent billing reference for %s", async (until, expected) => {
@@ -86,7 +86,7 @@ describe("统一授权续期窗口", () => {
     await settle();
     const badge = document.querySelector(".brokerBillingDate");
     expect(badge?.textContent).toContain("最近账单日 2026/10/09");
-    const reference = document.querySelector(".brokerBillingDate-reference");
+    const reference = document.querySelector(".brokerBillingDate-countdown");
     const nextDate = document.querySelector(".brokerBillingDate-next");
     if (expected) {
       expect(reference?.textContent).toBe(expected);
@@ -113,8 +113,8 @@ describe("统一授权续期窗口", () => {
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
     await settle();
-    const reference = document.querySelector(".brokerBillingDate-reference");
-    if (expected) expect(reference?.textContent).toContain("剩余 1 天（参考）");
+    const reference = document.querySelector(".brokerBillingDate-countdown");
+    if (expected) expect(reference?.textContent).toContain("剩余 1 天");
     else expect(reference).toBeNull();
   });
 
