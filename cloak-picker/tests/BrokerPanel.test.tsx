@@ -1,6 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrokerPanel, type BrokerMetadata, type BrokerOverview, type CodexQuotaSnapshot } from "../src/BrokerPanel";
 import type { AuthCall } from "../src/AuthPanel";
 
@@ -15,7 +15,7 @@ function overview(remote: BrokerOverview["accounts"][number]["remote"] = null): 
   return { configured: true, endpoint: "http://127.0.0.1:18555", connected: true, message: null, unmatched: [], accounts: [{ name: "demo@example.com", profile_id: "profile-1", trashed: false, local, remote }] };
 }
 async function settle() { await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 0)); }); }
-afterEach(() => { act(() => root?.unmount()); root = null; container?.remove(); container = null; });
+afterEach(() => { act(() => root?.unmount()); root = null; container?.remove(); container = null; vi.restoreAllMocks(); });
 
 describe("统一授权续期窗口", () => {
   it("shows an unmanaged account and does not claim it is already synchronized", async () => {
@@ -31,6 +31,7 @@ describe("统一授权续期窗口", () => {
   });
 
   it("shows recorded renewal counts independently of generation and consumer sync", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-08T10:33:44Z"));
     const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", subscription_active_start: "2026-10-09T10:33:44Z", subscription_active_until: "2026-11-09T10:33:44Z", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, refresh_count: 3, automatic_refresh_count: 2, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 9, cpa_sync_error: null, cockpit_synced_generation: null };
     const call: AuthCall = async function call<T>(command: string): Promise<T> { if (command === "broker_overview") return overview(remote) as T; return overview(remote) as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -43,24 +44,67 @@ describe("统一授权续期窗口", () => {
     expect(document.body.textContent).toContain("启用统计后累计");
     expect(document.body.textContent).not.toContain("9 次");
     expect(document.body.textContent).toContain("按需导入 · 不自动续期");
-    expect(document.body.textContent).toContain("最近账单日");
-    expect(document.body.textContent).toContain("2026/10/09");
-    expect(document.body.textContent).not.toContain("剩余");
+    expect(document.body.textContent).toContain("最近账单日 2026/10/09");
+    expect(document.body.textContent).toContain("下个账单日 2026/11/09 · 剩余 1 天（参考）");
     expect(document.querySelector(".brokerBillingDate")).not.toBeNull();
     expect(document.querySelector(".brokerBillingDate")?.getAttribute("title")).toContain("实际付款日期以账单记录为准");
     expect(document.body.textContent).not.toContain("refresh_token");
   });
 
   it("does not infer a payment date from subscription or token expiry when the start is absent", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-08T10:33:44Z"));
     const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", subscription_active_until: "2026-11-09T10:33:44Z", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
     const call: AuthCall = async function call<T>(command: string): Promise<T> { if (command === "broker_overview") return overview(remote) as T; return overview(remote) as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
     await settle();
-    expect(document.body.textContent).toContain("最近账单日");
-    expect(document.querySelector(".brokerBillingDate")?.textContent).toContain("未提供");
+    expect(document.querySelector(".brokerBillingDate")?.textContent).toContain("最近账单日 未提供");
     expect(document.querySelector(".brokerBillingDate")?.textContent).not.toContain("2026/10/09");
-    expect(document.body.textContent).not.toContain("剩余");
+    expect(document.body.textContent).toContain("下个账单日");
+    expect(document.body.textContent).toContain("剩余 1 天（参考）");
+  });
+
+  it.each([
+    ["2026-12-10T00:30:00+08:00", "剩余 30 天（参考）"],
+    ["2026-11-10T12:30:00+08:00", "剩余 1 天（参考）"],
+    ["2026-11-10T00:30:00.001+08:00", "剩余 1 天（参考）"],
+    ["2026-11-10T00:30:00+08:00", "已到账单日（参考）"],
+    ["2026-11-09T23:30:00+08:00", "已过账单日（不足 1 天，参考）"],
+    ["2026-11-07T14:30:00+08:00", "已过账单日 2 天（参考）"],
+    [null, null], [undefined, null], ["", null], ["not-a-date", null],
+    ["1970-01-01T00:00:00Z", null],
+  ])("shows an independent billing reference for %s", async (until, expected) => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-10T00:30:00+08:00"));
+    const remote: BrokerMetadata = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", subscription_active_start: "2026-10-09T10:33:44Z", subscription_active_until: until, expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const call: AuthCall = async function call<T>(): Promise<T> { return overview(remote) as T; };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    const badge = document.querySelector(".brokerBillingDate");
+    expect(badge?.textContent).toContain("最近账单日 2026/10/09");
+    if (expected) expect(badge?.querySelector("small")?.textContent).toContain(expected);
+    else expect(badge?.querySelector("small")).toBeNull();
+    expect(badge?.textContent).not.toContain("今日");
+    expect(document.body.textContent).toContain("套餐：Plus");
+    expect(document.body.textContent).toContain("已授权 · NoTrace Broker 自动续期");
+  });
+
+  it.each([
+    ["same account and cycle", "demo@example.com", "2026-10-09T10:33:44Z", true],
+    ["a different authorized account", "other@example.com", "2026-10-09T10:33:44Z", false],
+    ["an older subscription cycle", "demo@example.com", "2026-07-09T10:33:44Z", false],
+  ] as const)("checks local countdown fallback for %s", async (_label, email, start, expected) => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-08T10:33:44Z"));
+    const remote: BrokerMetadata = { key: "profile-1", email, account_id: "acct-1", plan_type: "plus", subscription_active_start: "2026-10-09T10:33:44Z", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const data = overview(remote);
+    data.accounts[0].local = { ...local, subscription_active_start: start, subscription_active_until: "2026-11-09T10:33:44Z" };
+    const call: AuthCall = async function call<T>(): Promise<T> { return data as T; };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    const reference = document.querySelector(".brokerBillingDate small");
+    if (expected) expect(reference?.textContent).toContain("剩余 1 天（参考）");
+    else expect(reference).toBeNull();
   });
 
   it("reads five-hour and weekly quota without exposing refresh credentials", async () => {

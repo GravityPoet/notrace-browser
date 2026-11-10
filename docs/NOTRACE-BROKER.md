@@ -35,7 +35,9 @@ Grant metadata preserves `chatgpt_subscription_active_start` and
 `chatgpt_subscription_active_until` when the authorization claims provide them.
 The start field is the current subscription cycle's billing date; it is replaced
 when a later authorization or renewal reports a new cycle. Older grants may
-have no start field and remain compatible.
+have no start field and remain compatible. Picker shows the recent billing date
+and a separate next-billing countdown as a reference; the countdown does not
+decide whether Plus access is active or whether a grace period exists.
 
 ### macOS tunnel recovery
 

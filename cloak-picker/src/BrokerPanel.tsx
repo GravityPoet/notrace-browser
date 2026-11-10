@@ -62,6 +62,19 @@ function timeText(value: string | null | undefined) {
     ? new Date(parsed).toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" })
     : "未提供";
 }
+function nextBillingReference(value: string | null | undefined) {
+  const raw = value?.trim();
+  if (!raw) return null;
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  const diff = parsed - Date.now();
+  const date = `下个账单日 ${timeText(raw)}`;
+  if (diff > 0) return `${date} · 剩余 ${Math.ceil(diff / 86_400_000)} 天（参考）`;
+  if (diff === 0) return `${date} · 已到账单日（参考）`;
+  const daysPast = Math.floor(-diff / 86_400_000);
+  return daysPast > 0 ? `${date} · 已过账单日 ${daysPast} 天（参考）`
+    : `${date} · 已过账单日（不足 1 天，参考）`;
+}
 function syncLabel(enabled: boolean, synced: number | null, generation: number, error: string | null) {
   if (error === "consumer_missing") return errors.consumer_missing;
   if (!enabled) return synced === generation ? "已暂停自动同步" : "待同步新凭据";
@@ -586,6 +599,10 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
           && (!remote.subscription_active_until || remote.subscription_active_until === row.local.subscription_active_until)
           ? row.local.subscription_active_start : null);
       const billingDay = timeText(billingStart);
+      const localCycleMatches = !remote || (remote.email.toLowerCase() === row.local.email?.toLowerCase()
+        && (!remote.subscription_active_start || remote.subscription_active_start === row.local.subscription_active_start)
+        && (!remote.subscription_active_until || remote.subscription_active_until === row.local.subscription_active_until));
+      const nextBilling = nextBillingReference(remote?.subscription_active_until ?? (localCycleMatches ? row.local.subscription_active_until : null));
       const rowBusy = busy === row.profile_id;
       const cachedQuota = quotaByProfile[row.profile_id];
       const quota = remote && cachedQuota?.generation === remote.generation
@@ -612,7 +629,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
               ? `未授权 · ${localStatus}`
               : `已授权 · ${localStatus}`;
       return <article className={`brokerRow ${historicalAuthorization ? "brokerRowHistorical" : ""}`} key={row.profile_id}>
-        <div className="brokerRowTop"><div className="brokerRowMain">{!workbench && <strong>{row.name}</strong>}<span className={`brokerAuthStatus brokerAuthStatus-${accountState}`}><span className={`brokerAuthDot brokerAuthDot-${accountState}`} aria-hidden="true" />{row.trashed ? "回收站账号" : "浏览器账号"} · {accountState === "unknown" ? "托管状态待确认" : accountStatusLabel}</span>{workbench && <div className="brokerPlanLine"><span>{remote?.plan_type || row.local.plan_type ? `套餐：${planLabel(remote ? remote.plan_type : row.local.plan_type)}` : "套餐未知"}</span><span className="brokerBillingDate" title={billingDay === "未提供" ? "上游未提供最近订阅周期的开始日" : "最近订阅周期开始日；实际付款日期以账单记录为准"}><Clock3 size={13} aria-hidden="true" />最近账单日 {billingDay}</span>{grantEmail && grantEmail !== row.name ? <span>· 授权账号：{grantEmail}</span> : null}</div>}</div>
+        <div className="brokerRowTop"><div className="brokerRowMain">{!workbench && <strong>{row.name}</strong>}<span className={`brokerAuthStatus brokerAuthStatus-${accountState}`}><span className={`brokerAuthDot brokerAuthDot-${accountState}`} aria-hidden="true" />{row.trashed ? "回收站账号" : "浏览器账号"} · {accountState === "unknown" ? "托管状态待确认" : accountStatusLabel}</span>{workbench && <div className="brokerPlanLine"><span>{remote?.plan_type || row.local.plan_type ? `套餐：${planLabel(remote ? remote.plan_type : row.local.plan_type)}` : "套餐未知"}</span><span className="brokerBillingDate" title={billingDay === "未提供" ? "上游未提供最近订阅周期的开始日" : "最近订阅周期开始日；实际付款日期以账单记录为准"}><Clock3 size={13} aria-hidden="true" /><span>最近账单日 {billingDay}</span>{nextBilling && <small>{nextBilling}</small>}</span>{grantEmail && grantEmail !== row.name ? <span>· 授权账号：{grantEmail}</span> : null}</div>}</div>
           <div className="brokerRowActions">{remote ? <>
             {!headerOwnsAuthorization && authorizationAction(row)}
             {!historicalAuthorization && <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { try { await call("broker_refresh_account", { profileId: row.profile_id }); } catch (caught) { await read(); throw caught; } await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>}
