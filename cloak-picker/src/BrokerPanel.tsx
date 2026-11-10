@@ -594,11 +594,6 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       // their live refresh token as if NoTrace already owned it.
       const externalGrant = !canManage && !needsLogin && !needsReauthLocal;
       const grantEmail = remote?.email ?? row.local.email;
-      const billingStart = remote?.subscription_active_start
-        ?? (!remote || remote.email.toLowerCase() === row.local.email?.toLowerCase()
-          && (!remote.subscription_active_until || remote.subscription_active_until === row.local.subscription_active_until)
-          ? row.local.subscription_active_start : null);
-      const billingDay = timeText(billingStart);
       const localCycleMatches = !remote || (remote.email.toLowerCase() === row.local.email?.toLowerCase()
         && (!remote.subscription_active_start || remote.subscription_active_start === row.local.subscription_active_start)
         && (!remote.subscription_active_until || remote.subscription_active_until === row.local.subscription_active_until));
@@ -631,7 +626,6 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       return <article className={`brokerRow ${historicalAuthorization ? "brokerRowHistorical" : ""}`} key={row.profile_id}>
         <div className="brokerRowTop"><div className="brokerRowMain">{!workbench && <strong>{row.name}</strong>}<span className={`brokerAuthStatus brokerAuthStatus-${accountState}`}><span className={`brokerAuthDot brokerAuthDot-${accountState}`} aria-hidden="true" />{row.trashed ? "回收站账号" : "浏览器账号"} · {accountState === "unknown" ? "托管状态待确认" : accountStatusLabel}</span>{workbench && <div className="brokerPlanLine">
           <span>{remote?.plan_type || row.local.plan_type ? `套餐：${planLabel(remote ? remote.plan_type : row.local.plan_type)}` : "套餐未知"}</span>
-          <span className="brokerBillingDate" title={billingDay === "未提供" ? "上游未提供最近订阅周期的开始日" : "最近订阅周期开始日；实际付款日期以账单记录为准"}><Clock3 size={13} aria-hidden="true" /><span>最近账单日 {billingDay}</span></span>
           {nextBilling && <>
             <span className="brokerBillingDate brokerBillingDate-next"><CalendarDays size={13} aria-hidden="true" /><span>下个账单日 {nextBilling.date}</span></span>
             <span className="brokerBillingDate brokerBillingDate-countdown"><Hourglass size={13} aria-hidden="true" /><span>{nextBilling.countdown}</span></span>

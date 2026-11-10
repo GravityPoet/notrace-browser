@@ -44,28 +44,26 @@ describe("统一授权续期窗口", () => {
     expect(document.body.textContent).toContain("启用统计后累计");
     expect(document.body.textContent).not.toContain("9 次");
     expect(document.body.textContent).toContain("按需导入 · 不自动续期");
-    expect(document.body.textContent).toContain("最近账单日 2026/10/09");
+    expect(document.body.textContent).not.toContain("最近账单日");
     const billingBadges = Array.from(document.querySelectorAll(".brokerPlanLine > .brokerBillingDate"));
     expect(billingBadges.map(badge => badge.textContent)).toEqual([
-      "最近账单日 2026/10/09", "下个账单日 2026/11/09", "剩余 1 天",
+      "下个账单日 2026/11/09", "剩余 1 天",
     ]);
-    expect(billingBadges[1].classList.contains("brokerBillingDate-next")).toBe(true);
-    expect(billingBadges[2].classList.contains("brokerBillingDate-countdown")).toBe(true);
-    expect(document.querySelector(".brokerBillingDate")?.getAttribute("title")).toContain("实际付款日期以账单记录为准");
+    expect(billingBadges[0].classList.contains("brokerBillingDate-next")).toBe(true);
+    expect(billingBadges[1].classList.contains("brokerBillingDate-countdown")).toBe(true);
     expect(document.body.textContent).not.toContain("refresh_token");
   });
 
-  it("does not infer a payment date from subscription or token expiry when the start is absent", async () => {
+  it("keeps the next billing date and countdown when the start is absent", async () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-08T10:33:44Z"));
     const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", subscription_active_until: "2026-11-09T10:33:44Z", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
     const call: AuthCall = async function call<T>(command: string): Promise<T> { if (command === "broker_overview") return overview(remote) as T; return overview(remote) as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
     await settle();
-    expect(document.querySelector(".brokerBillingDate")?.textContent).toContain("最近账单日 未提供");
-    expect(document.querySelector(".brokerBillingDate")?.textContent).not.toContain("2026/10/09");
-    expect(document.body.textContent).toContain("下个账单日");
-    expect(document.body.textContent).toContain("剩余 1 天");
+    expect(document.body.textContent).not.toContain("最近账单日");
+    expect(document.querySelector(".brokerBillingDate-next")?.textContent).toBe("下个账单日 2026/11/09");
+    expect(document.querySelector(".brokerBillingDate-countdown")?.textContent).toBe("剩余 1 天");
   });
 
   it.each([
@@ -84,8 +82,7 @@ describe("统一授权续期窗口", () => {
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
     await settle();
-    const badge = document.querySelector(".brokerBillingDate");
-    expect(badge?.textContent).toContain("最近账单日 2026/10/09");
+    expect(document.body.textContent).not.toContain("最近账单日");
     const reference = document.querySelector(".brokerBillingDate-countdown");
     const nextDate = document.querySelector(".brokerBillingDate-next");
     if (expected) {
