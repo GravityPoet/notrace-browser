@@ -404,6 +404,9 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   async function consumeQuotaReset(row: BrokerRow) {
     const remote = overviewRef.current?.accounts.find(account => account.profile_id === row.profile_id)?.remote;
     if (!remote || !overviewRef.current?.connected || authorizationState({ ...row, remote }) !== "authorized") return;
+    if (remote.account_id !== row.remote?.account_id || remote.generation !== row.remote.generation) {
+      throw new Error("账号授权已变化，请重新确认使用重置卡");
+    }
     const endpointAtStart = overviewRef.current.endpoint;
     const requestKey = `notrace-quota-reset:${endpointAtStart}:${row.profile_id}:${remote.account_id}`;
     let requestId = resetRequests.current.get(requestKey);
