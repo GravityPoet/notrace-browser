@@ -45,8 +45,12 @@ describe("统一授权续期窗口", () => {
     expect(document.body.textContent).not.toContain("9 次");
     expect(document.body.textContent).toContain("按需导入 · 不自动续期");
     expect(document.body.textContent).toContain("最近账单日 2026/10/09");
-    expect(document.body.textContent).toContain("下个账单日 2026/11/09 · 剩余 1 天（参考）");
-    expect(document.querySelector(".brokerBillingDate")).not.toBeNull();
+    const billingBadges = Array.from(document.querySelectorAll(".brokerPlanLine > .brokerBillingDate"));
+    expect(billingBadges.map(badge => badge.textContent)).toEqual([
+      "最近账单日 2026/10/09", "下个账单日 2026/11/09", "剩余 1 天（参考）",
+    ]);
+    expect(billingBadges[1].classList.contains("brokerBillingDate-next")).toBe(true);
+    expect(billingBadges[2].classList.contains("brokerBillingDate-reference")).toBe(true);
     expect(document.querySelector(".brokerBillingDate")?.getAttribute("title")).toContain("实际付款日期以账单记录为准");
     expect(document.body.textContent).not.toContain("refresh_token");
   });
@@ -82,9 +86,16 @@ describe("统一授权续期窗口", () => {
     await settle();
     const badge = document.querySelector(".brokerBillingDate");
     expect(badge?.textContent).toContain("最近账单日 2026/10/09");
-    if (expected) expect(badge?.querySelector("small")?.textContent).toContain(expected);
-    else expect(badge?.querySelector("small")).toBeNull();
-    expect(badge?.textContent).not.toContain("今日");
+    const reference = document.querySelector(".brokerBillingDate-reference");
+    const nextDate = document.querySelector(".brokerBillingDate-next");
+    if (expected) {
+      expect(reference?.textContent).toBe(expected);
+      expect(nextDate?.textContent).toContain("下个账单日");
+      expect(reference?.textContent).not.toContain("今日");
+    } else {
+      expect(reference).toBeNull();
+      expect(nextDate).toBeNull();
+    }
     expect(document.body.textContent).toContain("套餐：Plus");
     expect(document.body.textContent).toContain("已授权 · NoTrace Broker 自动续期");
   });
@@ -102,7 +113,7 @@ describe("统一授权续期窗口", () => {
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
     await settle();
-    const reference = document.querySelector(".brokerBillingDate small");
+    const reference = document.querySelector(".brokerBillingDate-reference");
     if (expected) expect(reference?.textContent).toContain("剩余 1 天（参考）");
     else expect(reference).toBeNull();
   });
@@ -449,7 +460,7 @@ describe("统一授权续期窗口", () => {
     expect([...document.querySelectorAll<HTMLButtonElement>('.brokerRow button')].every(button => button.disabled)).toBe(true);
   });
 
-  it("offers access-only JSON export for a Broker-owned grant", async () => {
+  it("offers JSON export with token clearing unchecked for a Broker-owned grant", async () => {
     const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
     const call: AuthCall = async function call<T>(command: string): Promise<T> { if (command === "broker_overview") return overview(remote) as T; return overview(remote) as T; };
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -461,7 +472,8 @@ describe("统一授权续期窗口", () => {
     await settle();
     expect(document.querySelector('[aria-label="导出 JSON"]')?.classList.contains("brokerJsonCard")).toBe(true);
     expect(document.body.textContent).toContain("清空 refresh_token（推荐）");
-    expect(document.querySelector('input[type="checkbox"]')).toHaveProperty("checked", true);
+    expect(document.querySelector('input[type="checkbox"]')).toHaveProperty("checked", false);
+    expect(document.body.textContent).toContain("未勾选清空：真实 refresh_token 会写入导出文件");
     expect(document.body.textContent).toContain("Cockpit Tools");
     expect(document.body.textContent).toContain("Sub2API");
   });
@@ -551,7 +563,7 @@ describe("统一授权续期窗口", () => {
     expect([...document.querySelectorAll("button")].find(button => button.textContent === "导入 Cockpit")?.disabled).toBe(true);
   });
 
-  it("keeps refresh token clearing enabled by default and only preserves it when unchecked", async () => {
+  it.each(["auth_json", "cockpit_tools", "cpa", "sub2api"])("preserves refresh tokens by default and clears them only when selected for %s export", async (format) => {
     const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, refresh_count: 0, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
     const calls: Array<{ command: string; args?: unknown }> = [];
     const call: AuthCall = async function call<T>(command: string, args?: unknown): Promise<T> {
@@ -561,23 +573,41 @@ describe("统一授权续期窗口", () => {
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root?.render(createElement(BrokerPanel, { call })));
     await settle();
-    const open = [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("导出 JSON"));
-    await act(async () => open?.click());
+    const openExport = () => [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.trim() === "导出 JSON");
+    const selectFormat = async () => {
+      const select = document.querySelector<HTMLSelectElement>('[aria-label="导出 JSON"] select')!;
+      await act(async () => { select.value = format; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    };
+    await act(async () => openExport()?.click());
     await settle();
     const checkbox = document.querySelector('input[type="checkbox"]') as HTMLInputElement;
-    expect(checkbox.checked).toBe(true);
+    expect(checkbox.checked).toBe(false);
+    await selectFormat();
     const save = [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("保存 JSON"));
     await act(async () => save?.click());
     await settle();
-    expect(calls.find(item => item.command === "broker_export_json")?.args).toEqual({ profileId: "profile-1", accountName: "demo@example.com", format: "auth_json", includeRefreshToken: false });
-    await act(async () => open?.click());
+    expect(calls.find(item => item.command === "broker_export_json")?.args).toEqual({ profileId: "profile-1", accountName: "demo@example.com", format, includeRefreshToken: true });
+    await act(async () => openExport()?.click());
     await settle();
     const secondCheckbox = document.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(secondCheckbox.checked).toBe(false);
+    await selectFormat();
     await act(async () => secondCheckbox.click());
+    expect(secondCheckbox.checked).toBe(true);
+    expect(document.body.textContent).toContain("已勾选清空：只导出 access token / id token");
     const secondSave = [...document.querySelectorAll("button")].find(candidate => candidate.textContent?.includes("保存 JSON"));
     await act(async () => secondSave?.click());
     await settle();
-    expect(calls.filter(item => item.command === "broker_export_json").at(-1)?.args).toEqual({ profileId: "profile-1", accountName: "demo@example.com", format: "auth_json", includeRefreshToken: true });
+    expect(calls.filter(item => item.command === "broker_export_json").at(-1)?.args).toEqual({ profileId: "profile-1", accountName: "demo@example.com", format, includeRefreshToken: false });
+    await act(async () => openExport()?.click());
+    await settle();
+    expect(document.querySelector('input[type="checkbox"]')).toHaveProperty("checked", false);
+    expect(document.body.textContent).toContain("未勾选清空：真实 refresh_token 会写入导出文件");
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="关闭导出 JSON"]')?.click());
+    await act(async () => openExport()?.click());
+    await settle();
+    expect(document.querySelector('input[type="checkbox"]')).toHaveProperty("checked", false);
+    expect(calls.filter(item => item.command === "broker_export_json")).toHaveLength(2);
   });
 
   it("filters the account list into all, authorized, and unauthorized views", async () => {

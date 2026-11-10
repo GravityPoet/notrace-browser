@@ -35,8 +35,9 @@ Grant metadata preserves `chatgpt_subscription_active_start` and
 `chatgpt_subscription_active_until` when the authorization claims provide them.
 The start field is the current subscription cycle's billing date; it is replaced
 when a later authorization or renewal reports a new cycle. Older grants may
-have no start field and remain compatible. Picker shows the recent billing date
-and a separate next-billing countdown as a reference; the countdown does not
+have no start field and remain compatible. Picker shows three separate badges:
+the recent billing date in blue, the next billing date in green, and the
+countdown reference in purple. The countdown does not
 decide whether Plus access is active or whether a grace period exists.
 
 ### macOS tunnel recovery
@@ -105,11 +106,11 @@ master refresh token.
 
 The Picker also provides JSON exchange for a Broker-owned account. It can
 write files in Cockpit Tools, official `auth.json`, CPA, and Sub2API-compatible
-shapes. The checkbox defaults to clearing `refresh_token`, so the normal export
-is access-only and NoTrace remains the only refresh owner. An explicit opt-out
-can preserve the real `refresh_token` for a deliberate migration or offline
-backup; the resulting file is local mode `0600` and must be treated as a second
-refresh-capable credential. The format marker identifies `notrace_broker`
+shapes. The clear-`refresh_token` checkbox is unchecked whenever the export
+dialog opens, so the export preserves the real `refresh_token` by default.
+Checking it creates an access-only export. Files that preserve the token are
+local mode `0600` and must be treated as a second refresh-capable credential;
+the dialog explains the effect before saving. The format marker identifies `notrace_broker`
 ownership where the consumer supports it.
 
 ### One-click official Cockpit import (macOS)

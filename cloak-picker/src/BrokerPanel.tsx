@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowDownUp, Clock3, Download, FileJson, KeyRound, Link2, Loader2, RefreshCw, RotateCcw, Search, UploadCloud, X } from "lucide-react";
+import { ArrowDownUp, CalendarDays, Clock3, Download, FileJson, Hourglass, KeyRound, Link2, Loader2, RefreshCw, RotateCcw, Search, UploadCloud, X } from "lucide-react";
 import { authProgressLabels, type ActiveAuth, type AuthCall, type AuthLoginPhase, type AuthStatus } from "./AuthPanel";
 
 export type BrokerMetadata = {
@@ -68,12 +68,12 @@ function nextBillingReference(value: string | null | undefined) {
   const parsed = Date.parse(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
   const diff = parsed - Date.now();
-  const date = `下个账单日 ${timeText(raw)}`;
-  if (diff > 0) return `${date} · 剩余 ${Math.ceil(diff / 86_400_000)} 天（参考）`;
-  if (diff === 0) return `${date} · 已到账单日（参考）`;
+  const date = timeText(raw);
+  if (diff > 0) return { date, countdown: `剩余 ${Math.ceil(diff / 86_400_000)} 天（参考）` };
+  if (diff === 0) return { date, countdown: "已到账单日（参考）" };
   const daysPast = Math.floor(-diff / 86_400_000);
-  return daysPast > 0 ? `${date} · 已过账单日 ${daysPast} 天（参考）`
-    : `${date} · 已过账单日（不足 1 天，参考）`;
+  return { date, countdown: daysPast > 0 ? `已过账单日 ${daysPast} 天（参考）`
+    : "已过账单日（不足 1 天，参考）" };
 }
 function syncLabel(enabled: boolean, synced: number | null, generation: number, error: string | null) {
   if (error === "consumer_missing") return errors.consumer_missing;
@@ -183,7 +183,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   const [importPreview, setImportPreview] = useState<BrokerJsonPreview | null>(null);
   const [importMode, setImportMode] = useState<"manage" | "convert">("manage");
   const [importAccountIndex, setImportAccountIndex] = useState(0);
-  const [preserveRefreshToken, setPreserveRefreshToken] = useState(false);
+  const [preserveRefreshToken, setPreserveRefreshToken] = useState(true);
   const [clearImportedRefreshToken, setClearImportedRefreshToken] = useState(false);
   const [accountFilter, setAccountFilter] = useState<BrokerAccountFilter>("all");
   const [accountSearch, setAccountSearch] = useState(focusedAccount);
@@ -629,14 +629,22 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
               ? `未授权 · ${localStatus}`
               : `已授权 · ${localStatus}`;
       return <article className={`brokerRow ${historicalAuthorization ? "brokerRowHistorical" : ""}`} key={row.profile_id}>
-        <div className="brokerRowTop"><div className="brokerRowMain">{!workbench && <strong>{row.name}</strong>}<span className={`brokerAuthStatus brokerAuthStatus-${accountState}`}><span className={`brokerAuthDot brokerAuthDot-${accountState}`} aria-hidden="true" />{row.trashed ? "回收站账号" : "浏览器账号"} · {accountState === "unknown" ? "托管状态待确认" : accountStatusLabel}</span>{workbench && <div className="brokerPlanLine"><span>{remote?.plan_type || row.local.plan_type ? `套餐：${planLabel(remote ? remote.plan_type : row.local.plan_type)}` : "套餐未知"}</span><span className="brokerBillingDate" title={billingDay === "未提供" ? "上游未提供最近订阅周期的开始日" : "最近订阅周期开始日；实际付款日期以账单记录为准"}><Clock3 size={13} aria-hidden="true" /><span>最近账单日 {billingDay}</span>{nextBilling && <small>{nextBilling}</small>}</span>{grantEmail && grantEmail !== row.name ? <span>· 授权账号：{grantEmail}</span> : null}</div>}</div>
+        <div className="brokerRowTop"><div className="brokerRowMain">{!workbench && <strong>{row.name}</strong>}<span className={`brokerAuthStatus brokerAuthStatus-${accountState}`}><span className={`brokerAuthDot brokerAuthDot-${accountState}`} aria-hidden="true" />{row.trashed ? "回收站账号" : "浏览器账号"} · {accountState === "unknown" ? "托管状态待确认" : accountStatusLabel}</span>{workbench && <div className="brokerPlanLine">
+          <span>{remote?.plan_type || row.local.plan_type ? `套餐：${planLabel(remote ? remote.plan_type : row.local.plan_type)}` : "套餐未知"}</span>
+          <span className="brokerBillingDate" title={billingDay === "未提供" ? "上游未提供最近订阅周期的开始日" : "最近订阅周期开始日；实际付款日期以账单记录为准"}><Clock3 size={13} aria-hidden="true" /><span>最近账单日 {billingDay}</span></span>
+          {nextBilling && <>
+            <span className="brokerBillingDate brokerBillingDate-next"><CalendarDays size={13} aria-hidden="true" /><span>下个账单日 {nextBilling.date}</span></span>
+            <span className="brokerBillingDate brokerBillingDate-reference"><Hourglass size={13} aria-hidden="true" /><span>{nextBilling.countdown}</span></span>
+          </>}
+          {grantEmail && grantEmail !== row.name ? <span>· 授权账号：{grantEmail}</span> : null}
+        </div>}</div>
           <div className="brokerRowActions">{remote ? <>
             {!headerOwnsAuthorization && authorizationAction(row)}
             {!historicalAuthorization && <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={() => void run(row.profile_id, async () => { try { await call("broker_refresh_account", { profileId: row.profile_id }); } catch (caught) { await read(); throw caught; } await read(); setMessage("刷新结果已写回 Broker"); })}><RefreshCw size={14} />立即刷新</button>}
             {!historicalAuthorization && <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected || quotaLoadingProfile !== null} title="仅读取上游 Codex 额度，不会刷新授权或消耗主动重置次数" onClick={() => void readQuota(row)}>{quotaLoading ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}{quotaLoading ? "读取中…" : "读取额度"}</button>}
             {cpaButtonLabel && <button className={workbench && !historicalAuthorization && !cpaSynced ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected || (historicalAuthorization && !remote.cpa_enabled)} onClick={() => void run(row.profile_id, () => updateCpa(row, historicalAuthorization ? false : !cpaSynced))}>{cpaButtonLabel}</button>}
             {!historicalAuthorization && <button className={workbench ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected} title="仅导入当前 access token / id token；Cockpit 导入后自动读取一次额度，不刷新 Broker 授权、不发送 refresh_token" onClick={() => void run(row.profile_id, () => importCockpitAccess(row))}>{cockpitProfile === row.profile_id && <Loader2 className="spin" size={14} />}{cockpitProfile === row.profile_id ? "导入中…" : "导入 Cockpit"}</button>}
-            <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={event => { jsonTriggerRef.current = event.currentTarget; setPreserveRefreshToken(false); setImportPreview(null); setExportRow(row); setJsonFormat("auth_json"); }}><Download size={14} />导出 JSON</button>
+            <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={event => { jsonTriggerRef.current = event.currentTarget; setPreserveRefreshToken(true); setImportPreview(null); setExportRow(row); setJsonFormat("auth_json"); }}><Download size={14} />导出 JSON</button>
           </> : !headerOwnsAuthorization && <button className={workbench ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected || browserBusy} onClick={() => void run(row.profile_id, () => externalGrant ? reauthorize(row) : manage(row))}>{rowBusy ? <Loader2 className="spin" size={14} /> : needsLogin || needsReauthLocal || externalGrant ? <KeyRound size={14} /> : <UploadCloud size={14} />}{rowBusy ? "授权处理中…" : needsLogin ? "授权并纳管" : needsReauthLocal || externalGrant ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
         </div>
         {!workbench && visibleLogin?.name === row.name && activity}
@@ -674,7 +682,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       <label className="brokerJsonField">导出格式<select value={jsonFormat} onChange={(event) => setJsonFormat(event.target.value as BrokerJsonFormat)} disabled={disabled}>{jsonFormats.map((format) => <option value={format.value} key={format.value}>{format.label}</option>)}</select></label>
       {jsonFormat === "auth_json" && <p className="brokerJsonHint">适用于官方 Codex；上传到 CPA 时，请选择“CPA”格式。</p>}
       <label className="brokerJsonCheckbox"><input type="checkbox" checked={!preserveRefreshToken} onChange={(event) => setPreserveRefreshToken(!event.target.checked)} /><span>清空 refresh_token（推荐）</span></label>
-      <p className={`brokerJsonNotice ${preserveRefreshToken ? "warning" : ""}`}>{preserveRefreshToken ? "取消清空后，真实 refresh_token 会写入导出文件；导入 Cockpit/CPA 后可能产生第二个刷新者，仅用于明确迁移或离线备份。" : "默认只导出 access token / id token；refresh_token 为空，由 NoTrace Broker 继续负责续期。"}</p>
+      <p className={`brokerJsonNotice ${preserveRefreshToken ? "warning" : ""}`}>{preserveRefreshToken ? "未勾选清空：真实 refresh_token 会写入导出文件；导入 Cockpit/CPA 后可能产生第二个刷新者，仅用于明确迁移或离线备份。" : "已勾选清空：只导出 access token / id token；refresh_token 为空，由 NoTrace Broker 继续负责续期。"}</p>
       <div className="brokerJsonActions"><button className="secondaryButton" type="button" disabled={disabled} onClick={() => setExportRow(null)}>取消</button><button className="primaryButton" type="button" disabled={disabled} onClick={() => void run("export-json", () => exportJson(exportRow))}><Download size={14} />保存 JSON</button></div>
       </div>
     </div>, document.body)}
