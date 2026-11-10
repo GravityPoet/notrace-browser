@@ -26,6 +26,7 @@ commands.allow = [
   "save_broker_connection",
   "broker_push_account",
   "broker_quota_snapshot",
+  "broker_consume_quota_reset",
   "broker_refresh_account",
   "broker_import_cockpit_access",
   "broker_set_cpa",
