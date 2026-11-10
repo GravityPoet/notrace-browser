@@ -26,6 +26,8 @@ use zeroize::Zeroizing;
 const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 const RESET_CREDITS_URL: &str = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
+const RESET_CREDITS_CONSUME_URL: &str =
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const MAX_BYTES: u64 = 256 * 1024;
 const MAX_LEAD: u64 = 36 * 3600;
@@ -63,6 +65,8 @@ pub enum BrokerError {
     ConsumerMissing,
     #[error("额度暂时无法读取，上游未提供有效数据")]
     QuotaUnavailable,
+    #[error("额度重置暂时无法确认，请使用相同请求重试")]
+    QuotaResetUnavailable,
 }
 
 #[derive(Clone)]
@@ -124,6 +128,8 @@ pub struct BrokerMetadata {
     #[serde(default)]
     pub cpa_sync_suspended: bool,
     pub cockpit_synced_generation: Option<u64>,
+    #[serde(default)]
+    pub quota_reset_pending: bool,
 }
 
 /// Credentials have no Debug implementation. Consumer routes receive access-only;
@@ -170,6 +176,19 @@ pub struct CodexQuotaSnapshot {
     pub reset_count_available: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodexQuotaResetResult {
+    pub outcome: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct QuotaResetAttempt {
+    request_id: String,
+    #[serde(default)]
+    retry_ids: Vec<String>,
+    result: Option<CodexQuotaResetResult>,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 struct Grant {
     key: String,
@@ -210,6 +229,8 @@ struct Grant {
     cpa_sync_suspended: bool,
     #[serde(default)]
     cockpit_synced_generation: Option<u64>,
+    #[serde(default)]
+    quota_reset: Option<QuotaResetAttempt>,
 }
 impl Grant {
     fn due_at(&self) -> u64 {
@@ -252,6 +273,10 @@ impl Grant {
             },
             cpa_sync_suspended: self.cpa_sync_suspended,
             cockpit_synced_generation: self.cockpit_synced_generation,
+            quota_reset_pending: self
+                .quota_reset
+                .as_ref()
+                .is_some_and(|attempt| attempt.result.is_none()),
         }
     }
     fn projection(&self) -> AccessCredential {
@@ -340,6 +365,7 @@ impl BrokerStore {
             incoming.cpa_enabled = false;
             incoming.cpa_synced_generation = current.cpa_synced_generation;
             incoming.cockpit_synced_generation = current.cockpit_synced_generation;
+            incoming.quota_reset = current.quota_reset;
         }
         self.save(&path, &incoming)?;
         // A new authorization explicitly supersedes a stranded response journal.
@@ -468,6 +494,78 @@ impl BrokerStore {
             return Err(BrokerError::ReauthRequired);
         }
         fetch_codex_quota(&self.config, &grant)
+    }
+
+    /// Redeem one official Codex reset. Persist the logical request before
+    /// sending it so a lost response or client restart cannot spend a second
+    /// credit. Tokens and consumer files are unchanged.
+    pub fn consume_quota_reset(
+        &self,
+        key: &str,
+        redeem_request_id: &str,
+        expected_account_id: &str,
+    ) -> BrokerResult<CodexQuotaResetResult> {
+        let request_id = redeem_request_id.trim();
+        if request_id.is_empty()
+            || request_id.len() > 128
+            || !request_id.bytes().all(|b| b.is_ascii_graphic())
+        {
+            return Err(BrokerError::Config);
+        }
+        let path = self.path(key)?;
+        let _guard = acquire_lock(&path.with_extension("lock"))?;
+        let mut grant = self.load(&path)?;
+        if grant.account_id != expected_account_id {
+            return Err(BrokerError::IdentityMismatch);
+        }
+        if grant.in_flight || path.with_extension("pending").exists() {
+            return Err(BrokerError::Busy);
+        }
+        if let Some(attempt) = &grant.quota_reset {
+            if attempt.request_id == request_id
+                || attempt.retry_ids.iter().any(|id| id == request_id)
+            {
+                if let Some(result) = &attempt.result {
+                    return Ok(result.clone());
+                }
+            }
+        }
+        if grant.expires_at <= crate::current_epoch_secs()
+            || matches!(
+                grant.error,
+                Some(BrokerError::ReauthRequired | BrokerError::RecoveryRequired)
+            )
+        {
+            return Err(BrokerError::ReauthRequired);
+        }
+        let mut attempt = grant
+            .quota_reset
+            .as_ref()
+            .filter(|attempt| attempt.result.is_none())
+            .cloned()
+            .unwrap_or_else(|| QuotaResetAttempt {
+                request_id: request_id.to_owned(),
+                retry_ids: Vec::new(),
+                result: None,
+            });
+        if attempt.request_id != request_id && !attempt.retry_ids.iter().any(|id| id == request_id)
+        {
+            if attempt.retry_ids.len() >= 32 {
+                return Err(BrokerError::Config);
+            }
+            attempt.retry_ids.push(request_id.to_owned());
+        }
+        let effective_id = attempt.request_id.clone();
+        grant.quota_reset = Some(attempt);
+        self.save(&path, &grant)?;
+        let result = post_quota_reset(&self.config, &grant, &effective_id)?;
+        grant
+            .quota_reset
+            .as_mut()
+            .ok_or(BrokerError::Storage)?
+            .result = Some(result.clone());
+        self.save(&path, &grant)?;
+        Ok(result)
     }
     pub fn export_credential(
         &self,
@@ -1029,6 +1127,7 @@ fn parse_grant(key: &str, body: &str) -> BrokerResult<Grant> {
         cpa_sync_error: None,
         cpa_sync_suspended: false,
         cockpit_synced_generation: None,
+        quota_reset: None,
     })
 }
 
@@ -1238,6 +1337,72 @@ fn fetch_codex_quota(config: &BrokerConfig, grant: &Grant) -> BrokerResult<Codex
         windows,
         reset_count,
         reset_count_available: reset_count.is_some(),
+    })
+}
+
+fn post_quota_reset(
+    config: &BrokerConfig,
+    grant: &Grant,
+    request_id: &str,
+) -> BrokerResult<CodexQuotaResetResult> {
+    let endpoint = if let Ok(mut url) = url::Url::parse(&config.token_url) {
+        if matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1")) {
+            url.set_path("/reset-credits/consume");
+            url.set_query(None);
+            url.set_fragment(None);
+            url.to_string()
+        } else {
+            RESET_CREDITS_CONSUME_URL.to_string()
+        }
+    } else {
+        RESET_CREDITS_CONSUME_URL.to_string()
+    };
+    let mut builder = Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(proxy) = &config.proxy_url {
+        builder = builder.proxy(reqwest::Proxy::all(proxy).map_err(|_| BrokerError::Config)?);
+    }
+    let client = builder
+        .build()
+        .map_err(|_| BrokerError::QuotaResetUnavailable)?;
+    // The official service selects the next available card when credit_id is
+    // omitted. Never automatically retry this POST with a new request ID.
+    let response = client
+        .post(endpoint)
+        .bearer_auth(&grant.access_token)
+        .header("ChatGPT-Account-Id", &grant.account_id)
+        .header("Accept", "application/json")
+        .header("User-Agent", "Codex Desktop")
+        .header("originator", "Codex Desktop")
+        .json(&serde_json::json!({"redeem_request_id": request_id}))
+        .send()
+        .map_err(|_| BrokerError::QuotaResetUnavailable)?;
+    let status = response.status();
+    let mut body = String::new();
+    response
+        .take(MAX_BYTES + 1)
+        .read_to_string(&mut body)
+        .map_err(|_| BrokerError::QuotaResetUnavailable)?;
+    if body.len() as u64 > MAX_BYTES || !status.is_success() {
+        return Err(BrokerError::QuotaResetUnavailable);
+    }
+    let root: Value =
+        serde_json::from_str(&body).map_err(|_| BrokerError::QuotaResetUnavailable)?;
+    let outcome = root
+        .get("code")
+        .or_else(|| root.get("outcome"))
+        .and_then(Value::as_str)
+        .ok_or(BrokerError::QuotaResetUnavailable)?;
+    if !matches!(
+        outcome,
+        "reset" | "already_redeemed" | "nothing_to_reset" | "no_credit"
+    ) {
+        return Err(BrokerError::QuotaResetUnavailable);
+    }
+    Ok(CodexQuotaResetResult {
+        outcome: outcome.to_owned(),
     })
 }
 

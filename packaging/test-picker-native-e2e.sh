@@ -97,6 +97,7 @@ from pathlib import Path
 class Handler(BaseHTTPRequestHandler):
     attempts = 0
     completed_grant = None
+    reset_request_ids = set()
     metadata = {"key": "", "email": "native-e2e-sync-account", "account_id": "synthetic-account", "plan_type": "pro", "expires_at": 1900000000, "last_refresh_at": 1899000000, "generation": 2, "refresh_count": 0, "automatic_refresh_count": 0, "next_refresh_at": 1899900000, "next_retry_at": None, "error": None, "cpa_enabled": False, "cpa_synced_generation": 1, "cpa_sync_error": None, "cockpit_synced_generation": None}
     def do_GET(self) -> None:
         profile = Path(sys.argv[2]) / ".cloak-profile.json"
@@ -111,7 +112,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"account_id": Handler.metadata["account_id"], "email": Handler.metadata["email"], "fetched_at": 1899000000, "generation": Handler.metadata["generation"], "windows": [{"name": "周", "used_percent": 16, "remaining_percent": 84, "reset_at": 1900003600, "limit_window_seconds": 604800}], "reset_count": 1, "reset_count_available": True}).encode())
+            self.wfile.write(json.dumps({"account_id": Handler.metadata["account_id"], "email": Handler.metadata["email"], "fetched_at": 1899000000, "generation": Handler.metadata["generation"], "windows": [{"name": "周", "used_percent": 0 if Handler.reset_request_ids else 16, "remaining_percent": 100 if Handler.reset_request_ids else 84, "reset_at": 1900003600, "limit_window_seconds": 604800}], "reset_count": 0 if Handler.reset_request_ids else 1, "reset_count_available": True}).encode())
             return
         rows = []
         if profile.exists():
@@ -125,6 +126,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(rows).encode())
     def do_POST(self) -> None:
         settings = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+        if self.path.endswith("/quota-reset"):
+            if settings.get("account_id") != "synthetic-account" or not settings.get("redeem_request_id"):
+                self.send_error(400)
+                return
+            request_id = settings["redeem_request_id"]
+            outcome = "already_redeemed" if request_id in Handler.reset_request_ids else "reset"
+            Handler.reset_request_ids.add(request_id)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"outcome": outcome}).encode())
+            return
         if self.path.endswith("/grant"):
             # Only disposable synthetic OAuth bytes from this test can arrive.
             profile_id = self.path.split("/")[-2]
@@ -261,6 +274,7 @@ node -e '
     "native-cockpit-import-layout-and-order",
     "native-quota-weekly-only-progress",
     "native-quota-semantic-colors",
+    "native-quota-reset-confirm-and-refresh",
     "native-auth-browser-close-stops-and-retry-recovers",
     "native-auth-reuses-existing-profile-tab",
     "native-auth-success-after-browser-close-retained",

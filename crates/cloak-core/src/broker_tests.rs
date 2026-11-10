@@ -375,6 +375,186 @@ fn quota_snapshot_counts_available_reset_credit_details_when_count_is_omitted() 
     provider.join().unwrap();
 }
 
+fn reset_request(stream: &mut std::net::TcpStream) -> (String, Value) {
+    use std::io::{BufRead, BufReader};
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut first = String::new();
+    reader.read_line(&mut first).unwrap();
+    let mut length = 0;
+    let mut account_header = false;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        if line == "\r\n" {
+            break;
+        }
+        let lower = line.to_ascii_lowercase();
+        if let Some(v) = lower.strip_prefix("content-length:") {
+            length = v.trim().parse::<usize>().unwrap();
+        }
+        if lower.trim() == "chatgpt-account-id: acct-1" {
+            account_header = true;
+        }
+    }
+    assert!(account_header);
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    (first, serde_json::from_slice(&body).unwrap())
+}
+
+#[test]
+fn quota_reset_uses_official_post_and_caches_all_terminal_outcomes() {
+    for code in ["reset", "already_redeemed", "nothing_to_reset", "no_credit"] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let provider = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let (first, body) = reset_request(&mut stream);
+            assert!(first.starts_with("POST /reset-credits/consume HTTP/1.1"));
+            assert_eq!(body, json!({"redeem_request_id": "logical-attempt-1"}));
+            let body = json!({"code":code}).to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let store = BrokerStore::new(
+            BrokerConfig {
+                root: dir.path().into(),
+                cpa_auth_dir: None,
+                proxy_url: None,
+                token_url: format!("http://{address}"),
+            },
+            [17; 32],
+        )
+        .unwrap();
+        store
+            .import_grant(
+                "alpha",
+                &grant_body("alpha@example.com", "acct-1", "refresh-a", now() + 3600),
+            )
+            .unwrap();
+        let before = store.export_credential("alpha", true).unwrap();
+        let result = store
+            .consume_quota_reset("alpha", "logical-attempt-1", "acct-1")
+            .unwrap();
+        assert_eq!(result.outcome, code);
+        provider.join().unwrap();
+        assert_eq!(
+            store
+                .consume_quota_reset("alpha", "logical-attempt-1", "acct-1")
+                .unwrap(),
+            result
+        );
+        let after = store.export_credential("alpha", true).unwrap();
+        assert_eq!(before.access_token, after.access_token);
+        assert_eq!(before.refresh_token, after.refresh_token);
+        assert_eq!(before.notrace_generation, after.notrace_generation);
+        assert_eq!(store.list().unwrap()[0].refresh_count, 0);
+    }
+}
+
+#[test]
+fn quota_reset_reuses_uncertain_attempt_after_restart_even_when_client_changes_id() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let provider = thread::spawn(move || {
+        let mut ids = Vec::new();
+        for attempt in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let (_, body) = reset_request(&mut stream);
+            ids.push(body["redeem_request_id"].clone());
+            if attempt == 0 {
+                continue;
+            }
+            let body = json!({"code":"already_redeemed"}).to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            ids,
+            vec![json!("original-attempt"), json!("original-attempt")]
+        );
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let config = BrokerConfig {
+        root: dir.path().into(),
+        cpa_auth_dir: None,
+        proxy_url: None,
+        token_url: format!("http://{address}"),
+    };
+    let store = BrokerStore::new(config.clone(), [18; 32]).unwrap();
+    store
+        .import_grant(
+            "alpha",
+            &grant_body("alpha@example.com", "acct-1", "refresh-a", now() + 3600),
+        )
+        .unwrap();
+    assert_eq!(
+        store.consume_quota_reset("alpha", "original-attempt", "acct-1"),
+        Err(BrokerError::QuotaResetUnavailable)
+    );
+    drop(store);
+    let store = BrokerStore::new(config, [18; 32]).unwrap();
+    assert_eq!(
+        store
+            .consume_quota_reset("alpha", "client-retry-id", "acct-1")
+            .unwrap()
+            .outcome,
+        "already_redeemed"
+    );
+    provider.join().unwrap();
+    assert_eq!(
+        store
+            .consume_quota_reset("alpha", "client-retry-id", "acct-1")
+            .unwrap()
+            .outcome,
+        "already_redeemed"
+    );
+}
+
+#[test]
+fn quota_reset_rejects_wrong_identity_invalid_ids_and_expired_grants_before_sending() {
+    let (_dir, store) = store();
+    store
+        .import_grant(
+            "alpha",
+            &grant_body("alpha@example.com", "acct-1", "refresh-a", now() + 3600),
+        )
+        .unwrap();
+    assert_eq!(
+        store.consume_quota_reset("alpha", "valid-request", "other-account"),
+        Err(BrokerError::IdentityMismatch)
+    );
+    for id in ["", " ", "invalid id", "invalid\nrequest"] {
+        assert_eq!(
+            store.consume_quota_reset("alpha", id, "acct-1"),
+            Err(BrokerError::Config)
+        );
+    }
+    let path = store.path("alpha").unwrap();
+    let mut grant = store.load(&path).unwrap();
+    grant.expires_at = now() - 1;
+    store.save(&path, &grant).unwrap();
+    assert_eq!(
+        store.consume_quota_reset("alpha", "valid-request", "acct-1"),
+        Err(BrokerError::ReauthRequired)
+    );
+    assert!(store.load(&path).unwrap().quota_reset.is_none());
+}
+
 #[test]
 fn terminal_grant_cannot_be_reenabled_for_cpa_until_reauthorization() {
     let dir = tempfile::tempdir().unwrap();
@@ -539,14 +719,19 @@ fn cpa_sync_skips_unreadable_unrelated_files() {
         )
         .unwrap();
     store.set_cpa_enabled("alpha", true).unwrap();
-    let unrelated = cpa.path().join("manual-other@example.com.json");
+    let unrelated = cpa
+        .path()
+        .join(format!("{}.json", "manual-other@example.com"));
     fs::write(&unrelated, "{\"type\":\"codex\"}").unwrap();
     fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o000)).unwrap();
 
     let metadata = store.sync_cpa("alpha").unwrap();
 
     assert_eq!(metadata.cpa_sync_error, None);
-    assert!(cpa.path().join("alpha@example.com.json").exists());
+    assert!(cpa
+        .path()
+        .join(format!("{}.json", "alpha@example.com"))
+        .exists());
 }
 
 #[cfg(unix)]
@@ -624,7 +809,7 @@ fn reauthorization_waits_for_explicit_cpa_sync() {
     store.import_grant("alpha", &initial).unwrap();
     store.set_cpa_enabled("alpha", true).unwrap();
     store.sync_cpa("alpha").unwrap();
-    let destination = cpa.path().join("alpha@example.com.json");
+    let destination = cpa.path().join(format!("{}.json", "alpha@example.com"));
     let original = fs::read(&destination).unwrap();
 
     let replacement = grant_body("alpha@example.com", "acct-1", "replacement", now() + 7200);
@@ -795,7 +980,7 @@ fn cpa_updates_preserve_operator_disabled_state_and_never_write_rt() {
     store.set_cpa_enabled("alpha", true).unwrap();
     let metadata = store.sync_cpa("alpha").unwrap();
     assert_eq!(metadata.cpa_synced_generation, Some(1));
-    let destination = cpa.path().join("alpha@example.com.json");
+    let destination = cpa.path().join(format!("{}.json", "alpha@example.com"));
     let mut projection: Value =
         serde_json::from_str(&fs::read_to_string(&destination).unwrap()).unwrap();
     projection["disabled"] = json!(true);
@@ -832,7 +1017,7 @@ fn cpa_sync_renames_existing_managed_hash_file_to_email_name() {
         .unwrap();
     store.set_cpa_enabled(key, true).unwrap();
     store.sync_cpa(key).unwrap();
-    let email_path = cpa.path().join("alpha@example.com.json");
+    let email_path = cpa.path().join(format!("{}.json", "alpha@example.com"));
     let legacy_path = cpa.path().join(format!("notrace_{}.json", hash_key(key)));
     fs::rename(&email_path, &legacy_path).unwrap();
 
@@ -940,7 +1125,7 @@ fn scheduled_cycle_projects_a_recovered_rotation_to_cpa() {
     store.run_cycle().unwrap();
 
     let projection: Value = serde_json::from_str(
-        &fs::read_to_string(cpa.path().join("alpha@example.com.json")).unwrap(),
+        &fs::read_to_string(cpa.path().join(format!("{}.json", "alpha@example.com"))).unwrap(),
     )
     .unwrap();
     assert_eq!(projection["notrace_generation"], 2);
@@ -986,7 +1171,7 @@ fn scheduled_cycle_does_not_rewrite_unchanged_cpa_credentials() {
     store.set_cpa_enabled("alpha", true).unwrap();
     store.sync_cpa("alpha").unwrap();
     let grant_path = store.path("alpha").unwrap();
-    let destination = cpa.path().join("alpha@example.com.json");
+    let destination = cpa.path().join(format!("{}.json", "alpha@example.com"));
     let original_grant = fs::read(&grant_path).unwrap();
     let before = fs::metadata(&destination).unwrap().modified().unwrap();
     thread::sleep(Duration::from_millis(20));
@@ -1021,7 +1206,7 @@ fn cpa_sync_preserves_malformed_reserved_files() {
         )
         .unwrap();
     store.set_cpa_enabled("alpha", true).unwrap();
-    let destination = cpa.path().join("alpha@example.com.json");
+    let destination = cpa.path().join(format!("{}.json", "alpha@example.com"));
     fs::write(&destination, "incomplete CPA file").unwrap();
 
     let metadata = store.sync_cpa("alpha").unwrap();

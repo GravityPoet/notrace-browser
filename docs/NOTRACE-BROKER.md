@@ -39,6 +39,36 @@ have no start field and remain compatible. Picker shows two separate badges:
 the next billing date in green and the countdown in purple. The countdown does not
 decide whether Plus access is active or whether a grace period exists.
 
+### Official Codex reset credits
+
+Picker provides **使用重置卡** beside the available reset count. The action
+requires an explicit account-specific confirmation; opening the panel or
+reading usage never consumes a card. Zero or unknown availability disables
+new redemptions. An uncertain previous redemption remains retryable.
+
+The desktop sends `POST /v1/admin/accounts/<key>/quota-reset` with
+`redeem_request_id` and the expected `account_id`. Broker calls the official
+`https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume` endpoint
+with the current access token and `ChatGPT-Account-Id`, without rotating tokens
+or syncing consumer files. Omitting `credit_id` lets the official service pick
+the next available reset credit. Picker follows the native manual UI semantics;
+the agent tool's separate 90%-usage gate is not applied to manual button use.
+
+Broker persists the attempt under the existing account lock before sending.
+Uncertain retries reuse its original ID across app or Broker restarts, and
+terminal results are cached for duplicate requests. The four official results
+are `reset`, `already_redeemed`, `nothing_to_reset`, and `no_credit`. Picker
+reads official usage again after a terminal response, and never reports a failed
+usage read as a failed redemption or automatically spends another card.
+
+Implementation evidence: the installed `/Applications/ChatGPT.app` version
+`26.1103.60933` (bundle `com.openai.codex`) contains the manual confirmation and
+same-ID retry flow. Its `app.asar` SHA-256 was
+`a77588b2dcfa9b394d722dd8c2c8b13d3a09bacd49c839cc715245742dba6048`.
+REA 6.8.0 inventory and selected JavaScript analysis were used alongside direct
+inspection of the shipped modules; the static graph is partial and this does
+not claim a real card was consumed during verification.
+
 ### macOS tunnel recovery
 
 Install or upgrade the existing local tunnel with

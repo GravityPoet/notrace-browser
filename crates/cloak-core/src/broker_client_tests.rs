@@ -8,7 +8,7 @@ use std::{
 fn credential() -> Value {
     json!({
         "type": "codex", "access_token": "fixture_value_a", "id_token": "fixture_value_b",
-        "refresh_token": "", "account_id": "synthetic-account", "email": "synthetic@example.test",
+        "refresh_token": "", "account_id": "synthetic-account", "email": "synthetic@example.com",
         "expired": "2030-03-17T00:00:00Z", "expires_at": crate::current_epoch_secs() + 7200,
         "last_refresh": "2026-10-14T00:00:00Z", "plan_type": "plus",
         "refresh_owner": "notrace_broker", "notrace_key": "synthetic-profile", "notrace_generation": 8
@@ -17,7 +17,7 @@ fn credential() -> Value {
 
 fn metadata(credential: &Value) -> Value {
     json!({
-        "key": "synthetic-profile", "account_id": "synthetic-account", "email": "synthetic@example.test",
+        "key": "synthetic-profile", "account_id": "synthetic-account", "email": "synthetic@example.com",
         "plan_type": "plus", "expires_at": credential["expires_at"], "last_refresh_at": crate::current_epoch_secs(),
         "generation": 8, "next_refresh_at": 1900000000, "next_retry_at": null, "error": null,
         "cpa_enabled": false, "cpa_synced_generation": null, "cpa_sync_error": null, "cockpit_synced_generation": null
@@ -111,6 +111,52 @@ fn import_url(link: &str) -> String {
 }
 
 #[test]
+fn quota_reset_client_posts_metadata_only_once_and_returns_no_credentials() {
+    let (_dir, config, provider) = broker_fixture(vec![(200, json!({"outcome":"reset"}))]);
+    let result = broker_consume_quota_reset(
+        &config,
+        "synthetic-profile",
+        "logical-request-1",
+        "synthetic-account",
+    )
+    .unwrap();
+    assert_eq!(result.outcome, "reset");
+    assert_eq!(
+        provider.join().unwrap(),
+        vec!["POST /v1/admin/accounts/synthetic-profile/quota-reset HTTP/1.1"]
+    );
+    assert_eq!(
+        serde_json::to_value(result).unwrap(),
+        json!({"outcome":"reset"})
+    );
+}
+
+#[test]
+fn quota_reset_client_reports_old_broker_and_uncertain_results_without_upstream_bodies() {
+    for (status, body, expected) in [
+        (404, json!({"error":"account_missing"}), "尚未支持重置卡"),
+        (
+            503,
+            json!({"error":"quota_reset_unavailable", "message":"private-provider-body"}),
+            "复用原请求",
+        ),
+    ] {
+        let (_dir, config, provider) = broker_fixture(vec![(status, body)]);
+        let error = broker_consume_quota_reset(
+            &config,
+            "synthetic-profile",
+            "logical-request-1",
+            "synthetic-account",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(expected));
+        assert!(!error.contains("private-provider-body"));
+        assert_eq!(provider.join().unwrap().len(), 1);
+    }
+}
+
+#[test]
 fn cockpit_import_reads_current_access_without_refreshing_broker_and_returns_metadata() {
     let credential = credential();
     let (_dir, config, broker) = broker_fixture(vec![
@@ -188,7 +234,7 @@ fn cockpit_rejects_mismatched_expired_or_refresh_capable_projection() {
     for (field, value) in [
         ("notrace_key", json!("another-profile")),
         ("notrace_generation", json!(7)),
-        ("email", json!("other@example.test")),
+        ("email", json!("other@example.com")),
         ("account_id", json!("other-account")),
         ("expires_at", json!(1)),
         ("access_token", json!("")),

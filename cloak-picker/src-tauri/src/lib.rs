@@ -1,5 +1,6 @@
 use cloak_core::{
     account_is_running as core_account_is_running, auth_status as core_auth_status,
+    broker_consume_quota_reset as core_broker_consume_quota_reset,
     broker_convert_json as core_broker_convert_json, broker_export_json as core_broker_export_json,
     broker_import_cockpit_access as core_broker_import_cockpit_access,
     broker_import_json as core_broker_import_json, broker_overview as core_broker_overview,
@@ -26,9 +27,10 @@ use cloak_core::{
     set_region as core_set_region, toggle_locale as core_toggle_locale, Account, AuthAuthority,
     AuthLoginProgress, AuthRefreshSummary, AuthStatus, BrokerCockpitImportSummary,
     BrokerJsonImportPreview, BrokerJsonImportSummary, BrokerJsonTransferSummary, BrokerMetadata,
-    BrokerOverview, CloakConfig, CodexQuotaSnapshot, ForceCloseResult, LaunchOptions, LaunchPlan,
-    LaunchResult, PrivacyConfirmation, SeatUsage, WorkspaceExportSummary, WorkspaceImportMapping,
-    WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
+    BrokerOverview, CloakConfig, CodexQuotaResetResult, CodexQuotaSnapshot, ForceCloseResult,
+    LaunchOptions, LaunchPlan, LaunchResult, PrivacyConfirmation, SeatUsage,
+    WorkspaceExportSummary, WorkspaceImportMapping, WorkspaceImportPreview, WorkspaceImportSummary,
+    WorkspacePickerState,
 };
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -813,6 +815,19 @@ async fn broker_quota_snapshot(profile_id: String) -> Result<CodexQuotaSnapshot,
 }
 
 #[tauri::command]
+async fn broker_consume_quota_reset(
+    profile_id: String,
+    request_id: String,
+    account_id: String,
+) -> Result<CodexQuotaResetResult, String> {
+    run_blocking(move || {
+        core_broker_consume_quota_reset(&config()?, &profile_id, &request_id, &account_id)
+            .map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
 async fn broker_set_cpa(profile_id: String, enabled: bool) -> Result<BrokerMetadata, String> {
     run_blocking(move || {
         core_broker_set_cpa(&config()?, &profile_id, enabled).map_err(|err| err.to_string())
@@ -1431,6 +1446,7 @@ pub fn run() {
             save_broker_connection,
             broker_push_account,
             broker_quota_snapshot,
+            broker_consume_quota_reset,
             broker_refresh_account,
             broker_import_cockpit_access,
             broker_set_cpa,

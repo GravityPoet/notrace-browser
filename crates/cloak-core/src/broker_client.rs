@@ -2,7 +2,8 @@
 //! cross the frontend IPC boundary; all returns are metadata only.
 use crate::{
     format_access_credentials, AccessCredential, AuthStatus, BrokerJsonFormat,
-    BrokerJsonImportPreview, BrokerMetadata, CloakConfig, CloakError, CodexQuotaSnapshot, Result,
+    BrokerJsonImportPreview, BrokerMetadata, CloakConfig, CloakError, CodexQuotaResetResult,
+    CodexQuotaSnapshot, Result,
 };
 use rand::RngCore;
 use reqwest::blocking::Client;
@@ -410,6 +411,20 @@ pub fn broker_quota_snapshot(config: &CloakConfig, profile_id: &str) -> Result<C
         None,
     )
 }
+pub fn broker_consume_quota_reset(
+    config: &CloakConfig,
+    profile_id: &str,
+    request_id: &str,
+    account_id: &str,
+) -> Result<CodexQuotaResetResult> {
+    let connection = load(config)?.ok_or_else(|| CloakError::Auth("请先连接 Broker".into()))?;
+    request(
+        &connection,
+        "POST",
+        &format!("/v1/admin/accounts/{}/quota-reset", segment(profile_id)?),
+        Some(json!({"redeem_request_id": request_id, "account_id": account_id})),
+    )
+}
 pub fn broker_set_cpa(
     config: &CloakConfig,
     profile_id: &str,
@@ -733,6 +748,12 @@ fn request<T: serde::de::DeserializeOwned>(
                 (409, Some("service_unavailable")) => "授权服务暂不可用，稍后重试",
                 (409, Some("consumer_conflict")) => "CPA 存在未托管凭据，未覆盖",
                 (503, Some("quota_unavailable")) => "上游额度暂时无法读取，请稍后重试",
+                (503, Some("quota_reset_unavailable")) => {
+                    "重置结果暂时无法确认，请重试此次重置；会复用原请求，不重复消耗卡"
+                }
+                (404, _) if path.ends_with("/quota-reset") => {
+                    "续期服务尚未支持重置卡，请更新 Broker"
+                }
                 (409, _) => "授权或同步状态需要检查，请查看账号详情",
                 (423, _) => "账号正在授权或刷新",
                 _ => "Broker 操作未完成",

@@ -13,6 +13,7 @@ export type BrokerMetadata = {
   next_refresh_at: number; next_retry_at: number | null; error: string | null;
   cpa_enabled: boolean; cpa_synced_generation: number | null; cpa_sync_error: string | null; cpa_sync_suspended?: boolean;
   cockpit_synced_generation: number | null;
+  quota_reset_pending?: boolean;
 };
 export type CodexQuotaWindow = {
   name: string; used_percent: number | null; remaining_percent: number | null;
@@ -22,6 +23,7 @@ export type CodexQuotaSnapshot = {
   account_id: string; email: string; fetched_at: number; generation: number;
   windows: CodexQuotaWindow[]; reset_count: number | null; reset_count_available: boolean;
 };
+type CodexQuotaResetResult = { outcome: "reset" | "already_redeemed" | "nothing_to_reset" | "no_credit" };
 export type BrokerRow = { name: string; profile_id: string; trashed: boolean; local: AuthStatus; remote: BrokerMetadata | null };
 export type BrokerOverview = { configured: boolean; endpoint: string | null; connected: boolean; message: string | null; accounts: BrokerRow[]; unmatched: BrokerMetadata[] };
 type BrokerJsonFormat = "cockpit_tools" | "auth_json" | "cpa" | "sub2api";
@@ -171,6 +173,9 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   const quotaRequestProfile = useRef<string | null>(null);
   const quotaAttempted = useRef(new Set<string>());
   const [quotaErrors, setQuotaErrors] = useState<Record<string, string>>({});
+  const [resetConfirmTarget, setResetConfirmTarget] = useState<{ profileId: string; accountId: string; generation: number } | null>(null);
+  const [resetPending, setResetPending] = useState<Record<string, boolean>>({});
+  const resetRequests = useRef(new Map<string, string>());
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [connectionError, setConnectionError] = useState("");
@@ -291,6 +296,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     setAccountSearch(focusedAccount);
     setAccountFilter("all");
   }, [focusedAccount]);
+  useEffect(() => { setResetConfirmTarget(null); }, [selectedProfileId, overview?.endpoint]);
   const readActiveAuth = useCallback(async () => {
     try {
       const next = await call<ActiveAuth | null>("active_account_auth", {});
@@ -385,6 +391,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
         throw new Error("额度与当前账号授权不一致，请重新读取授权状态后重试");
       }
       if (mounted.current) setQuotaByProfile(current => ({ ...current, [row.profile_id]: snapshot }));
+      return true;
     } catch (caught) {
       if (mounted.current && overviewRef.current?.endpoint === endpointAtStart) {
         setQuotaErrors(current => ({ ...current, [row.profile_id]: String(caught) }));
@@ -394,6 +401,44 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
       if (mounted.current) setQuotaLoadingProfile(current => current === row.profile_id ? null : current);
     }
   }, [call]);
+  async function consumeQuotaReset(row: BrokerRow) {
+    const remote = overviewRef.current?.accounts.find(account => account.profile_id === row.profile_id)?.remote;
+    if (!remote || !overviewRef.current?.connected || authorizationState({ ...row, remote }) !== "authorized") return;
+    const endpointAtStart = overviewRef.current.endpoint;
+    const requestKey = `notrace-quota-reset:${endpointAtStart}:${row.profile_id}:${remote.account_id}`;
+    let requestId = resetRequests.current.get(requestKey);
+    try { requestId ??= window.localStorage.getItem(requestKey) ?? undefined; } catch { /* The Broker also retains uncertain attempts. */ }
+    requestId ??= typeof window.crypto?.randomUUID === "function"
+      ? window.crypto.randomUUID()
+      : `notrace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    resetRequests.current.set(requestKey, requestId);
+    try { window.localStorage.setItem(requestKey, requestId); } catch { /* Keep the same ID in memory. */ }
+    setResetPending(current => ({ ...current, [row.profile_id]: true }));
+    setResetConfirmTarget(null);
+    let result: CodexQuotaResetResult;
+    try {
+      result = await call<CodexQuotaResetResult>("broker_consume_quota_reset", { profileId: row.profile_id, requestId, accountId: remote.account_id });
+      if (!["reset", "already_redeemed", "nothing_to_reset", "no_credit"].includes(result?.outcome)) throw new Error("重置结果无效，请重试此次重置");
+    } catch (caught) {
+      throw new Error(`${String(caught).replace(/^Error:\s*/, "")}；重试会继续确认同一次重置`);
+    }
+    if (overviewRef.current?.endpoint !== endpointAtStart) return;
+    const latest = overviewRef.current.accounts.find(account => account.profile_id === row.profile_id);
+    if (latest?.remote?.account_id !== remote.account_id || latest.remote.generation !== remote.generation) return;
+    await read();
+    const quotaUpdated = await readQuota(latest);
+    if (quotaUpdated) {
+      resetRequests.current.delete(requestKey);
+      try { window.localStorage.removeItem(requestKey); } catch { /* The in-memory attempt is complete. */ }
+      setResetPending(current => ({ ...current, [row.profile_id]: false }));
+    }
+    if (mounted.current) setMessage(`${row.name}：${{
+      reset: "已使用 1 张重置卡",
+      already_redeemed: "此次重置已完成，未重复消耗重置卡",
+      nothing_to_reset: "当前额度无需重置，未消耗重置卡",
+      no_credit: "没有可用重置卡",
+    }[result.outcome]}`);
+  }
   async function cancelAuthorization(name: string) {
     setLogin(current => current && { ...current, cancelling: true });
     try {
@@ -653,10 +698,16 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
             {(() => {
               const resetCount = quota.reset_count_available && typeof quota.reset_count === "number" && Number.isSafeInteger(quota.reset_count) && quota.reset_count >= 0 ? quota.reset_count : null;
               const resetCreditsTone = resetCount === null ? "unavailable" : resetCount === 0 ? "empty" : "available";
-              return <div className={`brokerQuotaResetCredits brokerQuotaResetCredits-${resetCreditsTone}`} role="status" aria-label="主动重置剩余次数">
+              return <div className="brokerQuotaResetActions"><div className={`brokerQuotaResetCredits brokerQuotaResetCredits-${resetCreditsTone}`} role="status" aria-label="主动重置剩余次数">
                 <RotateCcw size={13} aria-hidden="true" />
                 <span>主动重置剩余</span>
                 <b>{resetCount === null ? "上游未提供" : `${resetCount} 次`}</b>
+              </div><button type="button" className="secondaryButton" disabled={disabled || !brokerConnected || quotaLoadingProfile !== null || (resetCount === null || resetCount < 1) && !resetPending[row.profile_id] && !remote.quota_reset_pending} onClick={() => setResetConfirmTarget({ profileId: row.profile_id, accountId: remote.account_id, generation: remote.generation })}><RotateCcw size={14} />{busy === row.profile_id && resetPending[row.profile_id] ? "正在重置…" : resetPending[row.profile_id] || remote.quota_reset_pending ? "重试此次重置" : "使用重置卡"}</button>
+                {resetConfirmTarget?.profileId === row.profile_id && resetConfirmTarget.accountId === remote.account_id && resetConfirmTarget.generation === remote.generation && <div className="brokerQuotaResetConfirm" role="group" aria-label="确认使用重置卡">
+                  <p>{row.name}：{resetPending[row.profile_id] || remote.quota_reset_pending ? "继续确认上一次重置结果，复用同一请求，不额外消耗重置卡。" : "使用 1 张重置卡恢复官方支持的额度窗口。确认使用？"}</p>
+                  <button type="button" className="secondaryButton" disabled={disabled} onClick={() => setResetConfirmTarget(null)}>取消</button>
+                  <button type="button" className="primaryButton" disabled={disabled || !brokerConnected || quotaLoadingProfile !== null} onClick={() => void run(row.profile_id, () => consumeQuotaReset(row))}>确认使用</button>
+                </div>}
               </div>;
             })()}
           </section>}

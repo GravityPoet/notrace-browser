@@ -975,6 +975,116 @@ describe("统一授权续期窗口", () => {
     expect(document.querySelector('[role="alert"]')?.textContent).toContain("无法读取统一授权状态");
   });
 
+  it.each([0, null, 2])("gates reset-card use by official availability (%s)", async (count) => {
+    const remote: BrokerMetadata = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const calls: string[] = [];
+    const call: AuthCall = async function call<T>(command: string): Promise<T> {
+      calls.push(command);
+      if (command === "broker_overview") return overview(remote) as T;
+      if (command === "broker_quota_snapshot") return { account_id: remote.account_id, email: remote.email, fetched_at: 1_899_000_000, generation: 9, windows: [], reset_count: count, reset_count_available: count !== null } as T;
+      return null as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    const button = [...document.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === "使用重置卡")!;
+    expect(button.disabled).toBe(count === null || count === 0);
+    expect(calls).not.toContain("broker_consume_quota_reset");
+  });
+
+  it.each([
+    ["reset", "已使用 1 张重置卡"],
+    ["already_redeemed", "此次重置已完成，未重复消耗重置卡"],
+    ["nothing_to_reset", "当前额度无需重置，未消耗重置卡"],
+    ["no_credit", "没有可用重置卡"],
+  ])("confirms a single reset and rereads official usage after %s", async (outcome, message) => {
+    const remote: BrokerMetadata = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
+    let reads = 0;
+    let resolveReset: ((value: { outcome: string }) => void) | undefined;
+    const call: AuthCall = async function call<T>(command: string, args: Record<string, unknown>): Promise<T> {
+      calls.push({ command, args });
+      if (command === "broker_overview") return overview(remote) as T;
+      if (command === "broker_quota_snapshot") {
+        reads++;
+        return { account_id: remote.account_id, email: remote.email, fetched_at: 1_899_000_000, generation: 9, windows: [], reset_count: reads === 1 ? 2 : 1, reset_count_available: true } as T;
+      }
+      if (command === "broker_consume_quota_reset") return await new Promise<{ outcome: string }>(resolve => { resolveReset = resolve; }) as T;
+      return null as T;
+    };
+    const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === name)!;
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    await act(async () => button("使用重置卡").click());
+    expect(document.querySelector('[aria-label="确认使用重置卡"]')?.textContent).toContain("demo@example.com");
+    expect(calls.filter(c => c.command === "broker_consume_quota_reset")).toHaveLength(0);
+    await act(async () => button("取消").click());
+    expect(document.querySelector('[aria-label="确认使用重置卡"]')).toBeNull();
+    await act(async () => button("使用重置卡").click());
+    const confirm = button("确认使用");
+    await act(async () => { confirm.click(); confirm.click(); });
+    expect(calls.filter(c => c.command === "broker_consume_quota_reset")).toHaveLength(1);
+    expect(button("正在重置…").disabled).toBe(true);
+    await act(async () => resolveReset?.({ outcome })); await settle();
+    expect(reads).toBe(2);
+    expect(document.body.textContent).toContain(message);
+    expect(document.querySelector(".brokerQuotaResetCredits")?.textContent).toContain("1 次");
+    const resetArgs = calls.find(c => c.command === "broker_consume_quota_reset")!.args;
+    expect(resetArgs).toMatchObject({ profileId: "profile-1", accountId: "acct-1" });
+    expect(resetArgs.requestId).toEqual(expect.any(String));
+    expect(calls.some(c => ["broker_refresh_account", "broker_set_cpa", "login_account_auth"].includes(c.command))).toBe(false);
+  });
+
+  it("retries an uncertain reset with the same request ID", async () => {
+    const remote: BrokerMetadata = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const ids: string[] = [];
+    const call: AuthCall = async function call<T>(command: string, args: Record<string, unknown>): Promise<T> {
+      if (command === "broker_overview") return overview(remote) as T;
+      if (command === "broker_quota_snapshot") return { account_id: remote.account_id, email: remote.email, fetched_at: 1_899_000_000, generation: 9, windows: [], reset_count: 2, reset_count_available: true } as T;
+      if (command === "broker_consume_quota_reset") {
+        ids.push(String(args.requestId));
+        if (ids.length === 1) throw Error("连接中断");
+        return { outcome: "already_redeemed" } as T;
+      }
+      return null as T;
+    };
+    const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === name)!;
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    await act(async () => button("使用重置卡").click());
+    await act(async () => button("确认使用").click()); await settle();
+    expect(document.body.textContent).toContain("重试会继续确认同一次重置");
+    await act(async () => button("重试此次重置").click());
+    await act(async () => button("确认使用").click()); await settle();
+    expect(ids).toHaveLength(2); expect(ids[0]).toBe(ids[1]);
+    expect(document.body.textContent).toContain("未重复消耗重置卡");
+  });
+
+  it("keeps a completed request retryable when the follow-up usage read fails", async () => {
+    const remote: BrokerMetadata = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 9, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: null, cpa_sync_error: null, cockpit_synced_generation: null };
+    const ids: string[] = []; let reads = 0;
+    const call: AuthCall = async function call<T>(command: string, args: Record<string, unknown>): Promise<T> {
+      if (command === "broker_overview") return overview(remote) as T;
+      if (command === "broker_quota_snapshot") {
+        if (++reads === 2) throw Error("额度读取暂不可用");
+        return { account_id: remote.account_id, email: remote.email, fetched_at: 1_899_000_000, generation: 9, windows: [], reset_count: reads > 2 ? 1 : 2, reset_count_available: true } as T;
+      }
+      if (command === "broker_consume_quota_reset") { ids.push(String(args.requestId)); return { outcome: ids.length === 1 ? "reset" : "already_redeemed" } as T; }
+      return null as T;
+    };
+    const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim() === name)!;
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" }))); await settle();
+    await act(async () => button("使用重置卡").click()); await act(async () => button("确认使用").click()); await settle();
+    expect(document.body.textContent).toContain("已使用 1 张重置卡");
+    expect(document.body.textContent).toContain("额度读取暂不可用");
+    await act(async () => button("重试此次重置").click()); await act(async () => button("确认使用").click()); await settle();
+    expect(ids).toHaveLength(2); expect(ids[0]).toBe(ids[1]);
+    expect(document.body.textContent).toContain("未重复消耗重置卡");
+  });
+
   it("closes JSON dialogs with Escape and returns focus to the invoking control", async () => {
     const remote = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: false, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
     const call: AuthCall = async function call<T>(command: string): Promise<T> {

@@ -262,6 +262,20 @@ const NATIVE_E2E_DRIVER: &str = r#"
       } finally { probe.remove(); }
     }
     checks.push('native-quota-semantic-colors');
+    const resetButton = () => Array.from(findCurrentSyncRow()?.querySelectorAll('button') ?? []).find(button => button.textContent.trim() === '使用重置卡');
+    if (!resetButton() || resetButton().disabled) throw new Error('有重置卡时缺少可用的手动入口');
+    resetButton().click();
+    let resetConfirm = await waitFor(() => document.querySelector('[aria-label="确认使用重置卡"]'), '重置卡账号确认');
+    if (!resetConfirm.textContent.includes('native-e2e-sync-account')) throw new Error('重置卡确认账号不匹配');
+    Array.from(resetConfirm.querySelectorAll('button')).find(button => button.textContent.trim() === '取消').click();
+    await waitFor(() => !document.querySelector('[aria-label="确认使用重置卡"]'), '取消重置卡');
+    if (!findCurrentSyncRow()?.querySelector('.brokerQuotaResetCredits')?.textContent.includes('1 次')) throw new Error('取消确认消耗了重置卡');
+    resetButton().click();
+    resetConfirm = await waitFor(() => document.querySelector('[aria-label="确认使用重置卡"]'), '再次确认重置卡');
+    Array.from(resetConfirm.querySelectorAll('button')).find(button => button.textContent.trim() === '确认使用').click();
+    await waitFor(() => findCurrentSyncRow()?.querySelector('.brokerQuotaResetCredits')?.textContent.includes('0 次') && resetButton()?.disabled, '兑换后读取真实快照');
+    if (!pane.textContent.includes('已使用 1 张重置卡')) throw new Error('重置卡成功结果未显示');
+    checks.push('native-quota-reset-confirm-and-refresh');
     const syncButton = (label) => {
       const row = findCurrentSyncRow();
       return row ? Array.from(row.querySelectorAll('button')).find(e => e.textContent.trim() === label) : null;

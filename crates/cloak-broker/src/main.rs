@@ -201,6 +201,19 @@ fn route(
             return serde_json::to_value(store.quota_snapshot(&key)?)
                 .map_err(|_| BrokerError::Storage);
         }
+        if method == "POST" && action == "quota-reset" {
+            let value: Value = serde_json::from_slice(body).map_err(|_| BrokerError::Config)?;
+            let request_id = value
+                .get("redeem_request_id")
+                .and_then(Value::as_str)
+                .ok_or(BrokerError::Config)?;
+            let account_id = value
+                .get("account_id")
+                .and_then(Value::as_str)
+                .ok_or(BrokerError::Config)?;
+            return serde_json::to_value(store.consume_quota_reset(&key, request_id, account_id)?)
+                .map_err(|_| BrokerError::Storage);
+        }
         let metadata = match (method, action) {
             ("POST", "grant") => store.import_grant(
                 &key,

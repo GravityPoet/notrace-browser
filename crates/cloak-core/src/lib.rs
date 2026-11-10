@@ -8,13 +8,14 @@ mod broker_client;
 mod broker_transfer;
 pub use broker::{
     push_local_grant, AccessCredential, BrokerConfig, BrokerError, BrokerMetadata, BrokerStore,
-    CodexQuotaSnapshot, CodexQuotaWindow,
+    CodexQuotaResetResult, CodexQuotaSnapshot, CodexQuotaWindow,
 };
 pub use broker_client::{
-    broker_convert_json, broker_export_json, broker_import_cockpit_access, broker_import_json,
-    broker_overview, broker_preview_json, broker_push_account, broker_quota_snapshot,
-    broker_refresh_account, broker_set_cpa, save_broker_connection, BrokerCockpitImportSummary,
-    BrokerJsonImportSummary, BrokerJsonTransferSummary, BrokerOverview,
+    broker_consume_quota_reset, broker_convert_json, broker_export_json,
+    broker_import_cockpit_access, broker_import_json, broker_overview, broker_preview_json,
+    broker_push_account, broker_quota_snapshot, broker_refresh_account, broker_set_cpa,
+    save_broker_connection, BrokerCockpitImportSummary, BrokerJsonImportSummary,
+    BrokerJsonTransferSummary, BrokerOverview,
 };
 pub use broker_transfer::{
     convert_file as convert_broker_json_file, format_access_credentials,

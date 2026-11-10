@@ -3825,6 +3825,9 @@ button:disabled {
 .brokerQuotaWindowReset-unavailable { border-color: var(--border); background: var(--surface); color: var(--muted); }
 .brokerAuthorizationReason { margin: 0; color: var(--muted); font-size: 12px; }
 .brokerQuotaUnavailable { margin: 0; color: var(--muted); font-size: 11px; }
+.brokerQuotaResetActions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.brokerQuotaResetConfirm { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; width: 100%; padding-top: 4px; }
+.brokerQuotaResetConfirm p { flex-basis: 100%; margin: 0; color: var(--text); font-size: 12px; overflow-wrap: anywhere; }
 .brokerQuotaResetCredits { display: inline-flex; align-items: center; gap: 6px; width: fit-content; max-width: 100%; border: 1px solid transparent; border-radius: 7px; padding: 6px 9px; font-size: 12px; font-weight: 650; }
 .brokerQuotaResetCredits b { font-size: 13px; font-weight: 750; }
 .brokerQuotaResetCredits-available { border-color: rgba(23, 100, 59, 0.2); background: #edf8f0; color: #17643b; }
