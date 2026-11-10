@@ -425,7 +425,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     if (overviewRef.current?.endpoint !== endpointAtStart) return;
     const latest = overviewRef.current.accounts.find(account => account.profile_id === row.profile_id);
     if (latest?.remote?.account_id !== remote.account_id || latest.remote.generation !== remote.generation) return;
-    await read();
+    try { await read(); } catch { /* A completed redemption stays complete when metadata cannot be read. */ }
     const quotaUpdated = await readQuota(latest);
     if (quotaUpdated) {
       resetRequests.current.delete(requestKey);

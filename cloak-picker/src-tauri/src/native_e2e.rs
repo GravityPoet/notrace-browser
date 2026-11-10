@@ -319,7 +319,7 @@ const NATIVE_E2E_DRIVER: &str = r#"
       throw new Error('Cockpit 导入按钮被裁切或遮挡');
     }
     if (cockpitButton.textContent.trim() !== '导入 Cockpit') throw new Error('Cockpit 导入入口文案不符合默认导入语义');
-    if (Array.from(findCurrentSyncRow().querySelectorAll('button')).map(button => button.textContent.trim()).join('|') !== '立即刷新|读取额度|暂停 CPA 同步|导入 Cockpit|导出 JSON') {
+    if (Array.from(findCurrentSyncRow().querySelectorAll('.brokerRowActions button')).map(button => button.textContent.trim()).join('|') !== '立即刷新|读取额度|暂停 CPA 同步|导入 Cockpit|导出 JSON') {
       throw new Error('授权操作顺序不符合约定');
     }
     cockpitButton.click();
