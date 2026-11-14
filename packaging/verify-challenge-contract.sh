@@ -59,6 +59,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# CloakBrowser 0.7+ requires a per-launch denial-status path for keyed Pro
+# binaries. Without it the binary can keep the CDP page target alive while a
+# license decision is pending, which looks like a hung self-test. Older builds
+# ignore this variable.
+export CLOAKBROWSER_LICENSE_STATUS_FILE="$tmpdir/license-status.json"
+
 export CLOAK_ACCOUNT_BASE="$tmpdir/accounts"
 mkdir -p "$CLOAK_ACCOUNT_BASE"
 

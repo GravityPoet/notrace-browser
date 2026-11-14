@@ -1,18 +1,18 @@
 {
   "schema_version": 1,
-  "reviewed_at": "2026-10-13",
+  "reviewed_at": "2026-11-14",
   "platform": "macos",
   "wrapper": {
     "package": "cloakbrowser",
-    "approved_versions": ["0.6.4"],
+    "approved_versions": ["0.7.2"],
     "node": "^20.19.0 || >=22.12.0",
     "license": "MIT",
-    "integrity": "sha512-0dYorA9UdbDvfYgRuNfvri/46GFcS9Aipqzniv55ijolweFC6gaoZe/g/wROYZSJuv8oovX54hMr++K6W3aYjw==",
-    "upstream_git_head": "e382643bda7fd344be0d5320776bf798fe9e45f1",
+    "integrity": "sha512-arAD+uZzfj8+xwraLEPUzz9DfsMA7vV7HD+WtgtVoDfQXnmSlKqDWp2dUCnBKrK5nNS32DWfQX1TEuWaKIKdfw==",
+    "upstream_git_head": "1a145dbb90a26d6dd223c7642cb49fb9c850f22c",
     "dependencies": {
       "tar": "^7.0.0"
     },
-    "macos_stable_engine": "155.0.8059.39.1",
+    "macos_stable_engine": "156.0.8078.47.1",
     "upstream_release_api": "https://api.github.com/repos/CloakHQ/CloakBrowser/releases/latest",
     "upstream_changelog": "https://raw.githubusercontent.com/CloakHQ/CloakBrowser/main/CHANGELOG.md"
   },
@@ -68,6 +68,13 @@
       "identity_mode": "native-engine",
       "runtime_modes": ["source-cache", "local-tcc-runtime"],
       "notes": "Official macOS ARM64 Stable published on 2026-10-20 UTC. Staged source passed signature/hash checks; modern launches now pin platformVersion=15.5.0. The upstream noise-enabled Canvas export mismatch is accepted only with the exact 155 self-baseline under update-gates; promotion still requires a fresh privacy route and headed live gate. Retain official 154 and 151 for rollback."
+    },
+    {
+      "version": "156.0.8078.47.1",
+      "status": "approved",
+      "identity_mode": "native-engine",
+      "runtime_modes": ["source-cache", "local-tcc-runtime"],
+      "notes": "Official macOS ARM64 Stable published on 2026-11-03 UTC. The exact 156 self-baseline records the stable macOS Canvas export/readback difference. Staging and promotion require fresh wrapper 0.7.2 license-aware download, signed manifest/hash verification, local contract, headed live challenge and native Picker E2E gates. Retain official 155 and 154 for rollback."
     }
   ]
 }

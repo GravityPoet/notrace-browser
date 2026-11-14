@@ -45,7 +45,19 @@ test("the accepted Canvas baseline is exact-version, exact-output and cannot wai
   const selfBaseline155 = { ...structuredClone(candidate155) };
   const selfCandidate155 = { ...structuredClone(candidate155) };
   assert.equal(acceptCanvasBaseline(selfCandidate155, selfBaseline155), true);
-  assert.equal(selfCandidate155.known_issues[0].id, "cloak-155-canvas-noise-encoder-parity");
+  assert.equal(selfCandidate155.known_issues[0].id, "cloak-155.0.8059.39.1-canvas-self-baseline");
+  const baseline156 = { ...structuredClone(candidate155),
+    browser_binary: "/cache/chromium-155.0.8059.39.1-pro-notrace/Chromium.app/Contents/MacOS/Chromium" };
+  const candidate156 = { ...structuredClone(baseline156),
+    browser_binary: "/cache/chromium-156.0.8078.47.1-pro-notrace/Chromium.app/Contents/MacOS/Chromium" };
+  assert.equal(acceptCanvasBaseline(candidate156, baseline156), true);
+  const selfBaseline156 = structuredClone(candidate156);
+  for (const sample of [selfBaseline156.pair.a, selfBaseline156.pair.b]) {
+    sample.probe.canvas_realms.pixels_after_encode = "encoded-readback-diff";
+  }
+  const selfCandidate156 = structuredClone(selfBaseline156);
+  assert.equal(acceptCanvasBaseline(selfCandidate156, selfBaseline156), true);
+  assert.equal(selfCandidate156.known_issues[0].id, "cloak-156.0.8078.47.1-canvas-self-baseline");
   const unrelated = candidate();
   unrelated.checks[2].pass = false;
   assert.equal(acceptCanvasBaseline(unrelated, baseline), true);

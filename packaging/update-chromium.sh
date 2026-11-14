@@ -38,7 +38,7 @@ WRAPPER_DIR="$ROOT/packaging/cloakbrowser-wrapper"
 WRAPPER_BIN="${CLOAK_WRAPPER_BIN:-$WRAPPER_DIR/node_modules/.bin/cloakbrowser}"
 WRAPPER_LOCK="$WRAPPER_DIR/package-lock.json"
 WRAPPER_MARKER="$WRAPPER_DIR/node_modules/.notrace-package-lock.sha256"
-WRAPPER_VERSION="0.6.4"
+WRAPPER_VERSION="0.7.2"
 COMPATIBILITY_AUDIT="$ROOT/packaging/audit-cloakbrowser-compatibility.mjs"
 CHANNEL="${CLOAK_BROWSER_CHANNEL:-stable}"
 LSREG="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
@@ -506,12 +506,17 @@ gate_dir="$CB_REAL/update-gates/$runtime_name"
 ensure_cache_directory "$gate_dir"
 local_pass_file="$gate_dir/local-contract.sha256"
 live_pass_file="$gate_dir/live-challenge.sha256"
+canvas_baseline_report="${CLOAK_CANVAS_BASELINE_REPORT:-}"
+if [[ -z "$canvas_baseline_report" && -f "$gate_dir/baseline-${candidate_version}-contract-headless.json" ]]; then
+  canvas_baseline_report="$gate_dir/baseline-${candidate_version}-contract-headless.json"
+fi
 if [[ "$(marker_hash "$local_pass_file")" == "$runtime_sha" ]]; then
   log "local contract gate already passed for $runtime_name"
 else
   log "running local contract gate for $runtime_name"
   CLOAK_BROWSER_BIN="$gate_runtime_bin" \
   CLOAK_BROWSER_EXPECTED_SHA256="$runtime_sha" \
+  CLOAK_CANVAS_BASELINE_REPORT="$canvas_baseline_report" \
     "$ROOT/packaging/verify-challenge-contract.sh" >>"$LOG" 2>&1 \
     || die "local runtime failed contract; current unchanged (source cache kept at $candidate_dir)"
   write_hash_file "$local_pass_file" "$runtime_sha" "$gate_runtime_bin"
@@ -526,6 +531,7 @@ elif [[ "${CLOAK_UPDATE_LIVE_GATE:-}" == "1" ]]; then
   log "running live challenge gate for $runtime_name -> $live_report_dir"
   CLOAK_BROWSER_BIN="$gate_runtime_bin" \
   CLOAK_BROWSER_EXPECTED_SHA256="$runtime_sha" \
+  CLOAKBROWSER_LICENSE_STATUS_FILE="$live_report_dir/license-status.json" \
     node "$ROOT/selftest/run-live-challenge-audit.mjs" \
       --headed \
       --site version-consistency \

@@ -32,6 +32,15 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(__dir);
 const CLOAK = join(ROOT, "target", "debug", "cloak");
 const EXT_SOURCE = join(ROOT, "extension", "cloak-companion");
+const CLOAK_PLAYWRIGHT = join(
+  ROOT,
+  "packaging",
+  "cloakbrowser-wrapper",
+  "node_modules",
+  "cloakbrowser",
+  "dist",
+  "playwright.js",
+);
 const DEFAULT_BIN = `${process.env.HOME}/.cloakbrowser/current/Chromium.app/Contents/MacOS/Chromium`;
 const RUNTIME_SHA_FILE = `${process.env.HOME}/.cloakbrowser/current.sha256`;
 const SHA_FILE = process.env.CLOAK_BROWSER_SHA_FILE
@@ -906,6 +915,133 @@ function launchArgsFromPlan(plan, opts) {
   return args;
 }
 
+async function runPlaywrightAudit(opts, plan, env, resultDir, report, localAuditServer) {
+  const { launchPersistentContext } = await import(CLOAK_PLAYWRIGHT);
+  const args = launchArgsFromPlan(plan, opts).filter((arg) =>
+    !arg.startsWith("--user-data-dir=")
+    && arg !== "--remote-debugging-port=0"
+    && arg !== "--remote-allow-origins=*"
+    && arg !== "about:blank"
+  );
+  const context = await launchPersistentContext({
+    userDataDir: plan.profile_path,
+    headless: opts.headless,
+    stealthArgs: false,
+    geoip: false,
+    humanize: false,
+    args,
+    launchOptions: {
+      executablePath: plan.browser_binary,
+      env: { ...env, TZ: plan.geo?.timezone || process.env.TZ || "" },
+    },
+    viewport: null,
+  });
+  try {
+    const page = context.pages()[0] || await context.newPage();
+    const challengeSignals = [];
+    page.on("response", async (response) => {
+      try {
+        const headers = await response.allHeaders();
+        const entry = Object.entries(headers)
+          .find(([name]) => name.toLowerCase() === "cf-mitigated");
+        if (entry && String(entry[1]).trim().toLowerCase() === "challenge") {
+          challengeSignals.push({
+            provider: "cloudflare",
+            signal: "cf-mitigated: challenge",
+            url: response.url(),
+            status: response.status(),
+          });
+        }
+      } catch (_) {}
+    });
+
+    let browserClosed = false;
+    for (const siteName of opts.sites) {
+      const site = SITE_DEFS[siteName];
+      const siteUrl = siteName === "version-consistency"
+        ? localAuditServer.versionUrl
+        : siteName === "cloudflare-turnstile-test"
+          ? localAuditServer.turnstileUrl
+          : site.url;
+      const item = { name: siteName, url: siteUrl, passed: false };
+      const signalStart = challengeSignals.length;
+      try {
+        await page.goto(siteUrl, { waitUntil: "domcontentloaded", timeout: opts.timeoutMs });
+        await sleep(Math.min(site.waitMs, opts.timeoutMs));
+        if (site.beforeEvaluate) {
+          item.action = await page.evaluate(site.beforeEvaluate);
+          await sleep(site.afterActionWaitMs || 3000);
+        }
+        await sleep(50);
+        item.details = mergeChallengeResponses(
+          await page.evaluate(siteEvaluateExpression(site, plan)),
+          challengeSignals.slice(signalStart),
+        );
+        if (siteName === "cloudflare-turnstile-test") {
+          const widgetResponse = item.details?._turnstileToken || "";
+          if (item.details && typeof item.details === "object") {
+            delete item.details._turnstileToken;
+            item.details.serverValidation = widgetResponse
+              ? await validateTurnstileTestResponse(widgetResponse)
+              : { success: false, error: "dummy token missing" };
+            item.details.passed = Boolean(item.details.passed)
+              && item.details.serverValidation.success === true;
+          }
+        }
+        if (site.expectedChallengeKind && item.details?.challenge?.kind !== site.expectedChallengeKind) {
+          item.details.passed = false;
+          item.details.expectedChallengeKind = site.expectedChallengeKind;
+        }
+        item.passed = Boolean(item.details?.passed) && item.details?.challenge_blocked !== true;
+        if (opts.screenshots) {
+          item.screenshot = join(resultDir, `${siteName}.png`);
+          try { await page.screenshot({ path: item.screenshot, fullPage: true }); }
+          catch (error) { item.screenshot_error = String(error?.message || error); }
+        }
+      } catch (error) {
+        const message = String(error?.message || error);
+        if (/target closed|browser has been closed|browser closed/i.test(message)) {
+          browserClosed = true;
+          report.cancelled = true;
+          item.cancelled = true;
+          item.error = "审计浏览器已关闭";
+        } else {
+          item.error = message;
+        }
+      }
+      report.results.push(item);
+      console.log(`${item.passed ? "PASS" : "CHECK"} ${siteName}: ${JSON.stringify(item.details || item.error || {})}`);
+      if (browserClosed) break;
+    }
+
+    let manualIndex = 0;
+    for (const url of opts.manualUrls) {
+      if (browserClosed) break;
+      manualIndex += 1;
+      const name = `manual-${manualIndex}`;
+      const item = { name, url, passed: null, manual: true };
+      const signalStart = challengeSignals.length;
+      try {
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: opts.timeoutMs });
+        await sleep(12000);
+        item.sample = await page.evaluate("document.body.innerText.slice(0, 1200)");
+        item.challenge = mergeChallengeResponses({}, challengeSignals.slice(signalStart)).challenge || null;
+        if (opts.screenshots) {
+          item.screenshot = join(resultDir, `${name}.png`);
+          try { await page.screenshot({ path: item.screenshot, fullPage: true }); }
+          catch (error) { item.screenshot_error = String(error?.message || error); }
+        }
+      } catch (error) {
+        item.error = String(error?.message || error);
+      }
+      report.results.push(item);
+      console.log(`MANUAL ${url}: ${item.screenshot || item.error || "loaded"}`);
+    }
+  } finally {
+    try { await context.close(); } catch (_) {}
+  }
+}
+
 async function run() {
   const opts = parseArgs(process.argv);
   const browser = verifyBrowserHash();
@@ -936,12 +1072,13 @@ async function run() {
   prepareCompanion(plan);
 
   const args = launchArgsFromPlan(plan, opts);
+  const usePlaywright = Number.parseInt(String(plan.engine_major || ""), 10) >= 156;
   const childEnv = { ...env, TZ: plan.geo?.timezone || process.env.TZ || "" };
   if (args.includes("--uxr-synthetic-device-tests=true")) {
     delete childEnv.CLOAKBROWSER_LICENSE_KEY;
     delete childEnv.CLOAKBROWSER_LICENSE_STATUS_FILE;
   }
-  const child = spawn(plan.browser_binary, args, {
+  const child = usePlaywright ? null : spawn(plan.browser_binary, args, {
     env: childEnv,
     stdio: "ignore",
   });
@@ -968,6 +1105,9 @@ async function run() {
     if (opts.sites.some((site) => ["version-consistency", "cloudflare-turnstile-test"].includes(site))) {
       localAuditServer = await startLocalAuditServer();
     }
+    if (usePlaywright) {
+      await runPlaywrightAudit(opts, plan, env, resultDir, report, localAuditServer);
+    } else {
     const reconnect = async () => {
       if (client) {
         try { await client.close(); } catch {}
@@ -1082,8 +1222,9 @@ async function run() {
       report.results.push(item);
       console.log(`MANUAL ${url}: ${item.screenshot || item.error || "loaded"}`);
     }
+    }
   } finally {
-    if (!opts.keep) await closeAuditBrowser(browserClient, client, child);
+    if (!usePlaywright && !opts.keep) await closeAuditBrowser(browserClient, client, child);
     if (client) await client.close();
     if (browserClient) await browserClient.close();
     if (localAuditServer) await localAuditServer.close();
@@ -1091,7 +1232,7 @@ async function run() {
       report.fixture_recovery = fixture.recycle();
     } else {
       report.temp_root = tempRoot;
-      report.browser_pid = child.pid;
+      report.browser_pid = child?.pid || null;
     }
   }
 

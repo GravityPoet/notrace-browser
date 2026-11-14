@@ -39,6 +39,15 @@ const REQUESTED_BIN = process.env.CLOAK_BROWSER_BIN || `${HOME}/.cloakbrowser/cu
 const BIN = existsSync(REQUESTED_BIN) ? realpathSync(REQUESTED_BIN) : REQUESTED_BIN;
 const PROBE_PATH = join(__dir, "probe.html");
 const EXT_SOURCE = join(dirname(__dir), "extension", "cloak-companion");
+const CLOAK_PLAYWRIGHT = join(
+  dirname(__dir),
+  "packaging",
+  "cloakbrowser-wrapper",
+  "node_modules",
+  "cloakbrowser",
+  "dist",
+  "playwright.js",
+);
 let BROWSER_IDENTITY = null;
 let BROWSER_VERSION = null;
 
@@ -127,14 +136,17 @@ async function startProbeServer() {
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "localhost", resolve);
+    // Chromium 156 keeps navigation limits active under automation. Use the
+    // explicit loopback address so Target.createTarget reaches the local probe
+    // without relying on localhost host-resolution policy.
+    server.listen(0, "127.0.0.1", resolve);
   });
   const info = server.address();
   if (!info || typeof info === "string") {
     throw new Error("probe server did not expose a port");
   }
   return {
-    url: `http://localhost:${info.port}/probe.html`,
+    url: `http://127.0.0.1:${info.port}/probe.html`,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }
@@ -383,6 +395,78 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
   if (opts.expectIp && !BROWSER_VERSION.independent && !keyless145) args.push(`--fingerprint-webrtc-ip=${opts.expectIp}`);
   args.push("about:blank");
 
+  // CloakBrowser 156 keeps its navigation limits active on raw CDP sessions.
+  // The supported Playwright wrapper owns the launch handshake and navigation
+  // path, while the checks below still run through the same CDP Runtime API.
+  if (Number(BROWSER_VERSION.major) >= 156) {
+    let context;
+    let client;
+    try {
+      const { launchPersistentContext } = await import(CLOAK_PLAYWRIGHT);
+      const launchArgs = args.filter((arg) =>
+        !arg.startsWith("--user-data-dir=")
+        && arg !== "--remote-debugging-port=0"
+        && arg !== "about:blank"
+      );
+      context = await launchPersistentContext({
+        userDataDir: dir,
+        headless: opts.headless,
+        stealthArgs: false,
+        geoip: false,
+        humanize: false,
+        args: launchArgs,
+        launchOptions: { executablePath: BIN },
+        viewport: null,
+      });
+      const page = context.pages()[0] || await context.newPage();
+      const pageErrors = [];
+      page.on("pageerror", (error) => pageErrors.push(String(error?.message || error)));
+      await page.goto(serverUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+      client = await context.newCDPSession(page);
+      await client.send("Runtime.enable");
+      const send = async (method, params = {}) => ({ result: await client.send(method, params) });
+      let ready = false;
+      for (let i = 0; i < 60; i += 1) {
+        const type = await evaluate(send, "typeof window.__runProbe", false, 5000);
+        if (type === "function") {
+          ready = true;
+          break;
+        }
+        await sleep(100);
+      }
+      if (!ready) {
+        const pageUrl = page.url();
+        const pageTitle = await page.title().catch(() => "");
+        throw new Error(`probe script did not load (url=${pageUrl} title=${pageTitle} errors=${JSON.stringify(pageErrors)})`);
+      }
+      if (companionPageSpoofEnabled()) {
+        let installed = false;
+        for (let i = 0; i < 60; i += 1) {
+          installed = await evaluate(send, COMPANION_INSTALLED_EXPRESSION, false, 5000) === true;
+          if (installed) break;
+          await sleep(100);
+        }
+        if (!installed) throw new Error("companion page spoof never installed");
+      }
+      await evaluate(send, "window.__runProbe()", false, 5000);
+      let probe = null;
+      for (let i = 0; i < 25; i += 1) {
+        probe = await evaluate(send, "window.__PROBE || null", false, 5000);
+        if (probe && (probe.probe_done || probe.probe_error)) break;
+        await sleep(1000);
+      }
+      if (!probe) throw new Error("probe returned nothing");
+      const storageBefore = await evaluate(send, storageReadExpression);
+      if (writeStorage) await evaluate(send, storageWriteExpression);
+      return { seed, probe, storageBefore, dir };
+    } finally {
+      if (!opts.keep) {
+        try { await context?.close(); } catch (_) {}
+        console.error(`fixture-recovery: ${JSON.stringify(fixture.recycle())}`);
+      }
+    }
+  }
+
   const childEnv = { ...process.env, TZ: opts.tz };
   if (BROWSER_VERSION.independent || keyless145) {
     delete childEnv.CLOAKBROWSER_LICENSE_KEY;
@@ -407,6 +491,10 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
     }
     if (!port) throw new Error("DevToolsActivePort never appeared");
 
+    try {
+      const versionInfo = await (await fetch(`http://localhost:${port}/json/version`)).json();
+      if (versionInfo.webSocketDebuggerUrl) browserClient = await cdp(versionInfo.webSocketDebuggerUrl);
+    } catch (_) {}
     let target;
     for (let i = 0; i < 60 && !target; i += 1) {
       const list = await (await fetch(`http://localhost:${port}/json/list`)).json().catch(() => []);
@@ -415,11 +503,6 @@ async function runProbe(serverUrl, opts, seed, writeStorage) {
       if (!target) await sleep(150);
     }
     if (!target || !target.webSocketDebuggerUrl) throw new Error("no page target");
-
-    try {
-      const versionInfo = await (await fetch(`http://localhost:${port}/json/version`)).json();
-      if (versionInfo.webSocketDebuggerUrl) browserClient = await cdp(versionInfo.webSocketDebuggerUrl);
-    } catch (_) {}
     client = await cdp(target.webSocketDebuggerUrl);
     await client.send("Runtime.enable");
     await client.send("Page.enable");
@@ -501,7 +584,13 @@ function writeBrowserIdentityHeaderRules(extDir, identity) {
 }
 
 async function runProbeWithRetry(label, serverUrl, opts, seed, writeStorage) {
-  const maxAttempts = opts.keep ? 1 : 2;
+  // CloakBrowser 0.7+ keeps a free/solo seat lease for a bounded period after
+  // a browser closes. Pair mode launches A then B with one key, so a single
+  // immediate retry can hit the still-releasing lease and look like a broken
+  // DevTools startup. Wait with a finite backoff; older wrappers simply pass
+  // through the first attempt and keep the same bounded retry behavior.
+  const retryDelays = [500, 5000, 15000, 30000, 60000, 120000];
+  const maxAttempts = opts.keep ? 1 : retryDelays.length + 1;
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -514,7 +603,7 @@ async function runProbeWithRetry(label, serverUrl, opts, seed, writeStorage) {
       if (!opts.quiet) {
         console.error(`warn: ${label} browser debug port did not appear; retrying cold launch`);
       }
-      await sleep(500);
+      await sleep(retryDelays[Math.min(attempt - 1, retryDelays.length - 1)]);
     }
   }
   throw new Error(`${label}: ${lastError?.message || lastError}`);

@@ -69,14 +69,15 @@ workspace-tab keyboard flows. CI treats this check as part of the
 `macOS release gate` job.
 
 The exact macOS build `150.0.7871.114.3` remains blocked for its confirmed
-`browserTampering` regression. The current wrapper pin is `0.6.4` and the
-macOS Stable candidate is `155.0.8059.39.1`; a wrapper update alone does not
+`browserTampering` regression. The current wrapper pin is `0.7.2` and the
+macOS Stable candidate is `156.0.8078.47.1`; a wrapper update alone does not
 authorize an engine promotion. Modern official engines receive the tested
 `--fingerprint-platform-version=15.5.0` compatibility flag because macOS 27.2
 can otherwise expose a host/seed-dependent UA-CH platform version. CloakBrowser
-155's default fingerprint noise still has a known Canvas readback/export
-inconsistency; NoTrace accepts it only with an exact, versioned self-baseline
-and keeps the default noise behavior unchanged.
+156's macOS Canvas/worker rendering path must pass a fresh local self-baseline
+and headed live gate. The self-baseline records the measured export/readback
+difference that is stable on this release. The default noise behavior stays
+enabled unless fresh release evidence requires a narrower compatibility decision.
 
 ## Audit commands
 
@@ -89,9 +90,10 @@ node packaging/audit-cloakbrowser-compatibility.mjs --check-upstream
 The scheduled CI audit reports wrapper drift. Candidate engine drift is checked
 again inside `packaging/update-chromium.sh` before any runtime staging copy.
 
-Upstream references reviewed on 2026-10-31:
+Upstream references reviewed on 2026-11-14:
 
-- [CloakBrowser 0.6.4 changelog](https://github.com/CloakHQ/CloakBrowser/blob/main/CHANGELOG.md)
+- [CloakBrowser 0.7.2 changelog](https://github.com/CloakHQ/CloakBrowser/blob/main/CHANGELOG.md)
+- [CloakBrowser macOS 156 release](https://github.com/CloakHQ/CloakBrowser/releases/tag/chromium-v156.0.8078.47.1-pro)
 - [CloakBrowser macOS 155 Canvas issue](https://github.com/CloakHQ/CloakBrowser/issues/626)
 - [CloakBrowser macOS 151.0.7922.108.3 release](https://github.com/CloakHQ/CloakBrowser/releases/tag/chromium-v151.0.7922.108.3-pro)
 - [CloakBrowser 152 release retaining macOS 151](https://github.com/CloakHQ/CloakBrowser/releases/tag/chromium-v152.0.7977.82.1-pro)
