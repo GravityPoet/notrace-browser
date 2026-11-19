@@ -415,6 +415,22 @@ fn reset_account_auth_detaches_identity_without_removing_browser_profile() {
         .is_none());
 }
 
+#[test]
+fn permanent_delete_removes_identity_recovery_copies() {
+    let f = Fixture::new();
+    f.seed(now() + 864000);
+    crate::reset_account_auth(&f.config, &f.name).unwrap();
+    let recovery = f
+        .config
+        .account_base
+        .parent()
+        .unwrap()
+        .join(".notrace-oauth/.recovery");
+    assert!(recovery.read_dir().unwrap().next().is_some());
+    crate::permanently_delete_account(&f.config, &f.name).unwrap();
+    assert!(recovery.read_dir().unwrap().next().is_none());
+}
+
 fn browser_monitor(pid: u32, binary: PathBuf, profile: PathBuf) -> AuthBrowserMonitor {
     let started = Instant::now();
     AuthBrowserMonitor {

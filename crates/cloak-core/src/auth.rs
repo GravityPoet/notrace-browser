@@ -548,14 +548,30 @@ pub(crate) fn with_imported_broker_handoff<T>(
 /// recycle-bin accounts remain refreshable.
 pub fn remove_account_auth(config: &CloakConfig, name: &str) -> Result<()> {
     let home = auth_home(config, name, false)?;
-    if !home.exists() {
-        return Ok(());
-    }
+    let profile_id = read_account(config, name)?.profile_id;
     let root = home
         .parent()
         .ok_or_else(|| CloakError::Auth("授权目录层级无效".to_string()))?;
     reject_symlink(root)?;
-    fs::remove_dir_all(&home)?;
+    if home.exists() {
+        fs::remove_dir_all(&home)?;
+    }
+    let recovery = root.join(".recovery");
+    reject_symlink(&recovery)?;
+    if recovery.is_dir() {
+        for entry in fs::read_dir(&recovery)? {
+            let path = entry?.path();
+            let entry_name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            if entry_name.starts_with(&format!("{profile_id}-")) {
+                reject_symlink(&path)?;
+                fs::remove_dir_all(path)?;
+            }
+        }
+        crate::sync_directory(&recovery)?;
+    }
     crate::sync_directory(root)?;
     Ok(())
 }
