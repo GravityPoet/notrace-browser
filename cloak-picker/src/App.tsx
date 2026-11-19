@@ -6961,6 +6961,17 @@ async function mockInvoke<T>(command: string, args?: Record<string, unknown>): P
     mockBrokerAccounts.set(requestedName, metadata);
     return metadata as T;
   }
+  if (command === "broker_reset_identity") {
+    const account = accounts.find(account => account.name === requestedName) ?? accounts[0];
+    const previous = mockBrokerAccounts.get(account.name);
+    mockBrokerAccounts.delete(account.name);
+    return {
+      key: account.profile_id,
+      old_email: previous?.email ?? account.name,
+      archived: Boolean(previous),
+      cpa_archived_files: 0,
+    } as T;
+  }
   if (command === "broker_quota_snapshot") {
     return {
       account_id: requestedName,

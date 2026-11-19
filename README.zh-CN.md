@@ -118,6 +118,8 @@ cloak auth authority <账号> notrace    # 外部应用停止刷新后，切回 
 cloak auth refresh-all                 # 只检查到期窗口，不做无条件轮换
 ```
 
+账号环境名称与 OAuth 授权身份是两层信息。重命名“雨欣”这类本地环境只会改显示名称，环境编号和现有授权绑定会保留。若要把同一环境切换到另一个邮箱或 ChatGPT 账号，请在授权不匹配时点击 **切换授权账号**，确认后由系统归档本机/Broker 授权和 CPA access-only 投影，再打开新的 OAuth 授权页。浏览器环境、代理、备注和本地名称都会保留。CPA 中仍含 `refresh_token` 的外部凭据不会被自动覆盖，界面会要求先处理该外部刷新者。
+
 安装 Picker 后，可运行 `packaging/install-auth-refresh.sh` 安装 macOS LaunchAgent。它在登录时和每 24 小时调用一次 App 内已签名的“授权续期后台任务”，但只有到期窗口内的 NoTrace 授权才会实际刷新；重新签名/安装 Picker 时会自动重载既有任务，避免 launchd 缓存旧 CDHash 而报 `OS_REASON_CODESIGNING`。`packaging/uninstall-auth-refresh.sh` 可移除该任务。NoTrace 不会直接修改 Cockpit 的 SQLite、Keychain 或 sidecar 凭据，也不会把刷新成功误报成 CPA/Cockpit 已完成导入。
 
 ## 🔐 加密工作区备份与恢复

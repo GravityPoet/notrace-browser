@@ -262,6 +262,16 @@ explicit retry instead of showing a pause button solely because the switch
 is enabled. An idempotent retry of the same handoff preserves its current
 settings, and normal OAuth renewals preserve the enabled sync policy.
 
+When a local environment must move to a different OAuth identity, Picker's
+**切换授权账号** action calls `POST /v1/admin/accounts/<key>/reset`. The Broker
+archives the encrypted grant and matching access-only CPA projections under
+private recovery directories, then the desktop moves its local grant and
+policy into its protected recovery directory. The browser profile, immutable
+profile ID, proxy, notes and display name remain available for the new login.
+The reset refuses a matching CPA file that still contains a `refresh_token`,
+because that file belongs to an external refresh authority and requires an
+explicit operator migration.
+
 ### CPA file ACL compatibility
 
 CPA's Codex atomic writer creates a root-owned `0600` replacement. This masks

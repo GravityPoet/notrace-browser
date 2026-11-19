@@ -123,6 +123,16 @@ cloak auth authority <account> notrace   # only after the external app stops ref
 cloak auth refresh-all                  # due-window checks; no unconditional rotation
 ```
 
+The local environment name and the OAuth identity are separate. Renaming an
+environment such as “雨欣” changes its display name while preserving its
+immutable profile binding and current grant. To move that environment to a
+different email or ChatGPT account, use **切换授权账号** after the identity
+mismatch appears. The confirmed flow archives the local and Broker grants plus
+access-only CPA projections, keeps the browser profile, proxy, notes and local
+name, then opens a fresh OAuth login. CPA files that still contain a
+`refresh_token` belong to an external refresh authority and are left in place
+for explicit handling.
+
 After installing Picker, `packaging/install-auth-refresh.sh` installs a macOS LaunchAgent that runs the bundled `cloak` at login and every 24 hours. It performs a real refresh only for due NoTrace-owned grants; `packaging/uninstall-auth-refresh.sh` removes the job. NoTrace does not edit Cockpit's SQLite, Keychain, or sidecar credentials, and does not claim that CPA/Cockpit imported a refreshed token without a verified handoff.
 
 ## 🔐 Encrypted Workspace Backup & Recovery

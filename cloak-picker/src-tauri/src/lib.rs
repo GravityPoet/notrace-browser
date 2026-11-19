@@ -7,7 +7,8 @@ use cloak_core::{
     broker_preview_json as core_broker_preview_json,
     broker_push_account as core_broker_push_account,
     broker_quota_snapshot as core_broker_quota_snapshot,
-    broker_refresh_account as core_broker_refresh_account, broker_set_cpa as core_broker_set_cpa,
+    broker_refresh_account as core_broker_refresh_account,
+    broker_reset_identity as core_broker_reset_identity, broker_set_cpa as core_broker_set_cpa,
     build_launch_plan, create_account_with_group as core_create_account_with_group,
     delete_account as core_delete_account,
     export_workspace_with_picker_state_and_cancellation as core_export_workspace,
@@ -26,11 +27,11 @@ use cloak_core::{
     set_mark as core_set_mark, set_note as core_set_note, set_proxy as core_set_proxy,
     set_region as core_set_region, toggle_locale as core_toggle_locale, Account, AuthAuthority,
     AuthLoginProgress, AuthRefreshSummary, AuthStatus, BrokerCockpitImportSummary,
-    BrokerJsonImportPreview, BrokerJsonImportSummary, BrokerJsonTransferSummary, BrokerMetadata,
-    BrokerOverview, CloakConfig, CodexQuotaResetResult, CodexQuotaSnapshot, ForceCloseResult,
-    LaunchOptions, LaunchPlan, LaunchResult, PrivacyConfirmation, SeatUsage,
-    WorkspaceExportSummary, WorkspaceImportMapping, WorkspaceImportPreview, WorkspaceImportSummary,
-    WorkspacePickerState,
+    BrokerIdentityResetSummary, BrokerJsonImportPreview, BrokerJsonImportSummary,
+    BrokerJsonTransferSummary, BrokerMetadata, BrokerOverview, CloakConfig, CodexQuotaResetResult,
+    CodexQuotaSnapshot, ForceCloseResult, LaunchOptions, LaunchPlan, LaunchResult,
+    PrivacyConfirmation, SeatUsage, WorkspaceExportSummary, WorkspaceImportMapping,
+    WorkspaceImportPreview, WorkspaceImportSummary, WorkspacePickerState,
 };
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -836,6 +837,14 @@ async fn broker_set_cpa(profile_id: String, enabled: bool) -> Result<BrokerMetad
 }
 
 #[tauri::command]
+async fn broker_reset_identity(name: String) -> Result<BrokerIdentityResetSummary, String> {
+    run_blocking(move || {
+        core_broker_reset_identity(&config()?, &name).map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
 async fn choose_broker_json_import_path(app: tauri::AppHandle) -> Result<Option<String>, String> {
     run_blocking(move || {
         let selected = app
@@ -1448,6 +1457,7 @@ pub fn run() {
             broker_quota_snapshot,
             broker_consume_quota_reset,
             broker_refresh_account,
+            broker_reset_identity,
             broker_import_cockpit_access,
             broker_set_cpa,
             choose_broker_json_import_path,

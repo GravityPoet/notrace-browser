@@ -150,13 +150,11 @@ fn handle(mut request: Request, store: &BrokerStore, keys: &Keys) {
             let status = match error {
                 BrokerError::AccountMissing => 404,
                 BrokerError::Busy => 423,
-                BrokerError::Config
-                | BrokerError::InvalidGrant
-                | BrokerError::IdentityMismatch
-                | BrokerError::InputTooLarge => 400,
+                BrokerError::Config | BrokerError::InvalidGrant | BrokerError::InputTooLarge => 400,
                 BrokerError::ReauthRequired
                 | BrokerError::RecoveryRequired
-                | BrokerError::ConsumerConflict => 409,
+                | BrokerError::ConsumerConflict
+                | BrokerError::IdentityMismatch => 409,
                 BrokerError::QuotaUnavailable => 503,
                 _ => 503,
             };
@@ -237,6 +235,10 @@ fn route(
                     .ok_or(BrokerError::Config)?;
                 store.set_cpa_enabled(&key, enabled)?;
                 store.sync_cpa(&key)?
+            }
+            ("POST", "reset") => {
+                return serde_json::to_value(store.reset_identity(&key)?)
+                    .map_err(|_| BrokerError::Storage);
             }
             _ => return Err(BrokerError::AccountMissing),
         };

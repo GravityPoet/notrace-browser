@@ -326,6 +326,34 @@ describe("统一授权续期窗口", () => {
     expect(calls).toContain("broker_push_account");
   });
 
+  it("offers a guarded identity reset when OAuth identity no longer matches", async () => {
+    let remote: BrokerMetadata = { key: "profile-1", email: "old@example.com", account_id: "acct-old", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 3, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 3, cpa_sync_error: null, cockpit_synced_generation: null };
+    const data = overview(remote);
+    data.accounts[0].local = { ...local, message: "授权账号与所选账号不匹配，原有凭证保持不变", state: "reauth_required" };
+    const calls: string[] = [];
+    const call: AuthCall = async function call<T>(command: string): Promise<T> {
+      calls.push(command);
+      if (command === "broker_overview") return { ...data, accounts: [{ ...data.accounts[0], remote }] } as T;
+      if (command === "broker_reset_identity") return { key: "profile-1", old_email: "old@example.com", archived: true, cpa_archived_files: 1 } as T;
+      if (command === "broker_push_account") {
+        remote = { ...remote, email: "new@example.com", account_id: "acct-new", generation: 1, cpa_enabled: false, cpa_synced_generation: null };
+        return remote as T;
+      }
+      if (command === "active_account_auth") return null as T;
+      return null as T;
+    };
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => root?.render(createElement(BrokerPanel, { call, selectedProfileId: "profile-1" })));
+    await settle();
+    await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "切换授权账号")?.click());
+    expect(document.body.textContent).toContain("保留浏览器环境、账号名称、代理和备注");
+    await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "确认清理并重新授权")?.click());
+    await settle();
+    expect(calls).toContain("broker_reset_identity");
+    expect(calls).toContain("login_account_auth");
+    expect(calls).toContain("broker_push_account");
+  });
+
   it("returns a reauthorized account to explicit CPA synchronization", async () => {
     let remote: BrokerMetadata = { key: "profile-1", email: "demo@example.com", account_id: "acct-1", plan_type: "plus", expires_at: 1_900_000_000, last_refresh_at: 1_899_000_000, generation: 1, next_refresh_at: 1_899_900_000, next_retry_at: null, error: null, cpa_enabled: true, cpa_synced_generation: 1, cpa_sync_error: null, cockpit_synced_generation: null };
     const cpaCalls: Array<Record<string, unknown> | undefined> = [];

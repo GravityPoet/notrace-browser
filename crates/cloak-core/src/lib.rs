@@ -7,14 +7,14 @@ mod broker;
 mod broker_client;
 mod broker_transfer;
 pub use broker::{
-    push_local_grant, AccessCredential, BrokerConfig, BrokerError, BrokerMetadata, BrokerStore,
-    CodexQuotaResetResult, CodexQuotaSnapshot, CodexQuotaWindow,
+    push_local_grant, AccessCredential, BrokerConfig, BrokerError, BrokerIdentityResetSummary,
+    BrokerMetadata, BrokerStore, CodexQuotaResetResult, CodexQuotaSnapshot, CodexQuotaWindow,
 };
 pub use broker_client::{
     broker_consume_quota_reset, broker_convert_json, broker_export_json,
     broker_import_cockpit_access, broker_import_json, broker_overview, broker_preview_json,
-    broker_push_account, broker_quota_snapshot, broker_refresh_account, broker_set_cpa,
-    save_broker_connection, BrokerCockpitImportSummary, BrokerJsonImportSummary,
+    broker_push_account, broker_quota_snapshot, broker_refresh_account, broker_reset_identity,
+    broker_set_cpa, save_broker_connection, BrokerCockpitImportSummary, BrokerJsonImportSummary,
     BrokerJsonTransferSummary, BrokerOverview,
 };
 pub use broker_transfer::{
@@ -26,8 +26,8 @@ mod auth;
 pub use auth::{
     auth_status, login_account_auth, login_account_auth_with_cancellation,
     login_account_auth_with_progress, refresh_account_auth, refresh_all_account_auth,
-    remove_account_auth, set_auth_authority, set_auth_auto_refresh, AuthAuthority,
-    AuthLoginProgress, AuthRefreshSummary, AuthState, AuthStatus,
+    remove_account_auth, reset_account_auth, set_auth_authority, set_auth_auto_refresh,
+    AuthAuthority, AuthLoginProgress, AuthRefreshSummary, AuthState, AuthStatus,
 };
 mod license;
 mod profile_metadata;

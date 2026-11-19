@@ -91,6 +91,86 @@ fn encrypted_store_and_access_projection_never_expose_refresh_token() {
     assert!(!fs::read_to_string(path).unwrap().contains("secret-refresh"));
 }
 
+#[test]
+fn reset_identity_archives_grant_and_access_only_cpa_projection() {
+    let (_dir, mut store) = store();
+    let cpa = tempfile::tempdir().unwrap();
+    store.config.cpa_auth_dir = Some(cpa.path().into());
+    store
+        .import_grant(
+            "profile-1",
+            &grant_body("old_identity", "acct-old", "refresh-old", now() + 3600),
+        )
+        .unwrap();
+    let cpa_path = cpa.path().join("old_identity.json");
+    fs::write(
+        &cpa_path,
+        json!({
+            "email": "old_identity",
+            "account_id": "acct-old",
+            "refresh_owner": "notrace_broker",
+            "notrace_key": "profile-1",
+            "refresh_token": ""
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let summary = store.reset_identity("profile-1").unwrap();
+    assert_eq!(summary.old_email, "old_identity");
+    assert_eq!(summary.cpa_archived_files, 1);
+    assert!(!cpa_path.exists());
+    assert!(cpa
+        .path()
+        .join(".notrace-recovery")
+        .read_dir()
+        .unwrap()
+        .next()
+        .is_some());
+    assert!(store.list().unwrap().is_empty());
+
+    let replacement = store
+        .import_grant(
+            "profile-1",
+            &grant_body("new_identity", "acct-new", "refresh-new", now() + 3600),
+        )
+        .unwrap();
+    assert_eq!(replacement.email, "new_identity");
+    assert_eq!(replacement.generation, 1);
+}
+
+#[test]
+fn reset_identity_refuses_cpa_refresh_authority() {
+    let (_dir, mut store) = store();
+    let cpa = tempfile::tempdir().unwrap();
+    store.config.cpa_auth_dir = Some(cpa.path().into());
+    store
+        .import_grant(
+            "profile-1",
+            &grant_body("old_identity", "acct-old", "refresh-old", now() + 3600),
+        )
+        .unwrap();
+    fs::write(
+        cpa.path().join("manual.json"),
+        json!({
+            "email": "old_identity",
+            "account_id": "acct-old",
+            "refresh_token": "cpa-owned-refresh"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.reset_identity("profile-1").unwrap_err(),
+        BrokerError::ConsumerConflict
+    );
+    assert!(store
+        .list()
+        .unwrap()
+        .iter()
+        .any(|item| item.email == "old_identity"));
+}
+
 /// Local-only HTTP boundary for the desktop import path. Uses the real
 /// encrypted BrokerStore; no OpenAI endpoint or production credential is used.
 fn desktop_import_server(

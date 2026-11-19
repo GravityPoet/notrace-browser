@@ -1,9 +1,9 @@
 //! Desktop-facing Broker operations. Service keys and credential bodies never
 //! cross the frontend IPC boundary; all returns are metadata only.
 use crate::{
-    format_access_credentials, AccessCredential, AuthStatus, BrokerJsonFormat,
-    BrokerJsonImportPreview, BrokerMetadata, CloakConfig, CloakError, CodexQuotaResetResult,
-    CodexQuotaSnapshot, Result,
+    format_access_credentials, reset_account_auth, AccessCredential, AuthStatus,
+    BrokerIdentityResetSummary, BrokerJsonFormat, BrokerJsonImportPreview, BrokerMetadata,
+    CloakConfig, CloakError, CodexQuotaResetResult, CodexQuotaSnapshot, Result,
 };
 use rand::RngCore;
 use reqwest::blocking::Client;
@@ -154,6 +154,48 @@ pub fn broker_push_account(config: &CloakConfig, name: &str) -> Result<BrokerMet
     let connection = load(config)?.ok_or_else(|| CloakError::Auth("请先连接 Broker".into()))?;
     crate::push_local_grant(config, name, &connection.endpoint, &connection.admin_key)
 }
+
+/// Clear the current local and Broker authorization identity while preserving
+/// the browser profile and display name. The Broker archives the encrypted
+/// grant and any access-only CPA projections before the next login.
+pub fn broker_reset_identity(
+    config: &CloakConfig,
+    name: &str,
+) -> Result<BrokerIdentityResetSummary> {
+    if crate::account_is_running(config, name)? {
+        return Err(CloakError::AccountRunning(name.to_string()));
+    }
+    let profile_id = crate::read_account(config, name)?.profile_id;
+    let connection = load(config)?;
+    let summary = if let Some(connection) = connection {
+        let remote: Vec<BrokerMetadata> = request(&connection, "GET", "/v1/admin/accounts", None)?;
+        if remote.iter().any(|metadata| metadata.key == profile_id) {
+            request(
+                &connection,
+                "POST",
+                &format!("/v1/admin/accounts/{}/reset", segment(&profile_id)?),
+                Some(json!({})),
+            )?
+        } else {
+            BrokerIdentityResetSummary {
+                key: profile_id.clone(),
+                old_email: String::new(),
+                archived: false,
+                cpa_archived_files: 0,
+            }
+        }
+    } else {
+        BrokerIdentityResetSummary {
+            key: profile_id.clone(),
+            old_email: String::new(),
+            archived: false,
+            cpa_archived_files: 0,
+        }
+    };
+    reset_account_auth(config, name)?;
+    Ok(summary)
+}
+
 pub fn broker_refresh_account(config: &CloakConfig, profile_id: &str) -> Result<BrokerMetadata> {
     let connection = load(config)?.ok_or_else(|| CloakError::Auth("请先连接 Broker".into()))?;
     request(

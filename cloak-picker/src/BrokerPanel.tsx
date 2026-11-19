@@ -166,6 +166,7 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState("");
   const [cpaAction, setCpaAction] = useState<{ profileId: string; enabled: boolean; pending: boolean } | null>(null);
+  const [identityResetTarget, setIdentityResetTarget] = useState<string | null>(null);
   const [cockpitProfile, setCockpitProfile] = useState<string | null>(null);
   const [cockpitDeliveries, setCockpitDeliveries] = useState<Record<string, { endpoint: string | null; generation: number }>>({});
   const [quotaByProfile, setQuotaByProfile] = useState<Record<string, CodexQuotaSnapshot>>({});
@@ -342,6 +343,24 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     if (mounted.current) {
       setCpaAction(current => current?.profileId === row.profile_id ? null : current);
       setMessage("重新授权成功，新凭据已保存；请点击“同步到 CPA”更新凭据");
+    }
+  }
+  async function resetIdentityAndReauthorize(row: BrokerRow) {
+    const result = await call<{ old_email: string; cpa_archived_files: number }>("broker_reset_identity", { name: row.name });
+    await read();
+    if (mounted.current) {
+      setMessage(result.old_email
+        ? `旧授权 ${result.old_email} 已归档，正在打开新的授权页面…`
+        : "旧授权已清理，正在打开新的授权页面…");
+    }
+    await browserLogin(row);
+    if (brokerConnected) {
+      await call("broker_push_account", { name: row.name });
+      await read();
+    }
+    if (mounted.current) {
+      setIdentityResetTarget(null);
+      setMessage(brokerConnected ? "新的授权账号已接入 Broker，请按需同步到 CPA" : "新的授权账号已保存");
     }
   }
   async function updateCpa(row: BrokerRow, enabled: boolean) {
@@ -568,10 +587,18 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
     const historical = authorizationState(row) === "reauth_required";
     const external = !["no_trace", "broker"].includes(row.local.authority) && row.local.state !== "missing";
     const reconnect = Boolean(row.remote || historical || external);
+    const identityMismatch = /账号.*不匹配|账号身份不匹配|其他授权账号|切换授权账号/.test(row.local.message ?? "")
+      || (errorTarget === row.profile_id && /账号.*不匹配|账号身份不匹配|其他授权账号|切换授权账号/.test(error));
     const label = reconnect ? "重新授权" : row.local.state === "missing" ? "授权" : "纳管授权";
     const fullLabel = row.remote ? "重新授权" : historical || external ? "重新授权并纳管" : row.local.state === "missing" ? "授权并纳管" : "交给 Broker";
     if (compact && pending) return <button className="authorizationButton authorizationButton-secondary" type="button" disabled={pending.cancelling || pending.phase === "handoff" || authorizationCommitInFlight} onClick={() => void cancelAuthorization(row.name)}>
       {pending.cancelling || pending.phase === "handoff" || authorizationCommitInFlight ? <Loader2 size={16} className="spin" /> : <X size={16} />}{pending.phase === "handoff" ? "保存授权中…" : pending.phase === "confirming" ? "确认凭证中…" : pending.phase === "saving_credentials" ? "保存凭证中…" : pending.cancelling ? "取消中…" : "取消授权"}
+    </button>;
+    if (identityMismatch) return <button className={compact ? "authorizationButton" : "primaryButton"}
+      type="button" disabled={disabled || browserBusy}
+      title="当前授权身份与新选择的账号不一致，先清理旧授权再重新连接"
+      onClick={() => setIdentityResetTarget(row.profile_id)}>
+      <KeyRound size={compact ? 16 : 14} />切换授权账号
     </button>;
     return <button className={compact ? `authorizationButton${row.remote && !historical ? " authorizationButton-secondary" : ""}` : workbench && (!row.remote || historical) ? "primaryButton" : "secondaryButton"}
       type="button" disabled={disabled || !brokerConnected || browserBusy}
@@ -647,6 +674,8 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
         && (!remote.subscription_active_until || remote.subscription_active_until === row.local.subscription_active_until));
       const nextBilling = nextBillingReference(remote?.subscription_active_until ?? (localCycleMatches ? row.local.subscription_active_until : null));
       const rowBusy = busy === row.profile_id;
+      const identityMismatch = /账号.*不匹配|账号身份不匹配|其他授权账号|切换授权账号/.test(row.local.message ?? "")
+        || (errorTarget === row.profile_id && /账号.*不匹配|账号身份不匹配|其他授权账号|切换授权账号/.test(error));
       const cachedQuota = quotaByProfile[row.profile_id];
       const quota = remote && cachedQuota?.generation === remote.generation
         && cachedQuota.account_id === remote.account_id && !historicalAuthorization ? cachedQuota : undefined;
@@ -687,8 +716,15 @@ export function BrokerPanel({ call = nativeCall, onBusyChange, embedded = false,
             {cpaButtonLabel && <button className={workbench && !historicalAuthorization && !cpaSynced ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected || (historicalAuthorization && !remote.cpa_enabled)} onClick={() => void run(row.profile_id, () => updateCpa(row, historicalAuthorization ? false : !cpaSynced))}>{cpaButtonLabel}</button>}
             {!historicalAuthorization && <button className={workbench ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected} title="仅导入当前 access token / id token；Cockpit 导入后自动读取一次额度，不刷新 Broker 授权、不发送 refresh_token" onClick={() => void run(row.profile_id, () => importCockpitAccess(row))}>{cockpitProfile === row.profile_id && <Loader2 className="spin" size={14} />}{cockpitProfile === row.profile_id ? "导入中…" : "导入 Cockpit"}</button>}
             <button className="secondaryButton" type="button" disabled={disabled || !brokerConnected} onClick={event => { jsonTriggerRef.current = event.currentTarget; setPreserveRefreshToken(true); setImportPreview(null); setExportRow(row); setJsonFormat("auth_json"); }}><Download size={14} />导出 JSON</button>
-          </> : !headerOwnsAuthorization && <button className={workbench ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected || browserBusy} onClick={() => void run(row.profile_id, () => externalGrant ? reauthorize(row) : manage(row))}>{rowBusy ? <Loader2 className="spin" size={14} /> : needsLogin || needsReauthLocal || externalGrant ? <KeyRound size={14} /> : <UploadCloud size={14} />}{rowBusy ? "授权处理中…" : needsLogin ? "授权并纳管" : needsReauthLocal || externalGrant ? "重新授权并纳管" : "交给 Broker"}</button>}</div>
+          </> : !headerOwnsAuthorization && <>
+            <button className={workbench ? "primaryButton" : "secondaryButton"} type="button" disabled={disabled || !brokerConnected || browserBusy} onClick={() => void run(row.profile_id, () => externalGrant ? reauthorize(row) : manage(row))}>{rowBusy ? <Loader2 className="spin" size={14} /> : needsLogin || needsReauthLocal || externalGrant ? <KeyRound size={14} /> : <UploadCloud size={14} />}{rowBusy ? "授权处理中…" : needsLogin ? "授权并纳管" : needsReauthLocal || externalGrant ? "重新授权并纳管" : "交给 Broker"}</button>
+          </>}</div>
         </div>
+        {identityResetTarget === row.profile_id && <div className="brokerQuotaResetConfirm" role="group" aria-label="确认切换授权账号">
+          <p>将保留浏览器环境、账号名称、代理和备注，清理当前本机/Broker 授权绑定，并把旧凭据放入受保护恢复区。CPA 的 access-only 文件也会归档，随后打开授权页面选择新的 OAuth 账号。</p>
+          <button type="button" className="secondaryButton" disabled={disabled} onClick={() => setIdentityResetTarget(null)}>取消</button>
+          <button type="button" className="primaryButton" disabled={disabled || browserBusy || (!brokerConnected && Boolean(row.remote))} onClick={() => void run(row.profile_id, () => resetIdentityAndReauthorize(row))}>{busy === row.profile_id ? <Loader2 className="spin" size={14} /> : <KeyRound size={14} />}{busy === row.profile_id ? "正在切换…" : "确认清理并重新授权"}</button>
+        </div>}
         {!workbench && visibleLogin?.name === row.name && activity}
         {error && errorTarget === row.profile_id && !(historicalAuthorization && repeatsAuthorizationState(error)) && <div className="brokerRowFeedback error" role="alert"><p>{error}</p></div>}
         {historicalAuthorization && <p className="brokerAuthorizationReason" role="status">{remote?.error === "recovery_required" ? "上次刷新结果无法确认，已停止续期。" : "续期凭据失效，已停止自动续期。"}</p>}

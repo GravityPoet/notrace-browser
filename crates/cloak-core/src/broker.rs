@@ -132,6 +132,14 @@ pub struct BrokerMetadata {
     pub quota_reset_pending: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrokerIdentityResetSummary {
+    pub key: String,
+    pub old_email: String,
+    pub archived: bool,
+    pub cpa_archived_files: u32,
+}
+
 /// Credentials have no Debug implementation. Consumer routes receive access-only;
 /// an explicit local admin export may opt in to the encrypted grant's RT.
 #[derive(Clone, Serialize, Deserialize)]
@@ -375,6 +383,129 @@ impl BrokerStore {
             fs::remove_file(pending).map_err(|_| BrokerError::Storage)?;
         }
         Ok(incoming.metadata())
+    }
+
+    /// Detach the current OAuth identity from a stable browser profile.
+    /// The encrypted grant and access-only CPA projections move into private
+    /// recovery directories. A later grant with a different email or account
+    /// id can then be imported under the same profile key.
+    pub fn reset_identity(&self, key: &str) -> BrokerResult<BrokerIdentityResetSummary> {
+        let path = self.path(key)?;
+        let _guard = acquire_lock(&path.with_extension("lock"))?;
+        if !path.exists() {
+            return Err(BrokerError::AccountMissing);
+        }
+        let grant = self.load(&path)?;
+        if grant.in_flight || path.with_extension("pending").exists() {
+            return Err(BrokerError::RecoveryRequired);
+        }
+
+        let moved_cpa = self.archive_cpa_projections(&grant)?;
+
+        let archive_root = self.config.root.join("accounts").join(".notrace-recovery");
+        ensure_dir(&archive_root)?;
+        let archive_path = archive_root.join(format!(
+            "{}-{}-{}.grant",
+            hash_key(key),
+            crate::current_epoch_secs(),
+            random_suffix(),
+        ));
+        reject_link(&archive_path)?;
+        if let Err(error) = fs::rename(&path, &archive_path) {
+            for (source, destination) in moved_cpa.iter().rev() {
+                let _ = fs::rename(destination, source);
+            }
+            return Err(if error.kind() == std::io::ErrorKind::PermissionDenied {
+                BrokerError::Storage
+            } else {
+                BrokerError::Storage
+            });
+        }
+        crate::sync_directory(&archive_root).map_err(|_| BrokerError::Storage)?;
+        crate::sync_directory(&self.config.root.join("accounts"))
+            .map_err(|_| BrokerError::Storage)?;
+        Ok(BrokerIdentityResetSummary {
+            key: key.to_string(),
+            old_email: grant.email,
+            archived: true,
+            cpa_archived_files: moved_cpa.len() as u32,
+        })
+    }
+
+    fn archive_cpa_projections(&self, grant: &Grant) -> BrokerResult<Vec<(PathBuf, PathBuf)>> {
+        let Some(directory) = self.config.cpa_auth_dir.as_ref() else {
+            return Ok(Vec::new());
+        };
+        reject_link(directory)?;
+        if !directory.is_dir() {
+            return Err(BrokerError::Storage);
+        }
+        let archive_root = directory.join(".notrace-recovery");
+        ensure_dir(&archive_root)?;
+        let mut candidates = Vec::new();
+        for entry in fs::read_dir(directory).map_err(|_| BrokerError::Storage)? {
+            let path = entry.map_err(|_| BrokerError::Storage)?.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            reject_link(&path)?;
+            let raw = match read_bounded(&path, MAX_BYTES) {
+                Ok(value) => value,
+                Err(BrokerError::AccountMissing) => continue,
+                Err(BrokerError::Storage)
+                    if path
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .is_some_and(|value| !value.contains(&grant.email)) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let value: Value = match serde_json::from_slice(&raw) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            if !cpa_identity_matches(&value, grant) {
+                continue;
+            }
+            if cpa_has_refresh_token(&value) {
+                return Err(BrokerError::ConsumerConflict);
+            }
+            candidates.push(path);
+        }
+
+        let mut moved = Vec::new();
+        for (index, source) in candidates.into_iter().enumerate() {
+            let filename = source
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or(BrokerError::Storage)?;
+            let destination = archive_root.join(format!(
+                "cpa-{}-{}-{}-{}",
+                crate::current_epoch_secs(),
+                random_suffix(),
+                index,
+                filename
+            ));
+            reject_link(&destination)?;
+            if let Err(error) = fs::rename(&source, &destination) {
+                for (rollback_source, rollback_destination) in moved.iter().rev() {
+                    let _ = fs::rename(rollback_destination, rollback_source);
+                }
+                return Err(if error.kind() == std::io::ErrorKind::PermissionDenied {
+                    BrokerError::Storage
+                } else {
+                    BrokerError::Storage
+                });
+            }
+            moved.push((source, destination));
+        }
+        if !moved.is_empty() {
+            crate::sync_directory(directory).map_err(|_| BrokerError::Storage)?;
+            crate::sync_directory(&archive_root).map_err(|_| BrokerError::Storage)?;
+        }
+        Ok(moved)
     }
     pub fn refresh(&self, key: &str, force: bool) -> BrokerResult<BrokerMetadata> {
         let path = self.path(key)?;
@@ -971,6 +1102,20 @@ fn cpa_identity_matches(value: &Value, grant: &Grant) -> bool {
         || account_id.is_some_and(|candidate| candidate == grant.account_id)
 }
 
+fn cpa_has_refresh_token(value: &Value) -> bool {
+    let tokens = value.get("tokens").unwrap_or(value);
+    tokens
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .is_some_and(|token| !token.is_empty())
+}
+
+fn random_suffix() -> String {
+    let mut bytes = [0u8; 8];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// Transfer one locally authorized grant to the Broker, then mark local policy
 /// Broker-owned so the Mac scheduler cannot rotate the same lineage.
 pub fn push_local_grant(
@@ -1029,10 +1174,20 @@ pub fn push_local_grant(
             .send()
             .map_err(|_| crate::CloakError::Auth("无法连接 NoTrace Broker".to_string()))?;
         if !response.status().is_success() {
-            return Err(crate::CloakError::Auth(match response.status().as_u16() {
-                400 => "Broker 拒绝了授权数据".to_string(),
-                401 | 403 => "Broker 管理密钥无效".to_string(),
-                409 => "Broker 认为账号授权已失效，需要重新授权".to_string(),
+            let status = response.status().as_u16();
+            let code = response.json::<Value>().ok().and_then(|value| {
+                value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            });
+            return Err(crate::CloakError::Auth(match (status, code.as_deref()) {
+                (400, _) => "Broker 拒绝了授权数据".to_string(),
+                (401 | 403, _) => "Broker 管理密钥无效".to_string(),
+                (409, Some("identity_mismatch")) => {
+                    "Broker 中已有其他授权账号，请先点击“切换授权账号”".to_string()
+                }
+                (409, _) => "Broker 认为账号授权已失效，需要重新授权".to_string(),
                 _ => "Broker 导入授权失败".to_string(),
             }));
         }

@@ -390,6 +390,31 @@ fn rename_preserves_binding_and_missing_names_are_rejected() {
     assert!(auth_home(&f.config, "does-not-exist", true).is_err());
 }
 
+#[test]
+fn reset_account_auth_detaches_identity_without_removing_browser_profile() {
+    let f = Fixture::new();
+    f.seed(now() + 864000);
+    let profile_id = crate::read_account(&f.config, &f.name).unwrap().profile_id;
+    let status = crate::reset_account_auth(&f.config, &f.name).unwrap();
+    assert_eq!(status.state, AuthState::Missing);
+    assert!(!f.home.exists());
+    assert!(f.config.profile_dir(&f.name).exists());
+    let recovery = f
+        .config
+        .account_base
+        .parent()
+        .unwrap()
+        .join(".notrace-oauth/.recovery");
+    assert!(fs::read_dir(recovery)
+        .unwrap()
+        .flatten()
+        .any(|entry| entry.file_name().to_string_lossy().starts_with(&profile_id)));
+    assert!(crate::auth_status(&f.config, &f.name)
+        .unwrap()
+        .email
+        .is_none());
+}
+
 fn browser_monitor(pid: u32, binary: PathBuf, profile: PathBuf) -> AuthBrowserMonitor {
     let started = Instant::now();
     AuthBrowserMonitor {

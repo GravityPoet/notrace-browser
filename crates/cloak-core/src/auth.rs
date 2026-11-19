@@ -560,6 +560,37 @@ pub fn remove_account_auth(config: &CloakConfig, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Detach the current OAuth identity while preserving the browser profile.
+/// The encrypted local grant and its policy move into a private recovery
+/// directory so a cancelled identity switch does not destroy the old grant.
+pub fn reset_account_auth(config: &CloakConfig, name: &str) -> Result<AuthStatus> {
+    let home = auth_home(config, name, false)?;
+    if !home.exists() {
+        return status_at(&home, name);
+    }
+    let root = home
+        .parent()
+        .ok_or_else(|| CloakError::Auth("授权目录层级无效".into()))?;
+    reject_symlink(root)?;
+    let _login_lock = lock(&root.join(".login.lock"))?;
+    let _operation_lock = lock(&home.join(".operation.lock"))?;
+    let recovery = root.join(".recovery");
+    reject_symlink(&recovery)?;
+    fs::create_dir_all(&recovery)?;
+    crate::secure_dir(&recovery)?;
+    let profile_id = read_account(config, name)?.profile_id;
+    let mut destination = recovery.join(format!("{}-{}", profile_id, now()));
+    let mut suffix = 0u32;
+    while destination.exists() {
+        suffix = suffix.saturating_add(1);
+        destination = recovery.join(format!("{}-{}-{}", profile_id, now(), suffix));
+    }
+    fs::rename(&home, &destination)?;
+    crate::sync_directory(root)?;
+    crate::sync_directory(&recovery)?;
+    status_at(&home, name)
+}
+
 fn ensure_identity(name: &str, old: Option<&Credentials>, new: &Credentials) -> AuthResult<()> {
     let expected = old
         .and_then(|c| c.email.as_deref())
